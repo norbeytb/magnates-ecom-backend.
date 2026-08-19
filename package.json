@@ -1,0 +1,22 @@
+{
+  "name": "magnates-ecom-backend-ia",
+  "version": "1.0.0",
+  "description": "Backend del Módulo IA — genera secciones de landing con GPT Image 2 vía fal.ai",
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main",
+    "start:dev": "nest start --watch"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.0.0",
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "typescript": "^5.4.0"
+  }
+}
