@@ -7,10 +7,10 @@
 //
 // Instalar el SDK oficial de fal antes de usar esto:
 //   npm install @fal-ai/client
- 
+
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { fal } from '@fal-ai/client';
- 
+
 export interface FichaTecnica {
   nombreProducto: string;
   detallesProducto: string;           // 🏷 Detalles del producto
@@ -39,7 +39,7 @@ export interface FichaTecnica {
     metodoPago?: string; // 'Contra entrega' | 'Pago anticipado' | 'Ambos'
   };
 }
- 
+
 export interface GenerarSeccionInput {
   seccion: string; // 'hero' | 'oferta' | 'logistica' | 'antesdespues' | 'beneficios' | 'tabla' | 'autoridad' | 'testimonios' | 'modouso' | 'faq'
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
@@ -47,13 +47,13 @@ export interface GenerarSeccionInput {
   colorHex?: string; // color elegido en el selector "Color Predominante del fondo"
   numImagenes?: number;
 }
- 
+
 export interface GenerarSeccionResultado {
   imagenesUrl: string[];
   promptUsado: string;
   costoEstimadoUsd: number;
 }
- 
+
 @Injectable()
 export class ImageEditService {
   constructor() {
@@ -61,31 +61,37 @@ export class ImageEditService {
       credentials: process.env.FAL_API_KEY, // nunca hardcodear, nunca enviar al frontend
     });
   }
- 
+
   async generarSeccion(input: GenerarSeccionInput): Promise<GenerarSeccionResultado> {
     const prompt = this.construirPrompt(input);
     const numImagenes = input.numImagenes ?? 1;
- 
+
     try {
+      // fal.ai rechaza (422 Unprocessable Entity) un data URI base64 puesto
+      // directamente en image_urls: necesita una URL real ya alojada. Si el
+      // taller nos manda la foto como base64 (data:image/...;base64,...), la
+      // subimos primero al storage de fal.ai y usamos la URL que nos regresa.
+      const imagenUrl = await this.resolverImagenUrl(input.imagenProductoUrl);
+
       // IMPORTANTE: 'openai/gpt-image-2' (sin /edit) es solo texto->imagen y
       // NO acepta image_urls. Para editar/generar usando la foto real del
       // producto como referencia hay que usar la variante /edit.
       const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
         input: {
-          image_urls: [input.imagenProductoUrl], // acepta URL pública o data URI base64 directamente
+          image_urls: [imagenUrl],
           prompt,
           num_images: numImagenes,
           quality: 'high', // 'low' | 'medium' | 'high' — 'high' para la pieza final que se publica
         },
         logs: false,
       });
- 
+
       const imagenesUrl = (resultado.data.images ?? []).map(
         (img: { url: string }) => img.url,
       );
- 
+
       const costoEstimadoUsd = numImagenes * this.costoPorCalidad('high');
- 
+
       return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
     } catch (error) {
       throw new InternalServerErrorException(
@@ -93,12 +99,34 @@ export class ImageEditService {
       );
     }
   }
- 
+
+  /**
+   * Si la imagen viene como data URI base64 (foto subida directamente en el
+   * taller, sin backend propio de assets todavía), la sube al storage de
+   * fal.ai y devuelve la URL pública resultante. Si ya es una URL normal
+   * (http/https), la deja tal cual.
+   */
+  private async resolverImagenUrl(imagenProductoUrl: string): Promise<string> {
+    if (!imagenProductoUrl || !imagenProductoUrl.startsWith('data:')) {
+      return imagenProductoUrl; // ya es una URL pública, no hay nada que subir
+    }
+    const match = imagenProductoUrl.match(/^data:([^;]+);base64,(.*)$/);
+    if (!match) {
+      throw new InternalServerErrorException(
+        'Formato de imagen no reconocido (se esperaba una URL o un data URI base64 válido).',
+      );
+    }
+    const [, mimeType, base64Data] = match;
+    const buffer = Buffer.from(base64Data, 'base64');
+    const blob = new Blob([buffer], { type: mimeType });
+    return fal.storage.upload(blob);
+  }
+
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
     // Precios de referencia (verificar tarifa vigente en fal.ai antes de facturar)
     return { low: 0.006, medium: 0.041, high: 0.211 }[calidad];
   }
- 
+
   /**
    * Arma el prompt de edición según la sección elegida, incorporando SOLO
    * los campos de la ficha técnica que aplican a esa sección — así el
@@ -107,15 +135,15 @@ export class ImageEditService {
   private construirPrompt(input: GenerarSeccionInput): string {
     const f = input.ficha;
     const partes: string[] = [];
- 
+
     partes.push(
       `Mantén el producto de la imagen de referencia exactamente igual — misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo.`,
     );
- 
+
     if (input.colorHex) {
       partes.push(`Usa ${input.colorHex} como color predominante del fondo y los acentos visuales.`);
     }
- 
+
     const seccionesConPersonaje = ['hero', 'antesdespues', 'testimonios', 'autoridad', 'modouso'];
     if (seccionesConPersonaje.includes(input.seccion) && f.personajes) {
       const p = f.personajes;
@@ -128,14 +156,14 @@ export class ImageEditService {
         partes.push(`Incluye una persona con estas características: ${rasgos.join(', ')}, interactuando de forma natural con el producto.`);
       }
     }
- 
+
     switch (input.seccion) {
       case 'hero':
         partes.push(
           `Genera una sección Hero de landing page: titular llamativo con "${f.nombreProducto}", subtítulo basado en "${this.recortar(f.angulo, 120)}", y 3-4 viñetas de beneficios extraídas de: ${this.recortar(f.detallesProducto, 200)}.`,
         );
         break;
- 
+
       case 'oferta':
         if (f.oferta) {
           const o = f.oferta;
@@ -149,7 +177,7 @@ export class ImageEditService {
           );
         }
         break;
- 
+
       case 'logistica':
         if (f.logistica) {
           partes.push(
@@ -157,64 +185,63 @@ export class ImageEditService {
           );
         }
         break;
- 
+
       case 'antesdespues':
         partes.push(
           `Genera una sección Antes/Después: el lado "antes" debe representar visualmente el problema (${this.recortar(f.problema, 150)}), el lado "después" el resultado deseado (${this.recortar(f.resultado, 150)}).`,
         );
         break;
- 
+
       case 'beneficios':
         partes.push(
           `Genera una sección de Beneficios con 3-4 tarjetas, cada una con un ícono y un beneficio corto extraído de: ${this.recortar(f.detallesProducto, 250)}.`,
         );
         break;
- 
+
       case 'testimonios':
         partes.push(
           `Genera una sección de Testimonios con 2-3 reseñas cortas de clientes que lograron: ${this.recortar(f.resultado, 150)}. Incluye nombre, calificación de 5 estrellas y una foto de la persona descrita.`,
         );
         break;
- 
+
       case 'autoridad':
         partes.push(
           `Genera una sección de Prueba de Autoridad: una cita de un experto explicando por qué funciona el mecanismo único del producto: ${this.recortar(f.mecanismo, 150)}.`,
         );
         break;
- 
+
       case 'modouso':
         partes.push(
           `Genera una sección de Modo de Uso con 3 pasos numerados, basados en cómo el producto se convierte en la solución ideal: ${this.recortar(f.solucion, 200)}.`,
         );
         break;
- 
+
       case 'faq':
         partes.push(
           `Genera una sección de Preguntas Frecuentes con 3-4 pares pregunta/respuesta cortos, cubriendo: qué es el producto (${this.recortar(f.detallesProducto, 100)}), para quién es (${this.recortar(f.avatar, 100)}), y cómo funciona (${this.recortar(f.mecanismo, 100)}).`,
         );
         break;
- 
+
       case 'tabla':
         partes.push(
           `Genera una sección de Tabla Comparativa: "${f.nombreProducto}" contra la competencia genérica, resaltando las ventajas descritas en: ${this.recortar(f.solucion, 200)}.`,
         );
         break;
     }
- 
+
     if (f.instrucciones) {
       partes.push(`Instrucción adicional del usuario (aplica a esta y todas las secciones): ${f.instrucciones}`);
     }
- 
+
     partes.push(
       `Estilo publicitario profesional, tipografía legible y bien contrastada, texto sin errores ortográficos ni caracteres extraños.`,
     );
- 
+
     return partes.join(' ');
   }
- 
+
   private recortar(texto: string | undefined, max: number): string {
     if (!texto) return '';
     return texto.length > max ? texto.slice(0, max - 1) + '…' : texto;
   }
 }
- 
