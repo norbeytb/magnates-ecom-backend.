@@ -43,6 +43,7 @@ export interface FichaTecnica {
 export interface GenerarSeccionInput {
   seccion: string; // 'hero' | 'oferta' | 'logistica' | 'antesdespues' | 'beneficios' | 'tabla' | 'autoridad' | 'testimonios' | 'modouso' | 'faq'
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
+  plantillaReferenciaUrl?: string; // miniatura de la plantilla elegida en la Galería EcomMagic — mismo formato de imagen que imagenProductoUrl
   ficha: FichaTecnica;
   colorHex?: string; // color elegido en el selector "Color Predominante del fondo"
   numImagenes?: number;
@@ -73,12 +74,21 @@ export class ImageEditService {
       // subimos primero al storage de fal.ai y usamos la URL que nos regresa.
       const imagenUrl = await this.resolverImagenUrl(input.imagenProductoUrl);
 
+      // Si el taller mandó también la miniatura de la plantilla elegida, la
+      // subimos igual y la mandamos como PRIMERA imagen de referencia — así
+      // el modelo tiene la composición/layout real que debe imitar, no solo
+      // una descripción en texto de "genera una sección Hero".
+      const plantillaUrl = input.plantillaReferenciaUrl
+        ? await this.resolverImagenUrl(input.plantillaReferenciaUrl)
+        : null;
+      const imageUrls = plantillaUrl ? [plantillaUrl, imagenUrl] : [imagenUrl];
+
       // IMPORTANTE: 'openai/gpt-image-2' (sin /edit) es solo texto->imagen y
       // NO acepta image_urls. Para editar/generar usando la foto real del
       // producto como referencia hay que usar la variante /edit.
       const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
         input: {
-          image_urls: [imagenUrl],
+          image_urls: imageUrls,
           prompt,
           num_images: numImagenes,
           quality: 'high', // 'low' | 'medium' | 'high' — 'high' para la pieza final que se publica
@@ -136,9 +146,15 @@ export class ImageEditService {
     const f = input.ficha;
     const partes: string[] = [];
 
-    partes.push(
-      `Mantén el producto de la imagen de referencia exactamente igual — misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo.`,
-    );
+    if (input.plantillaReferenciaUrl) {
+      partes.push(
+        `Se te dan dos imágenes. La PRIMERA imagen es una plantilla de diseño de referencia: reproduce su misma composición exacta — disposición de los elementos, tamaños relativos, tipografía, jerarquía visual y estilo gráfico — como si fuera la plantilla/molde de esta pieza. La SEGUNDA imagen es el producto real que debes usar: consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) y colócalo en el lugar donde la plantilla tiene su producto. Todo el texto de la plantilla original debe reemplazarse por el contenido nuevo indicado abajo — no copies el texto de la plantilla.`,
+      );
+    } else {
+      partes.push(
+        `Mantén el producto de la imagen de referencia exactamente igual — misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo.`,
+      );
+    }
 
     if (input.colorHex) {
       partes.push(`Usa ${input.colorHex} como color predominante del fondo y los acentos visuales.`);
