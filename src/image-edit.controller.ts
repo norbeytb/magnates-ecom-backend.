@@ -29,6 +29,7 @@ interface LogisticaDto {
 interface GenerarSeccionDto {
   seccion: string;
   imagenProductoUrl: string;
+  plantillaReferenciaUrl?: string;
   colorHex?: string;
 
   // --- ficha técnica (misma estructura que el formulario del taller) ---
@@ -58,6 +59,7 @@ export class ImageEditController {
     return this.imageEditService.generarSeccion({
       seccion: dto.seccion,
       imagenProductoUrl: dto.imagenProductoUrl,
+      plantillaReferenciaUrl: dto.plantillaReferenciaUrl,
       colorHex: dto.colorHex,
       ficha: {
         nombreProducto: dto.nombreProducto,
