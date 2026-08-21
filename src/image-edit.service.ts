@@ -160,6 +160,14 @@ export class ImageEditService {
       partes.push(`Usa ${input.colorHex} como color predominante del fondo y los acentos visuales.`);
     }
 
+    // El ángulo de venta se define UNA vez al crear el producto/ficha (no por sección) y debe
+    // guiar el tono y mensaje de TODAS las secciones que se generen, no solo del Hero.
+    if (f.angulo) {
+      partes.push(
+        `Ten en cuenta este ángulo de venta como hilo conductor del mensaje de esta pieza${f.anguloNombre ? ` (ángulo "${f.anguloNombre}")` : ''}: ${this.recortar(f.angulo, 200)}.`,
+      );
+    }
+
     // Se aplica a CUALQUIER sección (no solo a una lista fija): si el usuario
     // definió características de personaje, se incluyen siempre que la
     // escena resultante muestre una persona — y esa persona debe ser nueva,
