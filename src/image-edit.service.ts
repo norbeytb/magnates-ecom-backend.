@@ -148,7 +148,7 @@ export class ImageEditService {
 
     if (input.plantillaReferenciaUrl) {
       partes.push(
-        `Se te dan dos imágenes. La PRIMERA imagen es una plantilla de diseño de referencia: reproduce su misma composición exacta — disposición de los elementos, tamaños relativos, tipografía, jerarquía visual y estilo gráfico — como si fuera la plantilla/molde de esta pieza. La SEGUNDA imagen es el producto real que debes usar: consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) y colócalo en el lugar donde la plantilla tiene su producto. Todo el texto de la plantilla original debe reemplazarse por el contenido nuevo indicado abajo — no copies el texto de la plantilla.`,
+        `Se te dan dos imágenes. La PRIMERA imagen es una plantilla de diseño de referencia: reproduce su misma composición exacta — disposición de los elementos, tamaños relativos, tipografía, jerarquía visual y estilo gráfico — como si fuera la plantilla/molde de esta pieza. La SEGUNDA imagen es el producto real que debes usar: consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) y colócalo en el lugar donde la plantilla tiene su producto. Todo el texto de la plantilla original debe reemplazarse por el contenido nuevo indicado abajo — no copies el texto de la plantilla. IMPORTANTE sobre personas: si en la plantilla de referencia aparece una persona o modelo, NO la copies ni la repitas en el resultado bajo ninguna circunstancia — debes generar una persona completamente distinta y nueva (rostro, cuerpo y apariencia diferentes a los de la plantilla), conservando únicamente la pose/composición general de la escena. Las características que debe tener esa persona nueva se indican más abajo si el usuario las especificó.`,
       );
     } else {
       partes.push(
@@ -160,8 +160,11 @@ export class ImageEditService {
       partes.push(`Usa ${input.colorHex} como color predominante del fondo y los acentos visuales.`);
     }
 
-    const seccionesConPersonaje = ['hero', 'antesdespues', 'testimonios', 'autoridad', 'modouso'];
-    if (seccionesConPersonaje.includes(input.seccion) && f.personajes) {
+    // Se aplica a CUALQUIER sección (no solo a una lista fija): si el usuario
+    // definió características de personaje, se incluyen siempre que la
+    // escena resultante muestre una persona — y esa persona debe ser nueva,
+    // nunca la misma que aparece en la imagen de plantilla de referencia.
+    if (f.personajes) {
       const p = f.personajes;
       const rasgos = [
         p.nacionalidad && p.nacionalidad !== 'Seleccionar...' ? `nacionalidad ${p.nacionalidad}` : null,
@@ -169,7 +172,9 @@ export class ImageEditService {
         p.edadDesde && p.edadHasta ? `entre ${p.edadDesde} y ${p.edadHasta} años` : null,
       ].filter(Boolean);
       if (rasgos.length) {
-        partes.push(`Incluye una persona con estas características: ${rasgos.join(', ')}, interactuando de forma natural con el producto.`);
+        partes.push(
+          `Si la escena incluye una persona, esa persona (nueva, distinta a la de la plantilla de referencia) debe tener EXACTAMENTE estas características: ${rasgos.join(', ')}. Debe interactuar de forma natural con el producto. No uses una persona con características diferentes a las indicadas.`,
+        );
       }
     }
 
