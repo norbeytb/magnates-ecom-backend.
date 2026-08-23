@@ -47,6 +47,7 @@ export interface GenerarSeccionInput {
   ficha: FichaTecnica;
   colorHex?: string; // color elegido en el selector "Color Predominante del fondo"
   numImagenes?: number;
+  calidad?: 'low' | 'medium' | 'high'; // por defecto 'low' — ver nota de costo en generarSeccion()
 }
 
 export interface GenerarSeccionResultado {
@@ -86,12 +87,29 @@ export class ImageEditService {
       // IMPORTANTE: 'openai/gpt-image-2' (sin /edit) es solo texto->imagen y
       // NO acepta image_urls. Para editar/generar usando la foto real del
       // producto como referencia hay que usar la variante /edit.
+      //
+      // ---- Nota de costo (importante, no bajar la guardia aquí) ----
+      // gpt-image-2/edit SIEMPRE procesa las imágenes de referencia (plantilla +
+      // producto) en alta fidelidad — ese parámetro (input_fidelity) viene fijo
+      // por el modelo y NO se puede bajar desde acá. Es decir: la única palanca
+      // real de costo que sí controlamos son 'quality' y 'image_size'.
+      //   - quality 'high'   → ~$0.15-0.21 por imagen  (evitar para uso normal)
+      //   - quality 'medium' → ~$0.04-0.06 por imagen  (sigue siendo caro a volumen)
+      //   - quality 'low'    → ~$0.011-0.015 por imagen (la que usamos por defecto)
+      // Con 'low' + tamaño 'landscape_4_3' (el tamaño más barato del tier bajo,
+      // ~$0.011/imagen) el promedio queda en ~$11 USD por cada 1000 imágenes —
+      // dentro del presupuesto de $15 USD/1000 imágenes mensuales que pidió el
+      // usuario, con margen. 'high' queda disponible a futuro solo para una
+      // exportación final puntual (pasando calidad:'high' desde el frontend),
+      // nunca como default.
+      const calidad = input.calidad ?? 'low';
       const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
         input: {
           image_urls: imageUrls,
           prompt,
           num_images: numImagenes,
-          quality: 'high', // 'low' | 'medium' | 'high' — 'high' para la pieza final que se publica
+          quality: calidad,
+          image_size: 'landscape_4_3', // tamaño más barato disponible; sirve bien para secciones de landing
         },
         logs: false,
       });
@@ -100,7 +118,7 @@ export class ImageEditService {
         (img: { url: string }) => img.url,
       );
 
-      const costoEstimadoUsd = numImagenes * this.costoPorCalidad('high');
+      const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
 
       return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
     } catch (error) {
@@ -133,8 +151,9 @@ export class ImageEditService {
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
-    // Precios de referencia (verificar tarifa vigente en fal.ai antes de facturar)
-    return { low: 0.006, medium: 0.041, high: 0.211 }[calidad];
+    // Precios de referencia para image_size 'landscape_4_3' (el que usamos por
+    // defecto arriba) — verificar tarifa vigente en fal.ai antes de facturar.
+    return { low: 0.011, medium: 0.043, high: 0.151 }[calidad];
   }
 
   /**
