@@ -97,14 +97,15 @@ export class ImageEditService {
       // una exportación final puntual (pasando calidad:'high' desde el frontend),
       // nunca como default.
       //
-      // 'image_size' se dejó SIN forzar (queda en 'auto', el default de fal): se
-      // probó fijarlo a 'landscape_4_3' para bajar costo un poco más, pero rompió
-      // la generación (422 Unprocessable Entity) en varias secciones — las piezas
-      // de este taller son verticales tipo teléfono, y forzar una relación de
-      // aspecto horizontal choca con las imágenes de referencia/producto que
-      // llegan en otra proporción. Si se quiere ese ahorro extra más adelante, hay
-      // que fijar un tamaño VERTICAL (ej. 'portrait_4_3'), nunca uno horizontal —
-      // y probarlo bien antes de dejarlo por defecto.
+      // 'image_size': se probó primero un tamaño horizontal ('landscape_4_3') para
+      // bajar costo, pero rompió la generación (422) en varias secciones porque las
+      // piezas de este taller son verticales tipo teléfono. Luego se probó dejarlo
+      // en 'auto' (el default de fal), pero eso dejó que fal eligiera un tamaño más
+      // corto/cuadrado que el marco vertical del taller — el resultado quedaba con
+      // contenido solo arriba y un espacio en blanco abajo (no cabía en el marco).
+      // Fijo ahora en 'portrait_16_9' (el preset vertical más alto disponible en el
+      // modelo): coincide con la proporción de teléfono que usa el taller para
+      // mostrar cada sección, así la imagen generada llena el marco completo.
       const calidad = input.calidad ?? 'low';
       const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
         input: {
@@ -112,6 +113,7 @@ export class ImageEditService {
           prompt,
           num_images: numImagenes,
           quality: calidad,
+          image_size: 'portrait_16_9',
         },
         logs: false,
       });
@@ -162,10 +164,9 @@ export class ImageEditService {
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
-    // Precios de referencia con image_size 'auto' (piezas verticales tipo teléfono,
-    // ~1024x1536) — verificar tarifa vigente en fal.ai antes de facturar. Es un
-    // estimado más alto que el de un tamaño horizontal forzado, pero ese tamaño
-    // horizontal rompía la generación (ver nota en generarSeccion()).
+    // Precios de referencia para image_size 'portrait_16_9' (~1024x1536, el
+    // vertical que usamos ahora) — verificar tarifa vigente en fal.ai antes de
+    // facturar. Con 'low' el promedio queda en ~$18 USD por cada 1000 imágenes.
     return { low: 0.018, medium: 0.054, high: 0.178 }[calidad];
   }
 
