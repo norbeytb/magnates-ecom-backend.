@@ -156,6 +156,19 @@ export class ImageEditService {
     return { low: 0.011, medium: 0.043, high: 0.151 }[calidad];
   }
 
+  private readonly ETIQUETAS_SECCION: Record<string, string> = {
+    hero: 'Hero (portada / titular principal)',
+    oferta: 'Oferta y Precios',
+    logistica: 'Logística / Envío y método de pago',
+    antesdespues: 'Antes y Después',
+    beneficios: 'Beneficios',
+    testimonios: 'Testimonios',
+    autoridad: 'Prueba de Autoridad',
+    modouso: 'Modo de Uso',
+    faq: 'Preguntas Frecuentes',
+    tabla: 'Tabla Comparativa',
+  };
+
   /**
    * Arma el prompt de edición según la sección elegida, incorporando SOLO
    * los campos de la ficha técnica que aplican a esa sección — así el
@@ -164,6 +177,15 @@ export class ImageEditService {
   private construirPrompt(input: GenerarSeccionInput): string {
     const f = input.ficha;
     const partes: string[] = [];
+    const etiquetaSeccion = this.ETIQUETAS_SECCION[input.seccion] || input.seccion;
+
+    // Directiva de apertura, deliberadamente lo primero que lee el modelo: fija
+    // el TIPO de sección antes que cualquier otra instrucción (plantilla, ángulo
+    // de venta, etc.) para evitar que el modelo "por defecto" arme un Hero/pieza
+    // de venta genérica cuando en realidad se pidió otra sección (ej. Logística).
+    partes.push(
+      `Vas a generar EXCLUSIVAMENTE la sección "${etiquetaSeccion}" de una landing page. Todo el contenido, mensaje y composición deben corresponder a ESE tipo de sección — por ejemplo, si es Logística/Envío no generes un titular de venta tipo Hero, y si es Testimonios no generes una tabla de precios. Las instrucciones específicas de esta sección están más abajo.`,
+    );
 
     if (input.plantillaReferenciaUrl) {
       partes.push(
@@ -180,10 +202,11 @@ export class ImageEditService {
     }
 
     // El ángulo de venta se define UNA vez al crear el producto/ficha (no por sección) y debe
-    // guiar el tono y mensaje de TODAS las secciones que se generen, no solo del Hero.
+    // guiar el TONO y mensaje de fondo de TODAS las secciones — pero es secundario al tipo de
+    // sección: no debe convertir una sección de Logística/Testimonios/Tabla, etc. en un Hero.
     if (f.angulo) {
       partes.push(
-        `Ten en cuenta este ángulo de venta como hilo conductor del mensaje de esta pieza${f.anguloNombre ? ` (ángulo "${f.anguloNombre}")` : ''}: ${this.recortar(f.angulo, 200)}.`,
+        `Ten en cuenta este ángulo de venta SOLO como tono/mensaje de fondo de la marca${f.anguloNombre ? ` (ángulo "${f.anguloNombre}")` : ''}: ${this.recortar(f.angulo, 200)}. No lo uses como titular ni conviertas esta pieza en un Hero de venta si el tipo de sección pedido es otro — el tipo de sección manda sobre el ángulo de venta.`,
       );
     }
 
@@ -226,13 +249,17 @@ export class ImageEditService {
         }
         break;
 
-      case 'logistica':
-        if (f.logistica) {
-          partes.push(
-            `Genera una sección de Logística/envío para ${f.logistica.pais || 'el país configurado'}, mostrando el método de pago "${f.logistica.metodoPago || 'Contra entrega'}" y transmitiendo confianza en la entrega.`,
-          );
-        }
+      case 'logistica': {
+        // f.logistica.pais puede traer el texto placeholder del selector ("Selecciona el
+        // país") si el usuario nunca lo tocó — filtrarlo para no meterle al modelo una
+        // instrucción rota tipo "envío para Selecciona el país".
+        const paisValido =
+          f.logistica?.pais && !/seleccion/i.test(f.logistica.pais) ? f.logistica.pais : null;
+        partes.push(
+          `Genera una sección de Logística/Envío: debe transmitir confianza en la entrega ${paisValido ? `hacia ${paisValido}` : 'a nivel nacional'}, mostrando el método de pago "${f.logistica?.metodoPago || 'Contra entrega'}". Usa iconografía y composición típica de envío/entrega (ej. caja, camión, mensajero, sello de garantía/confianza) — NO generes un titular de venta ni una tabla de precios, esta sección es sobre el envío, no sobre vender el producto.`,
+        );
         break;
+      }
 
       case 'antesdespues':
         partes.push(
@@ -280,6 +307,12 @@ export class ImageEditService {
     if (f.instrucciones) {
       partes.push(`Instrucción adicional del usuario (aplica a esta y todas las secciones): ${f.instrucciones}`);
     }
+
+    // Recordatorio de cierre (el modelo también pesa mucho lo último que lee): refuerza
+    // una vez más el tipo de sección para que no "derive" hacia un Hero genérico.
+    partes.push(
+      `Recuerda: el resultado final debe verse y sentirse como una sección de "${etiquetaSeccion}", no como una portada/Hero de venta directa, salvo que el tipo de sección pedido sea justamente ese.`,
+    );
 
     partes.push(
       `Estilo publicitario profesional, tipografía legible y bien contrastada, texto sin errores ortográficos ni caracteres extraños.`,
