@@ -121,13 +121,26 @@ export class ImageEditService {
         // que casi nunca dispara el filtro) — se pierde la copia exacta de composición,
         // pero el modelo igual tiene toda la descripción en texto de qué debe generar.
         if (this.esErrorDeContentChecker(error) && plantillaUrl) {
-          const imagenesUrl = await this.llamarFal([imagenUrl], prompt, numImagenes, calidad);
-          const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
-          return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+          try {
+            const imagenesUrl = await this.llamarFal([imagenUrl], prompt, numImagenes, calidad);
+            const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
+            return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+          } catch (segundoError) {
+            // Ni con plantilla NI sin ella pasó el filtro: ya no es la plantilla, es la
+            // foto del producto (o algo del texto) lo que lo dispara. Mensaje específico
+            // para que el usuario sepa exactamente qué probar, en vez del error crudo.
+            if (this.esErrorDeContentChecker(segundoError)) {
+              throw new InternalServerErrorException(
+                `La sección "${input.seccion}" quedó bloqueada por el filtro de contenido de OpenAI incluso SIN la plantilla de referencia (solo con la foto del producto) — así que no es la plantilla, es la foto del producto o el texto de la ficha. Prueba con otra foto del producto (ej. en maniquí, empacado, o sin una persona puesta) y vuelve a intentar.`,
+              );
+            }
+            throw segundoError;
+          }
         }
         throw error;
       }
     } catch (error) {
+      if (error instanceof InternalServerErrorException) throw error;
       throw new InternalServerErrorException(
         'No se pudo generar la sección con GPT Image 2: ' + this.extraerDetalleError(error),
       );
