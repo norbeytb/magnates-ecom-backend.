@@ -91,17 +91,20 @@ export class ImageEditService {
       // ---- Nota de costo (importante, no bajar la guardia aquí) ----
       // gpt-image-2/edit SIEMPRE procesa las imágenes de referencia (plantilla +
       // producto) en alta fidelidad — ese parámetro (input_fidelity) viene fijo
-      // por el modelo y NO se puede bajar desde acá. Es decir: la única palanca
-      // real de costo que sí controlamos son 'quality' y 'image_size'.
-      //   - quality 'high'   → ~$0.15-0.21 por imagen  (evitar para uso normal)
-      //   - quality 'medium' → ~$0.04-0.06 por imagen  (sigue siendo caro a volumen)
-      //   - quality 'low'    → ~$0.011-0.015 por imagen (la que usamos por defecto)
-      // Con 'low' + tamaño 'landscape_4_3' (el tamaño más barato del tier bajo,
-      // ~$0.011/imagen) el promedio queda en ~$11 USD por cada 1000 imágenes —
-      // dentro del presupuesto de $15 USD/1000 imágenes mensuales que pidió el
-      // usuario, con margen. 'high' queda disponible a futuro solo para una
-      // exportación final puntual (pasando calidad:'high' desde el frontend),
+      // por el modelo y NO se puede bajar desde acá. La palanca de costo que SÍ
+      // controlamos es 'quality' (por defecto 'low', ~4x más barato que 'medium'
+      // y ~10x más barato que 'high'). 'high' queda disponible a futuro solo para
+      // una exportación final puntual (pasando calidad:'high' desde el frontend),
       // nunca como default.
+      //
+      // 'image_size' se dejó SIN forzar (queda en 'auto', el default de fal): se
+      // probó fijarlo a 'landscape_4_3' para bajar costo un poco más, pero rompió
+      // la generación (422 Unprocessable Entity) en varias secciones — las piezas
+      // de este taller son verticales tipo teléfono, y forzar una relación de
+      // aspecto horizontal choca con las imágenes de referencia/producto que
+      // llegan en otra proporción. Si se quiere ese ahorro extra más adelante, hay
+      // que fijar un tamaño VERTICAL (ej. 'portrait_4_3'), nunca uno horizontal —
+      // y probarlo bien antes de dejarlo por defecto.
       const calidad = input.calidad ?? 'low';
       const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
         input: {
@@ -109,7 +112,6 @@ export class ImageEditService {
           prompt,
           num_images: numImagenes,
           quality: calidad,
-          image_size: 'landscape_4_3', // tamaño más barato disponible; sirve bien para secciones de landing
         },
         logs: false,
       });
@@ -122,8 +124,17 @@ export class ImageEditService {
 
       return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
     } catch (error) {
+      // Sacar el detalle real del error de validación de fal.ai (no solo "Unprocessable
+      // Entity" genérico) — el SDK de fal suele traer el motivo exacto en error.body.detail.
+      const err = error as any;
+      const detalle =
+        (Array.isArray(err?.body?.detail)
+          ? err.body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+          : err?.body?.detail) ||
+        err?.message ||
+        String(error);
       throw new InternalServerErrorException(
-        'No se pudo generar la sección con GPT Image 2: ' + (error as Error).message,
+        'No se pudo generar la sección con GPT Image 2: ' + detalle,
       );
     }
   }
@@ -151,9 +162,11 @@ export class ImageEditService {
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
-    // Precios de referencia para image_size 'landscape_4_3' (el que usamos por
-    // defecto arriba) — verificar tarifa vigente en fal.ai antes de facturar.
-    return { low: 0.011, medium: 0.043, high: 0.151 }[calidad];
+    // Precios de referencia con image_size 'auto' (piezas verticales tipo teléfono,
+    // ~1024x1536) — verificar tarifa vigente en fal.ai antes de facturar. Es un
+    // estimado más alto que el de un tamaño horizontal forzado, pero ese tamaño
+    // horizontal rompía la generación (ver nota en generarSeccion()).
+    return { low: 0.018, medium: 0.054, high: 0.178 }[calidad];
   }
 
   private readonly ETIQUETAS_SECCION: Record<string, string> = {
