@@ -44,8 +44,10 @@ Significado de cada clave:
 - problema: el problema específico que resuelve y cómo lo vive el cliente hoy.
 - avatar: el público objetivo ideal (edad, intereses, comportamiento).
 - resultado: el resultado final y transformación que el cliente busca.
-- solucion: por qué este producto es la solución ideal frente a otras alternativas.
-- mecanismo: el mecanismo único o diferenciador frente a la competencia.`;
+- solucion: por qué este producto es la solución ideal frente a otras alternativas (alternativas de PRODUCTO, ej. otras marcas o métodos caseros — nunca alternativas médicas, ver regla abajo).
+- mecanismo: el mecanismo único o diferenciador frente a la competencia.
+
+REGLA IMPORTANTE (aplica a las 6 claves, especialmente para productos de belleza/moda/salud/fitness): este texto se usa después para generar imágenes con IA, y cualquier mención a cirugía, procedimientos médicos/quirúrgicos, tratamientos clínicos, riesgos de salud, o comparaciones tipo "sin cirugía"/"sin necesidad de operarte" hace que la generación de imagen se bloquee por filtros de contenido. NUNCA menciones cirugía, procedimientos quirúrgicos/médicos, ni riesgos de salud, ni siquiera para decir que el producto es la alternativa segura o más rápida. Describe el producto solo por sus beneficios directos (comodidad, estilo, practicidad, apariencia, confianza), nunca comparándolo con un procedimiento médico.`;
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 
