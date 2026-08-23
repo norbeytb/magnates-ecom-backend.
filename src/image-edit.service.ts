@@ -10,6 +10,7 @@
 
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { fal } from '@fal-ai/client';
+import { HistorialService } from './historial.service';
 
 export interface FichaTecnica {
   nombreProducto: string;
@@ -58,7 +59,7 @@ export interface GenerarSeccionResultado {
 
 @Injectable()
 export class ImageEditService {
-  constructor() {
+  constructor(private readonly historialService: HistorialService) {
     fal.config({
       credentials: process.env.FAL_API_KEY, // nunca hardcodear, nunca enviar al frontend
     });
@@ -110,8 +111,7 @@ export class ImageEditService {
 
       try {
         const imagenesUrl = await this.llamarFal(imageUrls, prompt, numImagenes, calidad);
-        const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
-        return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+        return this.exito(imagenesUrl, prompt, calidad, numImagenes, input);
       } catch (error) {
         // El filtro de contenido de OpenAI revisa TANTO el texto como las imágenes que
         // le mandamos. Muchas plantillas de este catálogo (fotos de personas en ropa
@@ -123,8 +123,7 @@ export class ImageEditService {
         if (this.esErrorDeContentChecker(error) && plantillaUrl) {
           try {
             const imagenesUrl = await this.llamarFal([imagenUrl], prompt, numImagenes, calidad);
-            const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
-            return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+            return this.exito(imagenesUrl, prompt, calidad, numImagenes, input);
           } catch (segundoError) {
             // Ni con plantilla NI sin ella pasó el filtro: ya no es la plantilla, es la
             // foto del producto (o algo del texto) lo que lo dispara. Mensaje específico
@@ -145,6 +144,27 @@ export class ImageEditService {
         'No se pudo generar la sección con GPT Image 2: ' + this.extraerDetalleError(error),
       );
     }
+  }
+
+  // Arma el resultado final y guarda el historial en PostgreSQL — sin bloquear
+  // la respuesta al taller: si guardar el historial falla, no debe tumbar la
+  // generación (el usuario ya tiene su imagen, eso es lo importante).
+  private exito(
+    imagenesUrl: string[],
+    prompt: string,
+    calidad: 'low' | 'medium' | 'high',
+    numImagenes: number,
+    input: GenerarSeccionInput,
+  ): GenerarSeccionResultado {
+    const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
+    this.historialService.guardar({
+      nombreProducto: input.ficha.nombreProducto,
+      seccion: input.seccion,
+      imagenUrl: imagenesUrl[0] || '',
+      promptUsado: prompt,
+      costoEstimadoUsd,
+    });
+    return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
   }
 
   private async llamarFal(
