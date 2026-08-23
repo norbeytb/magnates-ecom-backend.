@@ -107,38 +107,69 @@ export class ImageEditService {
       // modelo): coincide con la proporción de teléfono que usa el taller para
       // mostrar cada sección, así la imagen generada llena el marco completo.
       const calidad = input.calidad ?? 'low';
-      const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
-        input: {
-          image_urls: imageUrls,
-          prompt,
-          num_images: numImagenes,
-          quality: calidad,
-          image_size: 'portrait_16_9',
-        },
-        logs: false,
-      });
 
-      const imagenesUrl = (resultado.data.images ?? []).map(
-        (img: { url: string }) => img.url,
-      );
-
-      const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
-
-      return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+      try {
+        const imagenesUrl = await this.llamarFal(imageUrls, prompt, numImagenes, calidad);
+        const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
+        return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+      } catch (error) {
+        // El filtro de contenido de OpenAI revisa TANTO el texto como las imágenes que
+        // le mandamos. Muchas plantillas de este catálogo (fotos de personas en ropa
+        // ajustada, torsos descubiertos, etc.) lo disparan aunque el texto sea neutro —
+        // no es algo que podamos desactivar. Si la imagen de plantilla de referencia fue
+        // la causa, reintentamos UNA vez sin ella (solo con la foto real del producto,
+        // que casi nunca dispara el filtro) — se pierde la copia exacta de composición,
+        // pero el modelo igual tiene toda la descripción en texto de qué debe generar.
+        if (this.esErrorDeContentChecker(error) && plantillaUrl) {
+          const imagenesUrl = await this.llamarFal([imagenUrl], prompt, numImagenes, calidad);
+          const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
+          return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
+        }
+        throw error;
+      }
     } catch (error) {
-      // Sacar el detalle real del error de validación de fal.ai (no solo "Unprocessable
-      // Entity" genérico) — el SDK de fal suele traer el motivo exacto en error.body.detail.
-      const err = error as any;
-      const detalle =
-        (Array.isArray(err?.body?.detail)
-          ? err.body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
-          : err?.body?.detail) ||
-        err?.message ||
-        String(error);
       throw new InternalServerErrorException(
-        'No se pudo generar la sección con GPT Image 2: ' + detalle,
+        'No se pudo generar la sección con GPT Image 2: ' + this.extraerDetalleError(error),
       );
     }
+  }
+
+  private async llamarFal(
+    imageUrls: string[],
+    prompt: string,
+    numImagenes: number,
+    calidad: 'low' | 'medium' | 'high',
+  ): Promise<string[]> {
+    const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
+      input: {
+        image_urls: imageUrls,
+        prompt,
+        num_images: numImagenes,
+        quality: calidad,
+        image_size: 'portrait_16_9',
+      },
+      logs: false,
+    });
+    return (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+  }
+
+  // Sacar el detalle real del error de validación/moderación de fal.ai (no solo
+  // "Unprocessable Entity" genérico) — el SDK de fal suele traer el motivo exacto
+  // en error.body.detail.
+  private extraerDetalleError(error: unknown): string {
+    const err = error as any;
+    return (
+      (Array.isArray(err?.body?.detail)
+        ? err.body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+        : err?.body?.detail) ||
+      err?.message ||
+      String(error)
+    );
+  }
+
+  private esErrorDeContentChecker(error: unknown): boolean {
+    const detalle = this.extraerDetalleError(error).toLowerCase();
+    return detalle.includes('content checker') || detalle.includes('flagged');
   }
 
   /**
