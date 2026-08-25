@@ -44,7 +44,8 @@ export interface FichaTecnica {
 export interface GenerarSeccionInput {
   seccion: string; // 'hero' | 'oferta' | 'logistica' | 'antesdespues' | 'beneficios' | 'tabla' | 'autoridad' | 'testimonios' | 'modouso' | 'faq'
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
-  plantillaReferenciaUrl?: string; // miniatura de la plantilla elegida en la Galería EcomMagic — mismo formato de imagen que imagenProductoUrl
+  plantillaReferenciaUrl?: string; // YA NO SE USA para generar (ver nota de costo abajo) — se deja en la interfaz solo por compatibilidad con llamadas viejas, se ignora.
+  plantillaDescripcion?: string; // descripción en texto del layout/composición de la plantilla elegida en la galería — reemplaza a la imagen de la plantilla como referencia
   ficha: FichaTecnica;
   colorHex?: string; // color elegido en el selector "Color Predominante del fondo"
   numImagenes?: number;
@@ -76,27 +77,32 @@ export class ImageEditService {
       // subimos primero al storage de fal.ai y usamos la URL que nos regresa.
       const imagenUrl = await this.resolverImagenUrl(input.imagenProductoUrl);
 
-      // Si el taller mandó también la miniatura de la plantilla elegida, la
-      // subimos igual y la mandamos como PRIMERA imagen de referencia — así
-      // el modelo tiene la composición/layout real que debe imitar, no solo
-      // una descripción en texto de "genera una sección Hero".
-      const plantillaUrl = input.plantillaReferenciaUrl
-        ? await this.resolverImagenUrl(input.plantillaReferenciaUrl)
-        : null;
-      const imageUrls = plantillaUrl ? [plantillaUrl, imagenUrl] : [imagenUrl];
+      // ---- Nota de costo (importante, no bajar la guardia aquí) ----
+      // Antes se mandaba TAMBIÉN la miniatura de la plantilla elegida como
+      // segunda imagen de referencia, para que el modelo copiara su
+      // composición exacta. Se quitó a propósito: gpt-image-2/edit procesa
+      // CADA imagen de referencia en alta fidelidad (input_fidelity fijo,
+      // no configurable) — mandar 2 imágenes en vez de 1 cuesta más, y
+      // además muchas plantillas del catálogo (personas con ropa ajustada,
+      // torsos descubiertos, etc.) disparaban el filtro de contenido de
+      // OpenAI aunque el texto fuera neutro. Ahora solo se manda la foto
+      // real del producto como imagen de referencia; la composición de la
+      // plantilla elegida se describe en TEXTO (input.plantillaDescripcion,
+      // generada una sola vez por plantilla y cacheada en el frontend) y se
+      // incorpora al prompt en construirPrompt() — el usuario sigue viendo
+      // y eligiendo la plantilla igual que antes, solo cambió qué se le
+      // manda a la IA para generar.
+      const imageUrls = [imagenUrl];
 
       // IMPORTANTE: 'openai/gpt-image-2' (sin /edit) es solo texto->imagen y
       // NO acepta image_urls. Para editar/generar usando la foto real del
       // producto como referencia hay que usar la variante /edit.
       //
-      // ---- Nota de costo (importante, no bajar la guardia aquí) ----
-      // gpt-image-2/edit SIEMPRE procesa las imágenes de referencia (plantilla +
-      // producto) en alta fidelidad — ese parámetro (input_fidelity) viene fijo
-      // por el modelo y NO se puede bajar desde acá. La palanca de costo que SÍ
-      // controlamos es 'quality' (por defecto 'low', ~4x más barato que 'medium'
-      // y ~10x más barato que 'high'). 'high' queda disponible a futuro solo para
-      // una exportación final puntual (pasando calidad:'high' desde el frontend),
-      // nunca como default.
+      // La palanca de costo que SÍ controlamos es 'quality' (por defecto
+      // 'low', ~4x más barato que 'medium' y ~10x más barato que 'high').
+      // 'high' queda disponible a futuro solo para una exportación final
+      // puntual (pasando calidad:'high' desde el frontend), nunca como
+      // default.
       //
       // 'image_size': se probó primero un tamaño horizontal ('landscape_4_3') para
       // bajar costo, pero rompió la generación (422) en varias secciones porque las
@@ -113,28 +119,15 @@ export class ImageEditService {
         const imagenesUrl = await this.llamarFal(imageUrls, prompt, numImagenes, calidad);
         return this.exito(imagenesUrl, prompt, calidad, numImagenes, input);
       } catch (error) {
-        // El filtro de contenido de OpenAI revisa TANTO el texto como las imágenes que
-        // le mandamos. Muchas plantillas de este catálogo (fotos de personas en ropa
-        // ajustada, torsos descubiertos, etc.) lo disparan aunque el texto sea neutro —
-        // no es algo que podamos desactivar. Si la imagen de plantilla de referencia fue
-        // la causa, reintentamos UNA vez sin ella (solo con la foto real del producto,
-        // que casi nunca dispara el filtro) — se pierde la copia exacta de composición,
-        // pero el modelo igual tiene toda la descripción en texto de qué debe generar.
-        if (this.esErrorDeContentChecker(error) && plantillaUrl) {
-          try {
-            const imagenesUrl = await this.llamarFal([imagenUrl], prompt, numImagenes, calidad);
-            return this.exito(imagenesUrl, prompt, calidad, numImagenes, input);
-          } catch (segundoError) {
-            // Ni con plantilla NI sin ella pasó el filtro: ya no es la plantilla, es la
-            // foto del producto (o algo del texto) lo que lo dispara. Mensaje específico
-            // para que el usuario sepa exactamente qué probar, en vez del error crudo.
-            if (this.esErrorDeContentChecker(segundoError)) {
-              throw new InternalServerErrorException(
-                `La sección "${input.seccion}" quedó bloqueada por el filtro de contenido de OpenAI incluso SIN la plantilla de referencia (solo con la foto del producto) — así que no es la plantilla, es la foto del producto o el texto de la ficha. Prueba con otra foto del producto (ej. en maniquí, empacado, o sin una persona puesta) y vuelve a intentar.`,
-              );
-            }
-            throw segundoError;
-          }
+        // El filtro de contenido de OpenAI revisa TANTO el texto como la foto del
+        // producto que le mandamos. Ya no mandamos la imagen de la plantilla (ver
+        // nota arriba), así que si esto se dispara, es la foto del producto o el
+        // texto de la ficha — no hay una segunda llamada más barata que intentar,
+        // así que se avisa directo con un mensaje específico.
+        if (this.esErrorDeContentChecker(error)) {
+          throw new InternalServerErrorException(
+            `La sección "${input.seccion}" quedó bloqueada por el filtro de contenido de OpenAI — la causa es la foto del producto o el texto de la ficha. Prueba con otra foto del producto (ej. en maniquí, empacado, o sin una persona puesta) y vuelve a intentar.`,
+          );
         }
         throw error;
       }
@@ -229,8 +222,14 @@ export class ImageEditService {
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
     // Precios de referencia para image_size 'portrait_16_9' (~1024x1536, el
-    // vertical que usamos ahora) — verificar tarifa vigente en fal.ai antes de
-    // facturar. Con 'low' el promedio queda en ~$18 USD por cada 1000 imágenes.
+    // vertical que usamos ahora), basados en la tabla de fal.ai por tamaño de
+    // salida — NO incluyen el costo aparte de las imágenes de referencia que
+    // se procesan en alta fidelidad (eso no lo publica fal.ai con un número
+    // fijo). Desde que se dejó de mandar la plantilla como segunda imagen
+    // (ahora solo se manda la foto del producto), el costo real por pieza
+    // debería bajar frente a como estaba antes — hay que confirmar la cifra
+    // real revisando el "Estimated spend" del dashboard de fal.ai después de
+    // generar un lote, no solo confiar en este número de referencia.
     return { low: 0.018, medium: 0.054, high: 0.178 }[calidad];
   }
 
@@ -265,13 +264,13 @@ export class ImageEditService {
       `Vas a generar EXCLUSIVAMENTE la sección "${etiquetaSeccion}" de una landing page. Todo el contenido, mensaje y composición deben corresponder a ESE tipo de sección — por ejemplo, si es Logística/Envío no generes un titular de venta tipo Hero, y si es Testimonios no generes una tabla de precios. Las instrucciones específicas de esta sección están más abajo.`,
     );
 
-    if (input.plantillaReferenciaUrl) {
+    partes.push(
+      `Se te da UNA imagen: el producto real que debes usar. Consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) e intégralo de forma natural en la composición que armes.`,
+    );
+
+    if (input.plantillaDescripcion) {
       partes.push(
-        `Se te dan dos imágenes. La PRIMERA imagen es una plantilla de diseño de referencia: reproduce su misma composición exacta — disposición de los elementos, tamaños relativos, tipografía, jerarquía visual y estilo gráfico — como si fuera la plantilla/molde de esta pieza. La SEGUNDA imagen es el producto real que debes usar: consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) y colócalo en el lugar donde la plantilla tiene su producto. Todo el texto de la plantilla original debe reemplazarse por el contenido nuevo indicado abajo — no copies el texto de la plantilla. IMPORTANTE sobre personas: si en la plantilla de referencia aparece una persona o modelo, NO la copies ni la repitas en el resultado bajo ninguna circunstancia — debes generar una persona completamente distinta y nueva (rostro, cuerpo y apariencia diferentes a los de la plantilla), conservando únicamente la pose/composición general de la escena. Las características que debe tener esa persona nueva se indican más abajo si el usuario las especificó.`,
-      );
-    } else {
-      partes.push(
-        `Mantén el producto de la imagen de referencia exactamente igual — misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo.`,
+        `No tienes la imagen de la plantilla de referencia que el usuario eligió como inspiración de diseño, pero aquí tienes su descripción de composición/layout — úsala como guía de cómo distribuir los elementos visuales de esta pieza (no es obligatorio copiarla al pixel, es una referencia de estructura): "${input.plantillaDescripcion}". Arma la composición final inspirado en esa estructura, pero con el producto real y el contenido de texto de esta sección — nunca copies frases ni marcas mencionadas en la descripción, solo la disposición visual.`,
       );
     }
 
@@ -290,8 +289,7 @@ export class ImageEditService {
 
     // Se aplica a CUALQUIER sección (no solo a una lista fija): si el usuario
     // definió características de personaje, se incluyen siempre que la
-    // escena resultante muestre una persona — y esa persona debe ser nueva,
-    // nunca la misma que aparece en la imagen de plantilla de referencia.
+    // escena resultante muestre una persona.
     if (f.personajes) {
       const p = f.personajes;
       const rasgos = [
@@ -301,7 +299,7 @@ export class ImageEditService {
       ].filter(Boolean);
       if (rasgos.length) {
         partes.push(
-          `Si la escena incluye una persona, esa persona (nueva, distinta a la de la plantilla de referencia) debe tener EXACTAMENTE estas características: ${rasgos.join(', ')}. Debe interactuar de forma natural con el producto. No uses una persona con características diferentes a las indicadas.`,
+          `Si la escena incluye una persona, esa persona debe tener EXACTAMENTE estas características: ${rasgos.join(', ')}. Debe interactuar de forma natural con el producto. No uses una persona con características diferentes a las indicadas.`,
         );
       }
     }
