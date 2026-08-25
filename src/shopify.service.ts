@@ -1,7 +1,10 @@
 // shopify.service.ts
 //
-// Publica una landing ensamblada (una lista de imágenes ya generadas) como
-// una Página (Page) en la tienda de Shopify del cliente, usando la Admin API.
+// Publica una landing ensamblada (una lista de imágenes ya generadas) como un
+// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API: las
+// imágenes de la landing quedan como galería/descripción del producto, y el
+// precio se toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya
+// llenó en el taller.
 //
 // Shopify cambió su forma de dar acceso: ya no se puede crear una app
 // personalizada directamente en el admin y copiar un token fijo (shpat_...).
@@ -17,8 +20,10 @@
 //   SHOPIFY_CLIENT_ID       -> Client ID de la app, desde Dev Dashboard → tu app → Configuración
 //   SHOPIFY_CLIENT_SECRET   -> Client secret de la misma pantalla
 //
+// La app en el Dev Dashboard necesita los alcances (scopes): read_products,write_products
+//
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
-// la página ya creada en vez de duplicarla: se identifica por un "handle" fijo.
+// el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
 
 import { Injectable, Logger } from '@nestjs/common';
 
@@ -26,6 +31,8 @@ export interface PublicarLandingInput {
   nombreProducto: string;
   landingNum: number;
   imagenes: string[];
+  precio?: string | number;
+  precioComparacion?: string | number;
 }
 
 export interface PublicarLandingResultado {
@@ -106,6 +113,19 @@ export class ShopifyService {
     return `<div style="max-width:480px; margin:0 auto;">\n${imgsHtml}\n</div>`;
   }
 
+  // Precio principal del producto: siempre devuelve un número válido en texto
+  // (Shopify requiere un precio en la variante); si no hay dato usable, cae en "0.00".
+  private normalizarPrecio(valor?: string | number): string {
+    const n = typeof valor === 'number' ? valor : parseFloat(String(valor ?? '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n.toFixed(2) : '0.00';
+  }
+
+  // Precio de comparación (el tachado): opcional, se omite si no viene un número válido.
+  private normalizarPrecioOpcional(valor?: string | number): string | undefined {
+    const n = typeof valor === 'number' ? valor : parseFloat(String(valor ?? '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n.toFixed(2) : undefined;
+  }
+
   async publicarLanding(input: PublicarLandingInput): Promise<PublicarLandingResultado> {
     if (!this.configurado()) {
       throw new Error(
@@ -122,42 +142,64 @@ export class ShopifyService {
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
     const bodyHtml = this.construirHtml(input.imagenes);
+    const images = input.imagenes.map((src) => ({ src }));
+    const precio = this.normalizarPrecio(input.precio);
+    const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
     const headers = await this.headers();
 
-    // Busca si ya existe una página con este handle, para actualizarla en vez de duplicar.
-    const buscar = await fetch(`${this.baseUrl()}/pages.json?handle=${encodeURIComponent(handle)}&limit=1`, {
+    // Busca si ya existe un producto con este handle, para actualizarlo en vez de duplicar.
+    const buscar = await fetch(`${this.baseUrl()}/products.json?handle=${encodeURIComponent(handle)}&limit=1`, {
       headers,
     });
     if (!buscar.ok) {
       throw new Error(`No se pudo consultar Shopify (HTTP ${buscar.status}): ${await buscar.text()}`);
     }
     const buscarJson: any = await buscar.json();
-    const existente = buscarJson?.pages?.[0];
+    const existente = buscarJson?.products?.[0];
 
     if (existente) {
-      const actualizar = await fetch(`${this.baseUrl()}/pages/${existente.id}.json`, {
+      const varianteId = existente.variants?.[0]?.id;
+      const actualizar = await fetch(`${this.baseUrl()}/products/${existente.id}.json`, {
         method: 'PUT',
         headers,
-        body: JSON.stringify({ page: { id: existente.id, title: titulo, body_html: bodyHtml, published: true } }),
+        body: JSON.stringify({
+          product: {
+            id: existente.id,
+            title: titulo,
+            body_html: bodyHtml,
+            images,
+            status: 'active',
+            variants: varianteId ? [{ id: varianteId, price: precio, compare_at_price: precioComparacion ?? null }] : undefined,
+          },
+        }),
       });
       if (!actualizar.ok) {
-        throw new Error(`No se pudo actualizar la página en Shopify (HTTP ${actualizar.status}): ${await actualizar.text()}`);
+        throw new Error(`No se pudo actualizar el producto en Shopify (HTTP ${actualizar.status}): ${await actualizar.text()}`);
       }
       const json: any = await actualizar.json();
-      this.logger.log(`Página de Shopify actualizada: ${json.page.handle}`);
-      return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/pages/${json.page.handle}`, handle: json.page.handle, creada: false };
+      this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
+      return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
     }
 
-    const crear = await fetch(`${this.baseUrl()}/pages.json`, {
+    const crear = await fetch(`${this.baseUrl()}/products.json`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ page: { title: titulo, handle, body_html: bodyHtml, published: true } }),
+      body: JSON.stringify({
+        product: {
+          title: titulo,
+          handle,
+          body_html: bodyHtml,
+          images,
+          status: 'active',
+          variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
+        },
+      }),
     });
     if (!crear.ok) {
-      throw new Error(`No se pudo crear la página en Shopify (HTTP ${crear.status}): ${await crear.text()}`);
+      throw new Error(`No se pudo crear el producto en Shopify (HTTP ${crear.status}): ${await crear.text()}`);
     }
     const json: any = await crear.json();
-    this.logger.log(`Página de Shopify creada: ${json.page.handle}`);
-    return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/pages/${json.page.handle}`, handle: json.page.handle, creada: true };
+    this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
+    return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: true };
   }
 }
