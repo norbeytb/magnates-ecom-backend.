@@ -8,9 +8,11 @@ import { TextGenerationController } from './text-generation.controller';
 import { TextGenerationService } from './text-generation.service';
 import { HistorialController } from './historial.controller';
 import { HistorialService } from './historial.service';
+import { ShopifyController } from './shopify.controller';
+import { ShopifyService } from './shopify.service';
 
 @Module({
-  controllers: [ImageEditController, TextGenerationController, HistorialController],
-  providers: [ImageEditService, TextGenerationService, HistorialService],
+  controllers: [ImageEditController, TextGenerationController, HistorialController, ShopifyController],
+  providers: [ImageEditService, TextGenerationService, HistorialService, ShopifyService],
 })
 export class AppModule {}
