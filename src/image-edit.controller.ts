@@ -30,7 +30,9 @@ interface GenerarSeccionDto {
   seccion: string;
   imagenProductoUrl: string;
   plantillaReferenciaUrl?: string;
+  plantillaDescripcion?: string;
   colorHex?: string;
+  calidad?: 'low' | 'medium' | 'high';
 
   // --- ficha técnica (misma estructura que el formulario del taller) ---
   nombreProducto: string;
@@ -60,7 +62,9 @@ export class ImageEditController {
       seccion: dto.seccion,
       imagenProductoUrl: dto.imagenProductoUrl,
       plantillaReferenciaUrl: dto.plantillaReferenciaUrl,
+      plantillaDescripcion: dto.plantillaDescripcion,
       colorHex: dto.colorHex,
+      calidad: dto.calidad,
       ficha: {
         nombreProducto: dto.nombreProducto,
         detallesProducto: dto.detallesProducto,
