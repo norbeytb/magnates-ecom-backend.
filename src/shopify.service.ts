@@ -97,6 +97,21 @@ export class ShopifyService {
     };
   }
 
+  // Llama a la Admin API con el token cacheado. Si Shopify responde 401 (token
+  // inválido — por ejemplo porque la app se reinstaló o el secreto se rotó
+  // después de haber cacheado un token), descarta el token en memoria y
+  // reintenta UNA vez con uno recién pedido, para que el usuario no tenga que
+  // reiniciar el backend a mano cada vez que eso pase.
+  private async llamarShopify(path: string, opciones: RequestInit = {}, reintentando = false): Promise<Response> {
+    const headers = await this.headers();
+    const resp = await fetch(`${this.baseUrl()}${path}`, { ...opciones, headers: { ...headers, ...(opciones.headers as Record<string, string> | undefined) } });
+    if (resp.status === 401 && !reintentando) {
+      this.tokenEnCache = null;
+      return this.llamarShopify(path, opciones, true);
+    }
+    return resp;
+  }
+
   private slugify(texto: string): string {
     return (texto || '')
       .toLowerCase()
@@ -145,12 +160,9 @@ export class ShopifyService {
     const images = input.imagenes.map((src) => ({ src }));
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
-    const headers = await this.headers();
 
     // Busca si ya existe un producto con este handle, para actualizarlo en vez de duplicar.
-    const buscar = await fetch(`${this.baseUrl()}/products.json?handle=${encodeURIComponent(handle)}&limit=1`, {
-      headers,
-    });
+    const buscar = await this.llamarShopify(`/products.json?handle=${encodeURIComponent(handle)}&limit=1`);
     if (!buscar.ok) {
       throw new Error(`No se pudo consultar Shopify (HTTP ${buscar.status}): ${await buscar.text()}`);
     }
@@ -159,9 +171,8 @@ export class ShopifyService {
 
     if (existente) {
       const varianteId = existente.variants?.[0]?.id;
-      const actualizar = await fetch(`${this.baseUrl()}/products/${existente.id}.json`, {
+      const actualizar = await this.llamarShopify(`/products/${existente.id}.json`, {
         method: 'PUT',
-        headers,
         body: JSON.stringify({
           product: {
             id: existente.id,
@@ -181,9 +192,8 @@ export class ShopifyService {
       return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
     }
 
-    const crear = await fetch(`${this.baseUrl()}/products.json`, {
+    const crear = await this.llamarShopify('/products.json', {
       method: 'POST',
-      headers,
       body: JSON.stringify({
         product: {
           title: titulo,
