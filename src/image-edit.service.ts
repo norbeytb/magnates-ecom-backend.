@@ -156,6 +156,7 @@ export class ImageEditService {
       imagenUrl: imagenesUrl[0] || '',
       promptUsado: prompt,
       costoEstimadoUsd,
+      fichaJson: input.ficha,
     });
     return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
   }
