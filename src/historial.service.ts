@@ -15,6 +15,7 @@ export interface RegistroHistorial {
   promptUsado: string;
   costoEstimadoUsd: number;
   fichaJson?: unknown;
+  fotoProductoUrl?: string;
 }
 
 @Injectable()
@@ -48,6 +49,9 @@ export class HistorialService implements OnModuleInit {
       await this.pool.query(`
         ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS ficha_json JSONB;
       `);
+      await this.pool.query(`
+        ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS foto_producto_url TEXT;
+      `);
       this.logger.log('Conectado a PostgreSQL — tabla "generaciones" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de historial: ' + (error as Error).message);
@@ -61,8 +65,8 @@ export class HistorialService implements OnModuleInit {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json, foto_producto_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           registro.nombreProducto,
           registro.seccion,
@@ -70,6 +74,7 @@ export class HistorialService implements OnModuleInit {
           registro.promptUsado,
           registro.costoEstimadoUsd,
           registro.fichaJson ? JSON.stringify(registro.fichaJson) : null,
+          registro.fotoProductoUrl || null,
         ],
       );
     } catch (error) {
