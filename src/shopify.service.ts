@@ -24,6 +24,17 @@
 //
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
 // el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
+//
+// IMPORTANTE — plantilla "landing" en el tema:
+// Cada producto se crea/actualiza con template_suffix: 'landing', para que use
+// una plantilla alterna del tema (product.landing.json) en vez de la plantilla
+// normal de producto. Esa plantilla alterna hay que crearla UNA sola vez desde
+// el editor del tema (Personalizar), quitándole los bloques de Título, Precio,
+// Galería de imágenes y Reseñas — así esos datos no se duplican en pantalla,
+// porque ya están dibujados dentro de las imágenes de la landing. El botón de
+// Comprar (Agregar al carrito / Comprar ahora) se deja para que se pueda vender.
+// Los productos normales de la tienda (los que no vienen del taller) siguen
+// usando la plantilla por defecto sin tocar nada.
 
 import { Injectable, Logger } from '@nestjs/common';
 
@@ -121,11 +132,16 @@ export class ShopifyService {
       .replace(/^-+|-+$/g, '') || 'producto';
   }
 
+  // Las imágenes deben verse a pantalla completa (ancho total del navegador),
+  // una debajo de otra sin espacios ni recortes, sin importar qué tan angosto
+  // sea el contenedor de la página/producto en el tema. El truco
+  // "width:100vw; margin-left:calc(50% - 50vw)" saca el bloque de cualquier
+  // caja con max-width que le ponga el tema alrededor.
   private construirHtml(imagenes: string[]): string {
     const imgsHtml = imagenes
-      .map((url) => `<img src="${url}" alt="" style="width:100%; max-width:480px; display:block; margin:0 auto;">`)
-      .join('\n');
-    return `<div style="max-width:480px; margin:0 auto;">\n${imgsHtml}\n</div>`;
+      .map((url) => `<img src="${url}" alt="" style="display:block; width:100%; margin:0; padding:0; border:0;">`)
+      .join('');
+    return `<div style="width:100vw; margin-left:calc(50% - 50vw); margin-right:calc(50% - 50vw); padding:0; line-height:0; font-size:0;">${imgsHtml}</div>`;
   }
 
   // Precio principal del producto: siempre devuelve un número válido en texto
@@ -180,6 +196,9 @@ export class ShopifyService {
             body_html: bodyHtml,
             images,
             status: 'active',
+            // Usa la plantilla alterna "landing" del tema (sin título/precio/
+            // galería/reseñas visibles) — ver nota en publicarLanding().
+            template_suffix: 'landing',
             variants: varianteId ? [{ id: varianteId, price: precio, compare_at_price: precioComparacion ?? null }] : undefined,
           },
         }),
@@ -201,6 +220,7 @@ export class ShopifyService {
           body_html: bodyHtml,
           images,
           status: 'active',
+          template_suffix: 'landing',
           variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
         },
       }),
