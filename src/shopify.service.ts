@@ -139,7 +139,14 @@ export class ShopifyService {
     const imgsHtml = imagenes
       .map((url) => `<img src="${url}" alt="" style="display:block; width:100%; margin:0; padding:0; border:0;">`)
       .join('');
-    return `<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">${imgsHtml}</div>`;
+    // Ojo: si la Descripción no tiene NINGÚN texto (solo imágenes), varios
+    // temas la consideran "vacía" (revisan el texto plano, sin las etiquetas
+    // HTML) y esconden todo el bloque, aunque sí tenga imágenes — así se veía
+    // en el tema del cliente. Por eso se agrega un textito real al principio:
+    // como el div que lo envuelve ya tiene font-size:0, ese texto queda
+    // invisible en pantalla, pero sigue contando como "hay texto" para que
+    // el tema no oculte el bloque completo.
+    return `<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;"><span>Landing</span>${imgsHtml}</div>`;
   }
 
   // Precio principal del producto: siempre devuelve un número válido en texto
