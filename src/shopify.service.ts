@@ -2,11 +2,13 @@
 //
 // Publica una landing ensamblada (una lista de imágenes ya generadas) como un
 // PRODUCTO en la tienda de Shopify del cliente, usando la Admin API: todas
-// las imágenes de la landing quedan dentro de la descripción del producto,
-// apiladas como banners; a la Multimedia/galería del producto solo sube la
-// PRIMERA imagen, como imagen destacada (para carrito, correos de pedido y
-// catálogo). El precio se toma de la Ficha Técnica (Oferta → Precio 1) que
-// el usuario ya llenó en el taller.
+// las imágenes de la landing quedan dentro de la descripción del producto
+// (apiladas como banners) Y TAMBIÉN se suben a la Multimedia/galería del
+// producto (para carrito, correos de pedido y catálogo). Se usa siempre la
+// plantilla de producto NORMAL de cada tienda — sin plantillas alternas ni
+// tocar el tema — para que esto funcione igual en la tienda de cualquier
+// estudiante sin que tenga que configurar nada. El precio se toma de la
+// Ficha Técnica (Oferta → Precio 1) que el usuario ya llenó en el taller.
 //
 // Shopify cambió su forma de dar acceso: ya no se puede crear una app
 // personalizada directamente en el admin y copiar un token fijo (shpat_...).
@@ -26,17 +28,6 @@
 //
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
 // el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
-//
-// IMPORTANTE — plantilla "landing" en el tema:
-// Cada producto se crea/actualiza con template_suffix: 'landing', para que use
-// una plantilla alterna del tema (product.landing.json) en vez de la plantilla
-// normal de producto. Esa plantilla alterna hay que crearla UNA sola vez desde
-// el editor del tema (Personalizar), quitándole los bloques de Título, Precio,
-// Galería de imágenes y Reseñas — así esos datos no se duplican en pantalla,
-// porque ya están dibujados dentro de las imágenes de la landing. El botón de
-// Comprar (Agregar al carrito / Comprar ahora) se deja para que se pueda vender.
-// Los productos normales de la tienda (los que no vienen del taller) siguen
-// usando la plantilla por defecto sin tocar nada.
 
 import { Injectable, Logger } from '@nestjs/common';
 
@@ -180,10 +171,9 @@ export class ShopifyService {
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
     const bodyHtml = this.construirHtml(input.imagenes);
-    // A la Multimedia del producto solo sube la PRIMERA imagen (como imagen
-    // destacada, para carrito/correos/catálogo) — el resto de las imágenes
-    // van únicamente dentro de la descripción, apiladas como banners.
-    const images = [{ src: input.imagenes[0] }];
+    // Todas las imágenes van también a la Multimedia del producto (galería
+    // nativa), además de estar apiladas dentro de la descripción.
+    const images = input.imagenes.map((src) => ({ src }));
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
@@ -206,9 +196,9 @@ export class ShopifyService {
             body_html: bodyHtml,
             images,
             status: 'active',
-            // Usa la plantilla alterna "landing" del tema (sin título/precio/
-            // galería/reseñas visibles) — ver nota en publicarLanding().
-            template_suffix: 'landing',
+            // Vuelve a la plantilla normal del tema por si el producto se
+            // había quedado con una plantilla alterna de una prueba anterior.
+            template_suffix: null,
             variants: varianteId ? [{ id: varianteId, price: precio, compare_at_price: precioComparacion ?? null }] : undefined,
           },
         }),
@@ -230,7 +220,6 @@ export class ShopifyService {
           body_html: bodyHtml,
           images,
           status: 'active',
-          template_suffix: 'landing',
           variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
         },
       }),
