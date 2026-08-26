@@ -132,16 +132,21 @@ export class ShopifyService {
       .replace(/^-+|-+$/g, '') || 'producto';
   }
 
-  // Las imágenes deben verse a pantalla completa (ancho total del navegador),
-  // una debajo de otra sin espacios ni recortes, sin importar qué tan angosto
-  // sea el contenedor de la página/producto en el tema. El truco
-  // "width:100vw; margin-left:calc(50% - 50vw)" saca el bloque de cualquier
-  // caja con max-width que le ponga el tema alrededor.
+  // Las imágenes van una debajo de otra, llenando el 100% del ancho del
+  // bloque donde el tema las dibuje ("Product description"), sin espacios ni
+  // recortes entre ellas. Antes se usaba un truco de "width:100vw" con
+  // márgenes negativos para forzar ancho de pantalla completa saliéndose del
+  // contenedor del tema, pero en el tema del cliente ese contenedor recorta
+  // (overflow) lo que se sale de su caja, así que el truco dejaba las
+  // imágenes invisibles en vez de a pantalla completa. Con 100% (sin salirse
+  // del contenedor) las imágenes se ven siempre, y quedan tan anchas como
+  // permita esa sección del tema — que en temas pensados para landings
+  // suele ser ya el ancho completo de la página.
   private construirHtml(imagenes: string[]): string {
     const imgsHtml = imagenes
       .map((url) => `<img src="${url}" alt="" style="display:block; width:100%; margin:0; padding:0; border:0;">`)
       .join('');
-    return `<div style="width:100vw; margin-left:calc(50% - 50vw); margin-right:calc(50% - 50vw); padding:0; line-height:0; font-size:0;">${imgsHtml}</div>`;
+    return `<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">${imgsHtml}</div>`;
   }
 
   // Precio principal del producto: siempre devuelve un número válido en texto
