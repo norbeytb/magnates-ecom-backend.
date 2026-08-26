@@ -1,10 +1,12 @@
 // shopify.service.ts
 //
 // Publica una landing ensamblada (una lista de imágenes ya generadas) como un
-// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API: las
-// imágenes de la landing quedan como galería/descripción del producto, y el
-// precio se toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya
-// llenó en el taller.
+// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API: todas
+// las imágenes de la landing quedan dentro de la descripción del producto,
+// apiladas como banners; a la Multimedia/galería del producto solo sube la
+// PRIMERA imagen, como imagen destacada (para carrito, correos de pedido y
+// catálogo). El precio se toma de la Ficha Técnica (Oferta → Precio 1) que
+// el usuario ya llenó en el taller.
 //
 // Shopify cambió su forma de dar acceso: ya no se puede crear una app
 // personalizada directamente en el admin y copiar un token fijo (shpat_...).
@@ -178,7 +180,10 @@ export class ShopifyService {
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
     const bodyHtml = this.construirHtml(input.imagenes);
-    const images = input.imagenes.map((src) => ({ src }));
+    // A la Multimedia del producto solo sube la PRIMERA imagen (como imagen
+    // destacada, para carrito/correos/catálogo) — el resto de las imágenes
+    // van únicamente dentro de la descripción, apiladas como banners.
+    const images = [{ src: input.imagenes[0] }];
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
