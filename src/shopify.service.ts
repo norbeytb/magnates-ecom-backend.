@@ -195,13 +195,54 @@ export class ShopifyService {
     '',
   ].join('\n');
 
+  // Nombres de tipo de bloque que en temas OS 2.0 (incluido Horizon, el del
+  // cliente) corresponden a la galería nativa de imágenes del producto — la
+  // que en el editor de temas aparece como "Multimedia" dentro de los
+  // bloques de la sección "Producto" (main-product). Se detecta por
+  // substring porque el nombre exacto del tipo varía entre temas/versiones
+  // (en Horizon suele venir con prefijo "_", p.ej. "_gallery"), así que
+  // busca "gallery"/"galeria"/"media" en vez de un nombre fijo.
+  private esBloqueGaleriaNativa(tipo: string): boolean {
+    const t = (tipo || '').toLowerCase();
+    return t.includes('gallery') || t.includes('galeria') || t.includes('media');
+  }
+
+  // Dentro de la sección principal de producto (type "main-product") de la
+  // plantilla, quita el/los bloque(s) de galería nativa de "blocks" y de su
+  // "block_order" para que no se dibujen — así la plantilla "landing" queda
+  // mostrando solo la sección propia (landing-imagenes) arriba, sin la
+  // Multimedia nativa duplicada debajo con las mismas fotos. No toca ningún
+  // otro bloque de esa sección (precio, variantes, comprar, descripción,
+  // etc. siguen intactos) ni ninguna otra sección de la plantilla. Muta
+  // "plantilla" in place; no hace nada (silenciosamente) si no encuentra
+  // ese bloque, por si el tema no lo maneja como bloque.
+  private ocultarGaleriaNativa(plantilla: any): void {
+    const secciones = plantilla?.sections;
+    if (!secciones || typeof secciones !== 'object') return;
+    for (const key of Object.keys(secciones)) {
+      const seccion = secciones[key];
+      if (!seccion || seccion.type !== 'main-product' || !seccion.blocks || typeof seccion.blocks !== 'object') continue;
+      const idsGaleria = Object.keys(seccion.blocks).filter((id) => this.esBloqueGaleriaNativa(seccion.blocks[id]?.type));
+      if (idsGaleria.length === 0) continue;
+      for (const id of idsGaleria) delete seccion.blocks[id];
+      if (Array.isArray(seccion.block_order)) {
+        seccion.block_order = seccion.block_order.filter((id: string) => !idsGaleria.includes(id));
+      }
+      this.logger.log(`Bloque(s) de galería nativa ocultados en la sección "${key}" de la plantilla "landing": ${idsGaleria.join(', ')}`);
+    }
+  }
+
   // Se asegura de que el tema activo tenga la sección y la plantilla alterna
   // "landing" necesarias — las crea solo si todavía no existen (no toca nada
-  // si ya estaban, y nunca modifica la plantilla NORMAL de producto, así que
-  // el resto del catálogo del cliente no se ve afectado). Si algo falla acá
-  // (por ejemplo, el permiso de temas todavía no está activo), no debe
-  // tumbar la publicación del producto — solo queda sin la plantilla especial
-  // por esta vez.
+  // más si ya estaban, y nunca modifica la plantilla NORMAL de producto, así
+  // que el resto del catálogo del cliente no se ve afectado). Si la
+  // plantilla "landing" ya existía (por ejemplo de antes de que existiera
+  // ocultarGaleriaNativa), se revisa y se repara en el momento si su galería
+  // nativa sigue sin ocultar — así las tiendas que ya tenían la plantilla
+  // creada también quedan corregidas, sin necesidad de borrarla a mano. Si
+  // algo falla acá (por ejemplo, el permiso de temas todavía no está
+  // activo), no debe tumbar la publicación del producto — solo queda sin la
+  // plantilla especial (o sin la reparación) por esta vez.
   private async asegurarPlantillaLanding(): Promise<void> {
     try {
       const temaId = await this.obtenerTemaActivoId();
@@ -218,10 +259,23 @@ export class ShopifyService {
         const base = baseTexto ? JSON.parse(baseTexto) : { sections: {}, order: [] };
         base.sections = base.sections || {};
         base.order = Array.isArray(base.order) ? base.order : [];
+        this.ocultarGaleriaNativa(base);
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
         await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
         this.logger.log('Plantilla "product.landing.json" creada en el tema.');
+      } else {
+        try {
+          const plantilla = JSON.parse(plantillaExistente);
+          const antes = JSON.stringify(plantilla);
+          this.ocultarGaleriaNativa(plantilla);
+          if (JSON.stringify(plantilla) !== antes) {
+            await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
+            this.logger.log('Plantilla "product.landing.json" existente reparada: galería nativa ocultada.');
+          }
+        } catch (err) {
+          this.logger.warn(`No se pudo revisar/reparar la plantilla "landing" existente: ${(err as Error).message}`);
+        }
       }
     } catch (err) {
       this.logger.warn(`No se pudo preparar la plantilla "landing" del tema (se sigue publicando el producto igual): ${(err as Error).message}`);
