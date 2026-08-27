@@ -1,14 +1,20 @@
 // shopify.service.ts
 //
 // Publica una landing ensamblada (una lista de imágenes ya generadas) como un
-// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API: todas
-// las imágenes de la landing quedan dentro de la descripción del producto
-// (apiladas como banners) Y TAMBIÉN se suben a la Multimedia/galería del
-// producto (para carrito, correos de pedido y catálogo). Se usa siempre la
-// plantilla de producto NORMAL de cada tienda — sin plantillas alternas ni
-// tocar el tema — para que esto funcione igual en la tienda de cualquier
-// estudiante sin que tenga que configurar nada. El precio se toma de la
-// Ficha Técnica (Oferta → Precio 1) que el usuario ya llenó en el taller.
+// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API. Todas
+// las imágenes suben a la Multimedia del producto, y ADEMÁS este backend le
+// prepara automáticamente al tema del cliente una plantilla alterna
+// "landing" con una sección propia que dibuja esas mismas imágenes una
+// debajo de otra, a pantalla completa (sin título/precio/reseñas encima) —
+// ver asegurarPlantillaLanding() más abajo. Esto es lo mismo que hacen otras
+// herramientas de landings: le agregan al tema su propia sección al
+// instalarse, en vez de depender del bloque de "Descripción" del tema (que
+// en muchos temas nuevos —como el tema Horizon del cliente— usa un campo de
+// tipo "richtext" que no acepta imágenes sueltas). Esa preparación del tema
+// se hace UNA sola vez por tienda (revisa si ya existe antes de crear nada)
+// y no requiere que el estudiante toque el editor del tema. El precio se
+// toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya llenó en
+// el taller.
 //
 // Shopify cambió su forma de dar acceso: ya no se puede crear una app
 // personalizada directamente en el admin y copiar un token fijo (shpat_...).
@@ -24,7 +30,10 @@
 //   SHOPIFY_CLIENT_ID       -> Client ID de la app, desde Dev Dashboard → tu app → Configuración
 //   SHOPIFY_CLIENT_SECRET   -> Client secret de la misma pantalla
 //
-// La app en el Dev Dashboard necesita los alcances (scopes): read_products,write_products
+// La app en el Dev Dashboard necesita los alcances (scopes):
+//   read_products,write_products,read_themes,write_themes
+// (los dos últimos son para poder crearle al tema la plantilla/sección
+// automática de la landing — ver asegurarPlantillaLanding()).
 //
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
 // el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
@@ -116,6 +125,109 @@ export class ShopifyService {
     return resp;
   }
 
+  // ---------- Preparación automática del tema (plantilla "landing") ----------
+
+  // Busca el tema activo/publicado de la tienda (el que ven los clientes).
+  private async obtenerTemaActivoId(): Promise<number> {
+    const resp = await this.llamarShopify('/themes.json');
+    if (!resp.ok) {
+      throw new Error(`No se pudo listar los temas de la tienda (HTTP ${resp.status}): ${await resp.text()}`);
+    }
+    const json: any = await resp.json();
+    const activo = (json.themes || []).find((t: any) => t.role === 'main');
+    if (!activo) {
+      throw new Error('No se encontró el tema activo (publicado) de la tienda.');
+    }
+    return activo.id;
+  }
+
+  // Lee un archivo del tema (por ejemplo "templates/product.json"). Devuelve
+  // null si el archivo no existe todavía (para poder crearlo).
+  private async obtenerAsset(temaId: number, key: string): Promise<string | null> {
+    const resp = await this.llamarShopify(`/themes/${temaId}/assets.json?asset[key]=${encodeURIComponent(key)}`);
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(`No se pudo leer "${key}" del tema (HTTP ${resp.status}): ${await resp.text()}`);
+    }
+    const json: any = await resp.json();
+    return typeof json?.asset?.value === 'string' ? json.asset.value : null;
+  }
+
+  // Crea o sobrescribe un archivo del tema.
+  private async guardarAsset(temaId: number, key: string, value: string): Promise<void> {
+    const resp = await this.llamarShopify(`/themes/${temaId}/assets.json`, {
+      method: 'PUT',
+      body: JSON.stringify({ asset: { key, value } }),
+    });
+    if (!resp.ok) {
+      throw new Error(`No se pudo guardar "${key}" en el tema (HTTP ${resp.status}): ${await resp.text()}`);
+    }
+  }
+
+  // Código de la sección nueva del tema: dibuja TODAS las imágenes del
+  // producto (product.images, la misma Multimedia que sube este backend)
+  // apiladas una debajo de otra, a pantalla completa. No depende del bloque
+  // de Descripción ni de ningún campo tipo "richtext" del tema.
+  private readonly seccionLandingLiquid = [
+    '{%- comment -%}',
+    '  Sección creada automáticamente por Ecom Magnates: dibuja las imágenes',
+    '  del producto (Multimedia) apiladas a pantalla completa. No editar a mano,',
+    '  se sobrescribe si el backend la vuelve a necesitar.',
+    '{%- endcomment -%}',
+    '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
+    '  {%- for image in product.images -%}',
+    '    <img',
+    '      src="{{ image | image_url: width: 1500 }}"',
+    '      alt="{{ image.alt | default: product.title | escape }}"',
+    '      loading="lazy"',
+    '      style="display:block; width:100%; margin:0; padding:0; border:0;"',
+    '    >',
+    '  {%- endfor -%}',
+    '</div>',
+    '',
+    '{% schema %}',
+    '{',
+    '  "name": "Landing a pantalla completa",',
+    '  "settings": [],',
+    '  "presets": [{ "name": "Landing a pantalla completa" }]',
+    '}',
+    '{% endschema %}',
+    '',
+  ].join('\n');
+
+  // Se asegura de que el tema activo tenga la sección y la plantilla alterna
+  // "landing" necesarias — las crea solo si todavía no existen (no toca nada
+  // si ya estaban, y nunca modifica la plantilla NORMAL de producto, así que
+  // el resto del catálogo del cliente no se ve afectado). Si algo falla acá
+  // (por ejemplo, el permiso de temas todavía no está activo), no debe
+  // tumbar la publicación del producto — solo queda sin la plantilla especial
+  // por esta vez.
+  private async asegurarPlantillaLanding(): Promise<void> {
+    try {
+      const temaId = await this.obtenerTemaActivoId();
+
+      const seccionExistente = await this.obtenerAsset(temaId, 'sections/landing-imagenes.liquid');
+      if (seccionExistente === null) {
+        await this.guardarAsset(temaId, 'sections/landing-imagenes.liquid', this.seccionLandingLiquid);
+        this.logger.log('Sección "landing-imagenes" creada en el tema.');
+      }
+
+      const plantillaExistente = await this.obtenerAsset(temaId, 'templates/product.landing.json');
+      if (plantillaExistente === null) {
+        const baseTexto = await this.obtenerAsset(temaId, 'templates/product.json');
+        const base = baseTexto ? JSON.parse(baseTexto) : { sections: {}, order: [] };
+        base.sections = base.sections || {};
+        base.order = Array.isArray(base.order) ? base.order : [];
+        base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
+        base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
+        await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
+        this.logger.log('Plantilla "product.landing.json" creada en el tema.');
+      }
+    } catch (err) {
+      this.logger.warn(`No se pudo preparar la plantilla "landing" del tema (se sigue publicando el producto igual): ${(err as Error).message}`);
+    }
+  }
+
   private slugify(texto: string): string {
     return (texto || '')
       .toLowerCase()
@@ -175,11 +287,18 @@ export class ShopifyService {
       throw new Error('Falta el nombre del producto.');
     }
 
+    // Se asegura (una sola vez por tienda) de que el tema tenga la plantilla
+    // alterna "landing" lista, antes de crear/actualizar el producto.
+    await this.asegurarPlantillaLanding();
+
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
     const bodyHtml = this.construirHtml(input.imagenes);
-    // Todas las imágenes van también a la Multimedia del producto (galería
-    // nativa), además de estar apiladas dentro de la descripción.
+    // Todas las imágenes van a la Multimedia del producto (galería nativa) —
+    // de ahí las toma también la sección automática "landing-imagenes" para
+    // dibujarlas a pantalla completa. También quedan apiladas dentro de la
+    // descripción como respaldo, por si el tema no soporta la plantilla
+    // alterna.
     const images = input.imagenes.map((src) => ({ src }));
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
@@ -203,9 +322,9 @@ export class ShopifyService {
             body_html: bodyHtml,
             images,
             status: 'active',
-            // Vuelve a la plantilla normal del tema por si el producto se
-            // había quedado con una plantilla alterna de una prueba anterior.
-            template_suffix: null,
+            // Usa la plantilla alterna "landing" (creada automáticamente
+            // arriba) para que se vea a pantalla completa.
+            template_suffix: 'landing',
             variants: varianteId ? [{ id: varianteId, price: precio, compare_at_price: precioComparacion ?? null }] : undefined,
           },
         }),
@@ -227,6 +346,7 @@ export class ShopifyService {
           body_html: bodyHtml,
           images,
           status: 'active',
+          template_suffix: 'landing',
           variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
         },
       }),
