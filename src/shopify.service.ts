@@ -66,6 +66,10 @@ export interface PublicarLandingInput {
   // todavía no mandan la secuencia (en ese caso la sección cae de vuelta a
   // dibujar solo las imágenes, sin botones intercalados).
   secuencia?: LandingSecuenciaPaso[];
+  // Checkbox "📌 Botón flotante" del taller: además de los botones
+  // intercalados, deja una barra fija abajo de la pantalla que sigue al
+  // visitante mientras hace scroll.
+  botonFlotante?: boolean;
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -285,44 +289,59 @@ export class ShopifyService {
     }
   }
 
-  // Guarda (crea o sobrescribe) en el PRODUCTO el metafield con la secuencia
-  // completa de la landing (imágenes + botones de comprar intercalados, en
-  // el orden exacto en que el estudiante los dejó en el taller). La sección
-  // "landing-imagenes" del tema lee este metafield para saber dónde dibujar
-  // cada botón — ver seccionLandingLiquid más arriba. Si esto falla (por
-  // ejemplo el scope de metafields todavía no está activo, o Shopify lo
-  // rechaza), no debe tumbar la publicación del producto: la landing igual
-  // queda creada/actualizada, solo sin los botones intercalados por esta vez
-  // (cae de vuelta a dibujar nada más las imágenes, ver seccionLandingLiquid).
-  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[]): Promise<void> {
+  // Guarda (crea o sobrescribe) un metafield del producto, en el namespace
+  // fijo "ecom_magnates" que usa este backend para todo lo de la landing.
+  // Genérico — lo usan guardarMetafieldSecuencia() y
+  // guardarMetafieldBotonFlotante() más abajo. Si esto falla (por ejemplo el
+  // scope de metafields todavía no está activo, o Shopify lo rechaza), no
+  // debe tumbar la publicación del producto: la landing igual queda creada/
+  // actualizada, solo sin ese dato guardado por esta vez.
+  private async guardarMetafield(productId: number, key: string, type: string, value: string): Promise<void> {
     try {
       // Shopify no deja "POST" dos veces el mismo namespace+key en un
       // producto (da error de duplicado) — hay que revisar primero si ya
       // existe (de una publicación anterior de esta misma landing) para
-      // actualizarlo (PUT) en vez de crearlo de nuevo, o la secuencia se
-      // quedaría pegada en la primera versión para siempre en los reenvíos.
-      const buscar = await this.llamarShopify(`/products/${productId}/metafields.json?namespace=ecom_magnates&key=landing_secuencia`);
-      if (!buscar.ok) throw new Error(`HTTP ${buscar.status} al buscar el metafield: ${await buscar.text()}`);
+      // actualizarlo (PUT) en vez de crearlo de nuevo, o el dato se quedaría
+      // pegado en la primera versión para siempre en los reenvíos.
+      const buscar = await this.llamarShopify(`/products/${productId}/metafields.json?namespace=ecom_magnates&key=${encodeURIComponent(key)}`);
+      if (!buscar.ok) throw new Error(`HTTP ${buscar.status} al buscar el metafield "${key}": ${await buscar.text()}`);
       const buscarJson: any = await buscar.json();
       const existente = buscarJson?.metafields?.[0];
 
       const resp = existente
         ? await this.llamarShopify(`/products/${productId}/metafields/${existente.id}.json`, {
             method: 'PUT',
-            body: JSON.stringify({ metafield: { id: existente.id, type: 'json', value: JSON.stringify(secuencia) } }),
+            body: JSON.stringify({ metafield: { id: existente.id, type, value } }),
           })
         : await this.llamarShopify(`/products/${productId}/metafields.json`, {
             method: 'POST',
-            body: JSON.stringify({
-              metafield: { namespace: 'ecom_magnates', key: 'landing_secuencia', type: 'json', value: JSON.stringify(secuencia) },
-            }),
+            body: JSON.stringify({ metafield: { namespace: 'ecom_magnates', key, type, value } }),
           });
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
       }
     } catch (err) {
-      this.logger.warn(`No se pudo guardar la secuencia de la landing (metafield) en el producto ${productId}: ${(err as Error).message}`);
+      this.logger.warn(`No se pudo guardar el metafield "${key}" en el producto ${productId}: ${(err as Error).message}`);
     }
+  }
+
+  // El metafield con la secuencia completa de la landing (imágenes + botones
+  // de comprar intercalados, en el orden exacto en que el estudiante los
+  // dejó en el taller). La sección "landing-imagenes" del tema lee este
+  // metafield para saber dónde dibujar cada botón — ver seccionLandingLiquid
+  // más arriba.
+  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[]): Promise<void> {
+    await this.guardarMetafield(productId, 'landing_secuencia', 'json', JSON.stringify(secuencia));
+  }
+
+  // El metafield del "Botón Flotante" (checkbox del taller): si está
+  // activado, la sección dibuja una barra fija abajo de la pantalla con el
+  // botón de comprar, que sigue al visitante mientras hace scroll — además
+  // de (no en vez de) los botones intercalados entre imágenes. Se guarda
+  // SIEMPRE (true o false), a diferencia de la secuencia, para que también
+  // se pueda APAGAR en un reenvío si el estudiante desmarca el checkbox.
+  private async guardarMetafieldBotonFlotante(productId: number, activo: boolean): Promise<void> {
+    await this.guardarMetafield(productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false');
   }
 
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
@@ -336,15 +355,22 @@ export class ShopifyService {
   // sincroniza solo a Dropi, sin nada más que hacer acá). Si el producto NO
   // tiene esa secuencia guardada (landing publicada con una versión vieja
   // del taller, antes de que existiera el "+"), cae de vuelta a dibujar
-  // simplemente todas las imágenes de la Multimedia, como antes. No depende
-  // del bloque de Descripción ni de ningún campo tipo "richtext" del tema.
+  // simplemente todas las imágenes de la Multimedia, como antes. Además, si
+  // el checkbox "📌 Botón flotante" del taller quedó activado (metafield
+  // ecom_magnates.boton_flotante), dibuja ADEMÁS una barra fija abajo de la
+  // pantalla, siempre visible mientras se hace scroll, con el mismo botón —
+  // se deja un espacio en blanco al final de la secuencia del mismo alto de
+  // esa barra para que no tape la última imagen/botón. No depende del bloque
+  // de Descripción ni de ningún campo tipo "richtext" del tema.
   private readonly seccionLandingLiquid = [
     '{%- comment -%}',
     '  Sección creada automáticamente por Ecom Magnates: dibuja la landing',
-    '  (imágenes + botones de comprar intercalados) a pantalla completa.',
-    '  No editar a mano, se sobrescribe si el backend la vuelve a necesitar.',
+    '  (imágenes + botones de comprar intercalados + botón flotante opcional)',
+    '  a pantalla completa. No editar a mano, se sobrescribe si el backend la',
+    '  vuelve a necesitar.',
     '{%- endcomment -%}',
     '{%- assign secuencia = product.metafields.ecom_magnates.landing_secuencia.value -%}',
+    '{%- assign boton_flotante = product.metafields.ecom_magnates.boton_flotante.value -%}',
     '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
     '  {%- if secuencia -%}',
     '    {%- for paso in secuencia -%}',
@@ -379,7 +405,23 @@ export class ShopifyService {
     '      >',
     '    {%- endfor -%}',
     '  {%- endif -%}',
+    '  {%- if boton_flotante and product.selected_or_first_available_variant -%}',
+    '    <div style="height:66px;"></div>',
+    '  {%- endif -%}',
     '</div>',
+    '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
+    '  <div style="position:fixed; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
+    '    <form method="post" action="/cart/add" style="margin:0;">',
+    '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
+    '      <input type="hidden" name="quantity" value="1">',
+    '      <button',
+    '        type="submit"',
+    '        name="checkout"',
+    '        style="display:block; width:100%; margin:0; padding:14px; background:#000; color:#fff; border:0; font-size:15px; font-weight:800; letter-spacing:0.03em; border-radius:4px; cursor:pointer;"',
+    '      >COMPRAR AHORA</button>',
+    '    </form>',
+    '  </div>',
+    '{%- endif -%}',
     '',
     '{% schema %}',
     '{',
@@ -630,6 +672,7 @@ export class ShopifyService {
       if (input.secuencia && input.secuencia.length > 0) {
         await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
       }
+      await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante);
       await this.publicarEnTiendaOnline(json.product.id);
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
       return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
@@ -656,6 +699,7 @@ export class ShopifyService {
     if (input.secuencia && input.secuencia.length > 0) {
       await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
     }
+    await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante);
     await this.publicarEnTiendaOnline(json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
     return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: true };
