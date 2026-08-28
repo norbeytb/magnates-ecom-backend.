@@ -286,40 +286,77 @@ export class ShopifyService {
     '',
   ].join('\n');
 
-  // Nombres de tipo de bloque que, dentro de la sección "Producto"
-  // (main-product), son los que sirven para COMPRAR (precio, selector de
-  // variante, botón de agregar al carrito/comprar — este último suele traer
-  // también los botones de pago acelerado tipo Shop Pay). Se detecta por
-  // substring porque el nombre exacto del tipo varía entre temas/versiones
-  // (en Horizon suele venir con prefijo "_", p.ej. "_buy-buttons").
-  private esBloqueDeCompra(tipo: string): boolean {
-    const t = (tipo || '').toLowerCase();
-    return t.includes('buy') || t.includes('cart') || t.includes('checkout') || t.includes('price') || t.includes('variant');
+  // Tipos de SECCIÓN (no de bloque) que en distintos temas corresponden a la
+  // ficha de producto de siempre (título/precio/galería/comprar/descripción).
+  // En Dawn y temas viejos se llama "main-product"; en Horizon (el tema real
+  // del cliente, confirmado leyendo su templates/product.landing.json) se
+  // llama "product-information" — se dejan los dos para no romper si el
+  // cliente cambia de tema más adelante.
+  private readonly TIPOS_SECCION_PRODUCTO = ['product-information', 'main-product'];
+
+  // Recorre TODOS los bloques de una sección, incluidos los anidados dentro
+  // de otros bloques (en Horizon los bloques pueden venir varios niveles
+  // adentro, ej. "product-details" > grupo > "price") — llama a "cb" con
+  // cada uno para que decida si lo apaga.
+  private recorrerBloques(blocks: any, cb: (block: any) => void): void {
+    if (!blocks || typeof blocks !== 'object') return;
+    for (const id of Object.keys(blocks)) {
+      const block = blocks[id];
+      if (!block || typeof block !== 'object') continue;
+      cb(block);
+      if (block.blocks) this.recorrerBloques(block.blocks, cb);
+    }
   }
 
-  // Dentro de la sección principal de producto (type "main-product") de la
-  // plantilla, deja SOLO los bloques de compra (esBloqueDeCompra) y quita
-  // todo lo demás (título, galería/Multimedia, descripción, reseñas,
-  // compartir, etc.) tanto de "blocks" como de su "block_order" — así la
-  // plantilla "landing" queda mostrando nada más la sección propia
-  // (landing-imagenes) a pantalla completa arriba, seguida solo del precio
-  // y el botón de comprar debajo, sin nada de la ficha normal del producto
-  // duplicada. No toca ninguna otra sección de la plantilla ni la plantilla
-  // NORMAL de producto. Muta "plantilla" in place; no hace nada
-  // (silenciosamente) si la sección no maneja bloques.
+  // El bloque de la galería nativa (Multimedia) — en Horizon viene con el
+  // tipo "_product-media-gallery". Se detecta por substring ("gallery" o
+  // "media-gallery") para no depender del nombre exacto de cada tema.
+  private esBloqueGaleriaNativa(block: any): boolean {
+    const t = String(block?.type || '').toLowerCase();
+    return t.includes('media-gallery') || t.includes('product-media');
+  }
+
+  // El bloque de texto que muestra la Descripción del producto (name
+  // "Product description", o cualquier bloque cuyo texto incluya
+  // "product.description"). Nuestra Descripción también lleva las mismas
+  // fotos de la landing apiladas como respaldo (ver construirHtml), así que
+  // si este bloque queda encendido, las fotos se repiten otra vez debajo de
+  // la galería.
+  private esBloqueDescripcionProducto(block: any): boolean {
+    if (block?.name === 'Product description') return true;
+    return /product\.description/.test(String(block?.settings?.text || ''));
+  }
+
+  // Dentro de la sección de producto (product-information / main-product) de
+  // la plantilla, APAGA (con "disabled": true — el mismo mecanismo que ya
+  // usa el propio tema del cliente para sus otros bloques) el bloque de
+  // galería nativa y el de Descripción, en cualquier nivel de anidamiento.
+  // No se BORRAN los bloques (en Horizon el de galería es "estático" y no
+  // se puede quitar del JSON) y no se toca nada más de esa sección (precio,
+  // variantes, botón de comprar, etc. quedan exactamente como el cliente los
+  // tenga configurados en su tema — no es cosa nuestra decidir eso). Así la
+  // plantilla "landing" queda mostrando solo la sección propia
+  // (landing-imagenes) a pantalla completa, sin la Multimedia ni la
+  // Descripción duplicando las mismas fotos debajo. No toca ninguna otra
+  // sección de la plantilla ni la plantilla NORMAL de producto. Muta
+  // "plantilla" in place.
   private simplificarSeccionProducto(plantilla: any): void {
     const secciones = plantilla?.sections;
     if (!secciones || typeof secciones !== 'object') return;
     for (const key of Object.keys(secciones)) {
       const seccion = secciones[key];
-      if (!seccion || seccion.type !== 'main-product' || !seccion.blocks || typeof seccion.blocks !== 'object') continue;
-      const idsAQuitar = Object.keys(seccion.blocks).filter((id) => !this.esBloqueDeCompra(seccion.blocks[id]?.type));
-      if (idsAQuitar.length === 0) continue;
-      for (const id of idsAQuitar) delete seccion.blocks[id];
-      if (Array.isArray(seccion.block_order)) {
-        seccion.block_order = seccion.block_order.filter((id: string) => !idsAQuitar.includes(id));
+      if (!seccion || !this.TIPOS_SECCION_PRODUCTO.includes(seccion.type) || !seccion.blocks) continue;
+      const apagados: string[] = [];
+      this.recorrerBloques(seccion.blocks, (block) => {
+        if (block.disabled === true) return;
+        if (this.esBloqueGaleriaNativa(block) || this.esBloqueDescripcionProducto(block)) {
+          block.disabled = true;
+          apagados.push(block.type || block.name || '?');
+        }
+      });
+      if (apagados.length > 0) {
+        this.logger.log(`Sección "${key}" de la plantilla "landing": bloques apagados (${apagados.join(', ')}).`);
       }
-      this.logger.log(`Sección "${key}" de la plantilla "landing" recortada a solo precio/comprar: ${idsAQuitar.join(', ')}`);
     }
   }
 
@@ -369,7 +406,7 @@ export class ShopifyService {
           this.simplificarSeccionProducto(plantilla);
           if (JSON.stringify(plantilla) !== antes) {
             await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
-            this.logger.log('Plantilla "product.landing.json" existente reparada: recortada a solo precio/comprar.');
+            this.logger.log('Plantilla "product.landing.json" existente reparada: galería/descripción nativas apagadas.');
           }
         } catch (err) {
           this.logger.warn(`No se pudo revisar/reparar la plantilla "landing" existente: ${(err as Error).message}`);
