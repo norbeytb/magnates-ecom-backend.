@@ -117,7 +117,7 @@ export class ImageEditService {
 
       try {
         const imagenesUrl = await this.llamarFal(imageUrls, prompt, numImagenes, calidad);
-        return this.exito(imagenesUrl, prompt, calidad, numImagenes, input);
+        return this.exito(imagenesUrl, prompt, calidad, numImagenes, input, imagenUrl);
       } catch (error) {
         // El filtro de contenido de OpenAI revisa TANTO el texto como la foto del
         // producto que le mandamos. Ya no mandamos la imagen de la plantilla (ver
@@ -148,6 +148,7 @@ export class ImageEditService {
     calidad: 'low' | 'medium' | 'high',
     numImagenes: number,
     input: GenerarSeccionInput,
+    fotoProductoUrl: string,
   ): GenerarSeccionResultado {
     const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
     this.historialService.guardar({
@@ -157,6 +158,11 @@ export class ImageEditService {
       promptUsado: prompt,
       costoEstimadoUsd,
       fichaJson: input.ficha,
+      // La foto del producto ya resuelta a una URL real de fal.storage (nunca el
+      // data URI base64 crudo — eso sería enorme para guardar en cada fila). Sirve
+      // para que el taller pueda mostrar esta foto de nuevo al reabrir el producto,
+      // aunque sea desde otro navegador o después de recargar la página.
+      fotoProductoUrl,
     });
     return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
   }
@@ -219,6 +225,15 @@ export class ImageEditService {
     const buffer = Buffer.from(base64Data, 'base64');
     const blob = new Blob([buffer], { type: mimeType });
     return fal.storage.upload(blob);
+  }
+
+  // Wrapper público del mismo helper de arriba — lo usa el endpoint
+  // "subir-foto-producto" para guardar de una vez, al subir la foto (Imagen 1/2/3),
+  // una URL real y persistente en fal.storage, en vez de guardar el data URI
+  // base64 crudo (enorme) en la base de datos. Así el taller puede recordar la
+  // foto del producto aunque el usuario nunca llegue a generar ninguna sección.
+  async subirFotoProducto(dataUri: string): Promise<string> {
+    return this.resolverImagenUrl(dataUri);
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {
