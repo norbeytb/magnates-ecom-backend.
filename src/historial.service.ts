@@ -92,4 +92,16 @@ export class HistorialService implements OnModuleInit {
       : await this.pool.query(`SELECT * FROM generaciones ORDER BY creado_en DESC LIMIT 200`);
     return resultado.rows;
   }
+
+  // Borra TODO el historial de piezas generadas de un producto — se usa cuando
+  // el usuario elimina el producto completo desde "Generador de Landings".
+  // Nunca debe tumbar el flujo del taller: si falla, solo se registra en el log.
+  async eliminarPorProducto(nombreProducto: string): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(`DELETE FROM generaciones WHERE nombre_producto = $1`, [nombreProducto]);
+    } catch (error) {
+      this.logger.error('No se pudo eliminar el historial del producto: ' + (error as Error).message);
+    }
+  }
 }
