@@ -35,9 +35,15 @@
 //   SHOPIFY_CLIENT_SECRET   -> Client secret de la misma pantalla
 //
 // La app en el Dev Dashboard necesita los alcances (scopes):
-//   read_products,write_products,read_themes,write_themes
-// (los dos últimos son para poder crearle al tema la plantilla/sección
-// automática de la landing — ver asegurarPlantillaLanding()).
+//   read_products,write_products,read_themes,write_themes,write_publications
+// (read_themes/write_themes son para poder crearle al tema la plantilla/
+// sección automática de la landing — ver asegurarPlantillaLanding().
+// write_publications es NUEVO y es imprescindible: sin él el producto queda
+// creado pero NUNCA se ve en la tienda pública, solo en la vista previa del
+// admin — ver publicarEnTiendaOnline() más abajo. Si se agrega este scope a
+// una app que ya estaba instalada, Shopify no lo re-otorga solo: hay que
+// guardar una versión nueva en el Dev Dashboard y REINSTALAR la app en la
+// tienda, igual que la vez que se agregó read_products/write_products).
 //
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
 // el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
@@ -80,6 +86,9 @@ export class ShopifyService {
   private readonly logger = new Logger(ShopifyService.name);
   private readonly apiVersion = '2026-07';
   private tokenEnCache: TokenEnCache | null = null;
+  // Id (GraphQL) del canal "Tienda online" — se busca una sola vez y se
+  // reutiliza, ver obtenerPublicationIdTiendaOnline() más abajo.
+  private publicationIdTiendaOnline: string | null = null;
 
   private configurado(): boolean {
     return !!(process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET);
@@ -139,6 +148,77 @@ export class ShopifyService {
       return this.llamarShopify(path, opciones, true);
     }
     return resp;
+  }
+
+  // Llama al endpoint de GraphQL de la Admin API (mismo dominio/token que
+  // llamarShopify). Usado solo para publicar el producto en el canal
+  // "Tienda online" — ver publicarEnTiendaOnline() más abajo — porque eso ya
+  // no se puede hacer de forma confiable por REST (Shopify lo dejó solo en
+  // GraphQL, con la mutación publishablePublish).
+  private async graphql(query: string, variables?: Record<string, unknown>): Promise<any> {
+    const resp = await this.llamarShopify('/graphql.json', {
+      method: 'POST',
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+    }
+    const json: any = await resp.json();
+    if (json.errors) {
+      throw new Error(`GraphQL: ${JSON.stringify(json.errors)}`);
+    }
+    return json.data;
+  }
+
+  // Busca (una sola vez, se cachea) el id del canal "Tienda online" — el que
+  // hay que usar para que el producto se pueda ver en la URL pública de la
+  // tienda (yebronstore.co/products/...), no solo en la vista previa del
+  // admin.
+  private async obtenerPublicationIdTiendaOnline(): Promise<string> {
+    if (this.publicationIdTiendaOnline) return this.publicationIdTiendaOnline;
+    const data = await this.graphql(`{ publications(first: 20) { edges { node { id name } } } }`);
+    const nodo = (data?.publications?.edges || []).map((e: any) => e.node).find((n: any) => n.name === 'Online Store');
+    if (!nodo) {
+      throw new Error('No se encontró el canal "Online Store" (Tienda online) entre los canales de venta de la tienda.');
+    }
+    this.publicationIdTiendaOnline = nodo.id;
+    return nodo.id;
+  }
+
+  // Publica el producto en el canal "Tienda online" — IMPRESCINDIBLE para
+  // que la landing se vea en la URL pública para cualquier visitante. Antes
+  // este backend solo mandaba status:"active" al crear/actualizar el
+  // producto por REST, lo cual lo deja activo EN EL ADMIN pero, en las
+  // versiones actuales de la API de Shopify, ya NO lo publica solo en
+  // ningún canal de venta — por eso la landing se veía bien en la vista
+  // previa del editor de temas (el admin sí puede ver productos sin
+  // publicar) pero daba 404 para un visitante cualquiera. Se llama después
+  // de crear/actualizar el producto, tanto en la primera publicación como en
+  // cada reenvío (si ya estaba publicado, volver a publicarlo no hace daño).
+  // Si esto falla (por ejemplo porque el scope write_publications todavía no
+  // está en la app — hay que agregarlo en el Dev Dashboard y reinstalar,
+  // igual que la vez pasada con los scopes de productos), no debe tumbar la
+  // publicación: el producto igual queda creado/actualizado, solo sin
+  // publicar en el canal por esta vez.
+  private async publicarEnTiendaOnline(productId: number): Promise<void> {
+    try {
+      const publicationId = await this.obtenerPublicationIdTiendaOnline();
+      const data = await this.graphql(
+        `mutation PublicarProducto($id: ID!, $input: [PublicationInput!]!) {
+          publishablePublish(id: $id, input: $input) {
+            userErrors { field message }
+          }
+        }`,
+        { id: `gid://shopify/Product/${productId}`, input: [{ publicationId }] },
+      );
+      const errores = data?.publishablePublish?.userErrors;
+      if (errores && errores.length > 0) {
+        throw new Error(errores.map((e: any) => e.message).join('; '));
+      }
+      this.logger.log(`Producto ${productId} publicado en el canal "Tienda online".`);
+    } catch (err) {
+      this.logger.warn(`No se pudo publicar el producto ${productId} en el canal "Tienda online" (revisa el scope write_publications en la app): ${(err as Error).message}`);
+    }
   }
 
   // ---------- Preparación automática del tema (plantilla "landing") ----------
@@ -245,7 +325,7 @@ export class ShopifyService {
     '    {%- for paso in secuencia -%}',
     '      {%- if paso.tipo == "boton_comprar" -%}',
     '        {%- if product.selected_or_first_available_variant -%}',
-    '          <form method="post" action="/cart/add" style="margin:0; padding:12px 16px; font-size:0; line-height:0;">',
+    '          <form method="post" action="/cart/add" style="margin:0; padding:0; font-size:0; line-height:0;">',
     '            <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '            <input type="hidden" name="quantity" value="1">',
     '            <button',
@@ -525,6 +605,7 @@ export class ShopifyService {
       if (input.secuencia && input.secuencia.length > 0) {
         await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
       }
+      await this.publicarEnTiendaOnline(json.product.id);
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
       return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
     }
@@ -550,6 +631,7 @@ export class ShopifyService {
     if (input.secuencia && input.secuencia.length > 0) {
       await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
     }
+    await this.publicarEnTiendaOnline(json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
     return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: true };
   }
