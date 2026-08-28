@@ -82,4 +82,14 @@ export class ImageEditController {
       },
     });
   }
+
+  // Sube (a fal.storage) la foto que el usuario acaba de poner en un slot de
+  // Imagen 1/2/3, sin generar nada — solo para tener una URL real y liviana que
+  // guardar en el backend (ver ProductosController) y que la foto reaparezca
+  // cada vez que se abra ese producto, incluso si nunca se genera una sección.
+  @Post('subir-foto-producto')
+  async subirFotoProducto(@Body('dataUri') dataUri: string): Promise<{ url: string }> {
+    const url = await this.imageEditService.subirFotoProducto(dataUri);
+    return { url };
+  }
 }
