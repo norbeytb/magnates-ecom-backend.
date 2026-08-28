@@ -5,16 +5,20 @@
 // las imágenes suben a la Multimedia del producto, y ADEMÁS este backend le
 // prepara automáticamente al tema del cliente una plantilla alterna
 // "landing" con una sección propia que dibuja esas mismas imágenes una
-// debajo de otra, a pantalla completa (sin título/precio/reseñas encima) —
-// ver asegurarPlantillaLanding() más abajo. Esto es lo mismo que hacen otras
+// debajo de otra, a pantalla completa (sin título/reseñas encima) — ver
+// asegurarPlantillaLanding() más abajo. Esto es lo mismo que hacen otras
 // herramientas de landings: le agregan al tema su propia sección al
 // instalarse, en vez de depender del bloque de "Descripción" del tema (que
 // en muchos temas nuevos —como el tema Horizon del cliente— usa un campo de
-// tipo "richtext" que no acepta imágenes sueltas). Esa preparación del tema
-// se hace UNA sola vez por tienda (revisa si ya existe antes de crear nada)
-// y no requiere que el estudiante toque el editor del tema. El precio se
-// toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya llenó en
-// el taller.
+// tipo "richtext" que no acepta imágenes sueltas). Además, la sección normal
+// de producto de esa plantilla se recorta (simplificarSeccionProducto) para
+// que solo queden el precio y el botón nativo de comprar debajo de las
+// imágenes — nada de galería/título/descripción duplicados. Esa preparación
+// del tema se hace UNA sola vez por tienda (revisa si ya existe antes de
+// crear nada, y repara sola la plantilla si ya existía de antes de este
+// recorte) y no requiere que el estudiante toque el editor del tema. El
+// precio se toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya
+// llenó en el taller.
 //
 // Shopify cambió su forma de dar acceso: ya no se puede crear una app
 // personalizada directamente en el admin y copiar un token fijo (shpat_...).
@@ -195,40 +199,40 @@ export class ShopifyService {
     '',
   ].join('\n');
 
-  // Nombres de tipo de bloque que en temas OS 2.0 (incluido Horizon, el del
-  // cliente) corresponden a la galería nativa de imágenes del producto — la
-  // que en el editor de temas aparece como "Multimedia" dentro de los
-  // bloques de la sección "Producto" (main-product). Se detecta por
+  // Nombres de tipo de bloque que, dentro de la sección "Producto"
+  // (main-product), son los que sirven para COMPRAR (precio, selector de
+  // variante, botón de agregar al carrito/comprar — este último suele traer
+  // también los botones de pago acelerado tipo Shop Pay). Se detecta por
   // substring porque el nombre exacto del tipo varía entre temas/versiones
-  // (en Horizon suele venir con prefijo "_", p.ej. "_gallery"), así que
-  // busca "gallery"/"galeria"/"media" en vez de un nombre fijo.
-  private esBloqueGaleriaNativa(tipo: string): boolean {
+  // (en Horizon suele venir con prefijo "_", p.ej. "_buy-buttons").
+  private esBloqueDeCompra(tipo: string): boolean {
     const t = (tipo || '').toLowerCase();
-    return t.includes('gallery') || t.includes('galeria') || t.includes('media');
+    return t.includes('buy') || t.includes('cart') || t.includes('checkout') || t.includes('price') || t.includes('variant');
   }
 
   // Dentro de la sección principal de producto (type "main-product") de la
-  // plantilla, quita el/los bloque(s) de galería nativa de "blocks" y de su
-  // "block_order" para que no se dibujen — así la plantilla "landing" queda
-  // mostrando solo la sección propia (landing-imagenes) arriba, sin la
-  // Multimedia nativa duplicada debajo con las mismas fotos. No toca ningún
-  // otro bloque de esa sección (precio, variantes, comprar, descripción,
-  // etc. siguen intactos) ni ninguna otra sección de la plantilla. Muta
-  // "plantilla" in place; no hace nada (silenciosamente) si no encuentra
-  // ese bloque, por si el tema no lo maneja como bloque.
-  private ocultarGaleriaNativa(plantilla: any): void {
+  // plantilla, deja SOLO los bloques de compra (esBloqueDeCompra) y quita
+  // todo lo demás (título, galería/Multimedia, descripción, reseñas,
+  // compartir, etc.) tanto de "blocks" como de su "block_order" — así la
+  // plantilla "landing" queda mostrando nada más la sección propia
+  // (landing-imagenes) a pantalla completa arriba, seguida solo del precio
+  // y el botón de comprar debajo, sin nada de la ficha normal del producto
+  // duplicada. No toca ninguna otra sección de la plantilla ni la plantilla
+  // NORMAL de producto. Muta "plantilla" in place; no hace nada
+  // (silenciosamente) si la sección no maneja bloques.
+  private simplificarSeccionProducto(plantilla: any): void {
     const secciones = plantilla?.sections;
     if (!secciones || typeof secciones !== 'object') return;
     for (const key of Object.keys(secciones)) {
       const seccion = secciones[key];
       if (!seccion || seccion.type !== 'main-product' || !seccion.blocks || typeof seccion.blocks !== 'object') continue;
-      const idsGaleria = Object.keys(seccion.blocks).filter((id) => this.esBloqueGaleriaNativa(seccion.blocks[id]?.type));
-      if (idsGaleria.length === 0) continue;
-      for (const id of idsGaleria) delete seccion.blocks[id];
+      const idsAQuitar = Object.keys(seccion.blocks).filter((id) => !this.esBloqueDeCompra(seccion.blocks[id]?.type));
+      if (idsAQuitar.length === 0) continue;
+      for (const id of idsAQuitar) delete seccion.blocks[id];
       if (Array.isArray(seccion.block_order)) {
-        seccion.block_order = seccion.block_order.filter((id: string) => !idsGaleria.includes(id));
+        seccion.block_order = seccion.block_order.filter((id: string) => !idsAQuitar.includes(id));
       }
-      this.logger.log(`Bloque(s) de galería nativa ocultados en la sección "${key}" de la plantilla "landing": ${idsGaleria.join(', ')}`);
+      this.logger.log(`Sección "${key}" de la plantilla "landing" recortada a solo precio/comprar: ${idsAQuitar.join(', ')}`);
     }
   }
 
@@ -237,12 +241,13 @@ export class ShopifyService {
   // más si ya estaban, y nunca modifica la plantilla NORMAL de producto, así
   // que el resto del catálogo del cliente no se ve afectado). Si la
   // plantilla "landing" ya existía (por ejemplo de antes de que existiera
-  // ocultarGaleriaNativa), se revisa y se repara en el momento si su galería
-  // nativa sigue sin ocultar — así las tiendas que ya tenían la plantilla
-  // creada también quedan corregidas, sin necesidad de borrarla a mano. Si
-  // algo falla acá (por ejemplo, el permiso de temas todavía no está
-  // activo), no debe tumbar la publicación del producto — solo queda sin la
-  // plantilla especial (o sin la reparación) por esta vez.
+  // simplificarSeccionProducto), se revisa y se repara en el momento si su
+  // sección de producto todavía trae de más (galería, título, descripción,
+  // etc.) — así las tiendas que ya tenían la plantilla creada también quedan
+  // corregidas, sin necesidad de borrarla a mano. Si algo falla acá (por
+  // ejemplo, el permiso de temas todavía no está activo), no debe tumbar la
+  // publicación del producto — solo queda sin la plantilla especial (o sin
+  // la reparación) por esta vez.
   private async asegurarPlantillaLanding(): Promise<void> {
     try {
       const temaId = await this.obtenerTemaActivoId();
@@ -259,7 +264,7 @@ export class ShopifyService {
         const base = baseTexto ? JSON.parse(baseTexto) : { sections: {}, order: [] };
         base.sections = base.sections || {};
         base.order = Array.isArray(base.order) ? base.order : [];
-        this.ocultarGaleriaNativa(base);
+        this.simplificarSeccionProducto(base);
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
         await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
@@ -268,10 +273,10 @@ export class ShopifyService {
         try {
           const plantilla = JSON.parse(plantillaExistente);
           const antes = JSON.stringify(plantilla);
-          this.ocultarGaleriaNativa(plantilla);
+          this.simplificarSeccionProducto(plantilla);
           if (JSON.stringify(plantilla) !== antes) {
             await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
-            this.logger.log('Plantilla "product.landing.json" existente reparada: galería nativa ocultada.');
+            this.logger.log('Plantilla "product.landing.json" existente reparada: recortada a solo precio/comprar.');
           }
         } catch (err) {
           this.logger.warn(`No se pudo revisar/reparar la plantilla "landing" existente: ${(err as Error).message}`);
