@@ -31,6 +31,7 @@ interface GenerarSeccionDto {
   imagenProductoUrl: string;
   plantillaReferenciaUrl?: string;
   plantillaDescripcion?: string;
+  templateId?: string;
   colorHex?: string;
   calidad?: 'low' | 'medium' | 'high';
 
@@ -63,6 +64,7 @@ export class ImageEditController {
       imagenProductoUrl: dto.imagenProductoUrl,
       plantillaReferenciaUrl: dto.plantillaReferenciaUrl,
       plantillaDescripcion: dto.plantillaDescripcion,
+      templateId: dto.templateId,
       colorHex: dto.colorHex,
       calidad: dto.calidad,
       ficha: {
