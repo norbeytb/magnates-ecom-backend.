@@ -12,9 +12,11 @@ import { ShopifyController } from './shopify.controller';
 import { ShopifyService } from './shopify.service';
 import { LandingsController } from './landings.controller';
 import { LandingsService } from './landings.service';
+import { ProductosController } from './productos.controller';
+import { ProductosService } from './productos.service';
 
 @Module({
-  controllers: [ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController],
-  providers: [ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService],
+  controllers: [ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController],
+  providers: [ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService],
 })
 export class AppModule {}
