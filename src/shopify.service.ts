@@ -78,6 +78,12 @@ export interface PublicarLandingResultado {
   url: string;
   handle: string;
   creada: boolean;
+  // Avisos de cosas que fallaron SIN tumbar la publicación (ej: no se pudo
+  // guardar el metafield de la secuencia de botones, o no se pudo actualizar
+  // la sección del tema) — antes esto solo quedaba en los logs del backend y
+  // el estudiante nunca se enteraba de por qué "faltaba" un botón en la
+  // página real. Si viene vacío/ausente, todo se guardó bien.
+  avisos?: string[];
 }
 
 interface TokenEnCache {
@@ -296,7 +302,11 @@ export class ShopifyService {
   // scope de metafields todavía no está activo, o Shopify lo rechaza), no
   // debe tumbar la publicación del producto: la landing igual queda creada/
   // actualizada, solo sin ese dato guardado por esta vez.
-  private async guardarMetafield(productId: number, key: string, type: string, value: string): Promise<void> {
+  // avisos: si se pasa, además de loguear el fallo se le agrega un mensaje
+  // legible — así publicarLanding() puede devolverle al taller la lista de
+  // cosas que no se guardaron, en vez de que el estudiante solo vea
+  // "Publicado" y se quede sin saber por qué falta algo en la página real.
+  private async guardarMetafield(productId: number, key: string, type: string, value: string, avisos?: string[]): Promise<void> {
     try {
       // Shopify no deja "POST" dos veces el mismo namespace+key en un
       // producto (da error de duplicado) — hay que revisar primero si ya
@@ -321,7 +331,15 @@ export class ShopifyService {
         throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
       }
     } catch (err) {
-      this.logger.warn(`No se pudo guardar el metafield "${key}" en el producto ${productId}: ${(err as Error).message}`);
+      const mensaje = `No se pudo guardar el metafield "${key}" en el producto ${productId}: ${(err as Error).message}`;
+      this.logger.warn(mensaje);
+      if (avisos) {
+        avisos.push(
+          key === 'landing_secuencia'
+            ? 'No se pudo guardar la posición de los botones "COMPRAR AHORA" — puede que falten en la página real. Volvé a publicar en un momento.'
+            : mensaje,
+        );
+      }
     }
   }
 
@@ -330,8 +348,8 @@ export class ShopifyService {
   // dejó en el taller). La sección "landing-imagenes" del tema lee este
   // metafield para saber dónde dibujar cada botón — ver seccionLandingLiquid
   // más arriba.
-  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[]): Promise<void> {
-    await this.guardarMetafield(productId, 'landing_secuencia', 'json', JSON.stringify(secuencia));
+  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[], avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(productId, 'landing_secuencia', 'json', JSON.stringify(secuencia), avisos);
   }
 
   // El metafield del "Botón Flotante" (checkbox del taller): si está
@@ -340,8 +358,8 @@ export class ShopifyService {
   // de (no en vez de) los botones intercalados entre imágenes. Se guarda
   // SIEMPRE (true o false), a diferencia de la secuencia, para que también
   // se pueda APAGAR en un reenvío si el estudiante desmarca el checkbox.
-  private async guardarMetafieldBotonFlotante(productId: number, activo: boolean): Promise<void> {
-    await this.guardarMetafield(productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false');
+  private async guardarMetafieldBotonFlotante(productId: number, activo: boolean, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false', avisos);
   }
 
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
@@ -519,7 +537,7 @@ export class ShopifyService {
   // ejemplo, el permiso de temas todavía no está activo), no debe tumbar la
   // publicación del producto — solo queda sin la plantilla especial (o sin
   // la reparación) por esta vez.
-  private async asegurarPlantillaLanding(): Promise<void> {
+  private async asegurarPlantillaLanding(avisos?: string[]): Promise<void> {
     try {
       const temaId = await this.obtenerTemaActivoId();
 
@@ -529,6 +547,13 @@ export class ShopifyService {
       // intercalados), las tiendas que ya la tenían instalada también quedan
       // al día solas en la próxima publicación, sin tener que borrar nada a
       // mano. Si el texto es idéntico no hace ninguna llamada de más.
+      //
+      // OJO: si este guardarAsset falla y se queda silenciado (ver el catch
+      // de abajo), la sección vieja se queda instalada en el tema — y si esa
+      // versión vieja no sabía dibujar varios botones intercalados, en la
+      // página real va a seguir apareciendo solo uno (o ninguno) aunque el
+      // taller y el metafield ya tengan varios guardados bien. Por eso ahora
+      // se avisa en vez de solo loguearlo.
       const seccionExistente = await this.obtenerAsset(temaId, 'sections/landing-imagenes.liquid');
       if (seccionExistente !== this.seccionLandingLiquid) {
         await this.guardarAsset(temaId, 'sections/landing-imagenes.liquid', this.seccionLandingLiquid);
@@ -560,7 +585,11 @@ export class ShopifyService {
         }
       }
     } catch (err) {
-      this.logger.warn(`No se pudo preparar la plantilla "landing" del tema (se sigue publicando el producto igual): ${(err as Error).message}`);
+      const mensaje = `No se pudo preparar la plantilla "landing" del tema (se sigue publicando el producto igual): ${(err as Error).message}`;
+      this.logger.warn(mensaje);
+      if (avisos) {
+        avisos.push('No se pudo actualizar la sección de la landing en el tema — los botones "COMPRAR AHORA" intercalados pueden no verse bien en la página real. Volvé a publicar en un momento.');
+      }
     }
   }
 
@@ -623,9 +652,15 @@ export class ShopifyService {
       throw new Error('Falta el nombre del producto.');
     }
 
+    // Junta avisos de cosas que fallen sin tumbar la publicación (metafield
+    // que no se pudo guardar, sección del tema que no se pudo actualizar) —
+    // se devuelven al final para que el taller se los pueda mostrar al
+    // estudiante en vez de que se pierdan solo en los logs de Railway.
+    const avisos: string[] = [];
+
     // Se asegura (una sola vez por tienda) de que el tema tenga la plantilla
     // alterna "landing" lista, antes de crear/actualizar el producto.
-    await this.asegurarPlantillaLanding();
+    await this.asegurarPlantillaLanding(avisos);
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
@@ -670,12 +705,17 @@ export class ShopifyService {
       }
       const json: any = await actualizar.json();
       if (input.secuencia && input.secuencia.length > 0) {
-        await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
+        await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
       }
-      await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante);
+      await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
       await this.publicarEnTiendaOnline(json.product.id);
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
-      return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
+      return {
+        url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`,
+        handle: json.product.handle,
+        creada: false,
+        avisos: avisos.length > 0 ? avisos : undefined,
+      };
     }
 
     const crear = await this.llamarShopify('/products.json', {
@@ -697,11 +737,16 @@ export class ShopifyService {
     }
     const json: any = await crear.json();
     if (input.secuencia && input.secuencia.length > 0) {
-      await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
+      await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
     }
-    await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante);
+    await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
     await this.publicarEnTiendaOnline(json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
-    return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: true };
+    return {
+      url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`,
+      handle: json.product.handle,
+      creada: true,
+      avisos: avisos.length > 0 ? avisos : undefined,
+    };
   }
 }
