@@ -46,6 +46,7 @@ export interface GenerarSeccionInput {
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
   plantillaReferenciaUrl?: string; // YA NO SE USA para generar (ver nota de costo abajo) — se deja en la interfaz solo por compatibilidad con llamadas viejas, se ignora.
   plantillaDescripcion?: string; // descripción en texto del layout/composición de la plantilla elegida en la galería — reemplaza a la imagen de la plantilla como referencia
+  templateId?: string; // id de la plantilla elegida en la galería — se guarda en el historial para poder mostrar de nuevo la "plantilla de referencia" al ver esta pieza, incluso después de recargar la página
   ficha: FichaTecnica;
   colorHex?: string; // color elegido en el selector "Color Predominante del fondo"
   numImagenes?: number;
@@ -163,6 +164,10 @@ export class ImageEditService {
       // para que el taller pueda mostrar esta foto de nuevo al reabrir el producto,
       // aunque sea desde otro navegador o después de recargar la página.
       fotoProductoUrl,
+      // Igual con el id de la plantilla: sin esto, al recargar la página el taller
+      // pierde de qué plantilla salió cada pieza y el bloque "Referencia" (la miniatura
+      // de la plantilla original) del visor de una pieza queda vacío para siempre.
+      templateId: input.templateId,
     });
     return { imagenesUrl, promptUsado: prompt, costoEstimadoUsd };
   }
