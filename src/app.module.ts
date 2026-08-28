@@ -10,9 +10,11 @@ import { HistorialController } from './historial.controller';
 import { HistorialService } from './historial.service';
 import { ShopifyController } from './shopify.controller';
 import { ShopifyService } from './shopify.service';
+import { LandingsController } from './landings.controller';
+import { LandingsService } from './landings.service';
 
 @Module({
-  controllers: [ImageEditController, TextGenerationController, HistorialController, ShopifyController],
-  providers: [ImageEditService, TextGenerationService, HistorialService, ShopifyService],
+  controllers: [ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController],
+  providers: [ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService],
 })
 export class AppModule {}
