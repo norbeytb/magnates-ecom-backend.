@@ -394,13 +394,19 @@ export class ShopifyService {
     '    {%- for paso in secuencia -%}',
     '      {%- if paso.tipo == "boton_comprar" -%}',
     '        {%- if product.selected_or_first_available_variant -%}',
-    '          <form method="post" action="/cart/add" style="margin:0; padding:0; font-size:0; line-height:0;">',
+    '          <form method="post" action="/cart/add" style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
     '            <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '            <input type="hidden" name="quantity" value="1">',
     '            <button',
     '              type="submit"',
     '              name="checkout"',
-    '              style="display:block; width:100%; margin:0; padding:16px; background:#000; color:#fff; border:0; font-size:15px; font-weight:800; letter-spacing:0.03em; border-radius:4px; cursor:pointer;"',
+    // Todo con !important: varios temas (Horizon incluido) traen un reset
+    // global de tipo "button { all: unset }" o similar que, al tener más
+    // especificidad efectiva que un style="" inline, puede dejar este botón
+    // con tamaño/color heredados del tema y volverlo invisible (ocupa un
+    // espacio en blanco/negro liso en vez de mostrarse) aunque el <form> y el
+    // <button> sí estén en el HTML — visto en vivo con el inspector el 28/08.
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#000 !important; color:#fff !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:4px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important;"',
     '            >COMPRAR AHORA</button>',
     '          </form>',
     '        {%- endif -%}',
@@ -428,14 +434,16 @@ export class ShopifyService {
     '  {%- endif -%}',
     '</div>',
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
-    '  <div style="position:fixed; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
-    '    <form method="post" action="/cart/add" style="margin:0;">',
+    '  <div style="position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
+    '    <form method="post" action="/cart/add" style="margin:0 !important; display:block !important;">',
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
     '      <button',
     '        type="submit"',
     '        name="checkout"',
-    '        style="display:block; width:100%; margin:0; padding:14px; background:#000; color:#fff; border:0; font-size:15px; font-weight:800; letter-spacing:0.03em; border-radius:4px; cursor:pointer;"',
+    // Mismo endurecimiento con !important que el botón intercalado de arriba
+    // (ver comentario ahí) — protege contra el mismo reset del tema.
+    '        style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#000 !important; color:#fff !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:4px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important;"',
     '      >COMPRAR AHORA</button>',
     '    </form>',
     '  </div>',
