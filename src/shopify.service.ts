@@ -172,14 +172,39 @@ export class ShopifyService {
 
   // Busca (una sola vez, se cachea) el id del canal "Tienda online" — el que
   // hay que usar para que el producto se pueda ver en la URL pública de la
-  // tienda (yebronstore.co/products/...), no solo en la vista previa del
-  // admin.
+  // tienda, no solo en la vista previa del admin. Este backend lo va a usar
+  // cualquier estudiante con SU PROPIA tienda (no solo la del cliente
+  // original), y el admin de cada tienda puede estar en cualquier idioma —
+  // así que no alcanza con buscar el canal por el texto "Online Store" (ese
+  // nombre puede venir traducido, ej. "Tienda online" en español, y además
+  // Shopify lo tiene marcado como campo obsoleto). Por eso se intenta primero
+  // por el id de la app del canal (fijo, no cambia con el idioma) y solo si
+  // eso no aparece, se cae de vuelta a buscar por nombre probando las
+  // traducciones más comunes.
   private async obtenerPublicationIdTiendaOnline(): Promise<string> {
     if (this.publicationIdTiendaOnline) return this.publicationIdTiendaOnline;
-    const data = await this.graphql(`{ publications(first: 20) { edges { node { id name } } } }`);
-    const nodo = (data?.publications?.edges || []).map((e: any) => e.node).find((n: any) => n.name === 'Online Store');
+    const data = await this.graphql(`{
+      publications(first: 20) {
+        edges {
+          node {
+            id
+            name
+            channels(first: 5) { edges { node { app { id } } } }
+          }
+        }
+      }
+    }`);
+    const nodos = ((data?.publications?.edges || []) as any[]).map((e) => e.node);
+
+    const APP_ID_TIENDA_ONLINE = 'gid://shopify/App/580111';
+    let nodo = nodos.find((n) => ((n.channels?.edges || []) as any[]).some((c) => c.node?.app?.id === APP_ID_TIENDA_ONLINE));
+
     if (!nodo) {
-      throw new Error('No se encontró el canal "Online Store" (Tienda online) entre los canales de venta de la tienda.');
+      const NOMBRES_TIENDA_ONLINE = ['online store', 'tienda online', 'tienda en línea', 'loja virtual', 'boutique en ligne'];
+      nodo = nodos.find((n) => NOMBRES_TIENDA_ONLINE.includes(String(n.name || '').toLowerCase()));
+    }
+    if (!nodo) {
+      throw new Error('No se encontró el canal "Tienda online" entre los canales de venta de la tienda.');
     }
     this.publicationIdTiendaOnline = nodo.id;
     return nodo.id;
