@@ -44,10 +44,22 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 
+// Un paso de la secuencia editable de la landing: o una imagen (el orden en
+// que se suben a la Multimedia) o un marcador de "botón de comprar" que el
+// estudiante insertó a mano con el "+" en la vista previa del taller — ver
+// enviarLandingAShopify() en el frontend. La sección del tema dibuja cada
+// paso en el mismo orden en que viene, así el botón queda exactamente donde
+// el estudiante lo puso dentro de las imágenes (no solo al final).
+export type LandingSecuenciaPaso = { tipo: 'imagen'; url: string } | { tipo: 'boton_comprar' };
+
 export interface PublicarLandingInput {
   nombreProducto: string;
   landingNum: number;
   imagenes: string[];
+  // Opcional por compatibilidad con versiones viejas del frontend que
+  // todavía no mandan la secuencia (en ese caso la sección cae de vuelta a
+  // dibujar solo las imágenes, sin botones intercalados).
+  secuencia?: LandingSecuenciaPaso[];
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -168,25 +180,100 @@ export class ShopifyService {
     }
   }
 
-  // Código de la sección nueva del tema: dibuja TODAS las imágenes del
-  // producto (product.images, la misma Multimedia que sube este backend)
-  // apiladas una debajo de otra, a pantalla completa. No depende del bloque
-  // de Descripción ni de ningún campo tipo "richtext" del tema.
+  // Guarda (crea o sobrescribe) en el PRODUCTO el metafield con la secuencia
+  // completa de la landing (imágenes + botones de comprar intercalados, en
+  // el orden exacto en que el estudiante los dejó en el taller). La sección
+  // "landing-imagenes" del tema lee este metafield para saber dónde dibujar
+  // cada botón — ver seccionLandingLiquid más arriba. Si esto falla (por
+  // ejemplo el scope de metafields todavía no está activo, o Shopify lo
+  // rechaza), no debe tumbar la publicación del producto: la landing igual
+  // queda creada/actualizada, solo sin los botones intercalados por esta vez
+  // (cae de vuelta a dibujar nada más las imágenes, ver seccionLandingLiquid).
+  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[]): Promise<void> {
+    try {
+      // Shopify no deja "POST" dos veces el mismo namespace+key en un
+      // producto (da error de duplicado) — hay que revisar primero si ya
+      // existe (de una publicación anterior de esta misma landing) para
+      // actualizarlo (PUT) en vez de crearlo de nuevo, o la secuencia se
+      // quedaría pegada en la primera versión para siempre en los reenvíos.
+      const buscar = await this.llamarShopify(`/products/${productId}/metafields.json?namespace=ecom_magnates&key=landing_secuencia`);
+      if (!buscar.ok) throw new Error(`HTTP ${buscar.status} al buscar el metafield: ${await buscar.text()}`);
+      const buscarJson: any = await buscar.json();
+      const existente = buscarJson?.metafields?.[0];
+
+      const resp = existente
+        ? await this.llamarShopify(`/products/${productId}/metafields/${existente.id}.json`, {
+            method: 'PUT',
+            body: JSON.stringify({ metafield: { id: existente.id, type: 'json', value: JSON.stringify(secuencia) } }),
+          })
+        : await this.llamarShopify(`/products/${productId}/metafields.json`, {
+            method: 'POST',
+            body: JSON.stringify({
+              metafield: { namespace: 'ecom_magnates', key: 'landing_secuencia', type: 'json', value: JSON.stringify(secuencia) },
+            }),
+          });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      }
+    } catch (err) {
+      this.logger.warn(`No se pudo guardar la secuencia de la landing (metafield) en el producto ${productId}: ${(err as Error).message}`);
+    }
+  }
+
+  // Código de la sección nueva del tema: dibuja la secuencia de la landing
+  // (guardada en el metafield ecom_magnates.landing_secuencia — ver
+  // guardarMetafieldSecuencia() más abajo) apilada a pantalla completa: cada
+  // paso es una imagen o, donde el estudiante lo haya insertado con el "+"
+  // en el taller, un botón "COMPRAR AHORA" real (formulario a /cart/add con
+  // name="checkout", que agrega el producto y manda directo al pago de
+  // Shopify — así el pedido queda como un pedido normal de Shopify, y si la
+  // tienda tiene instalada la app de Dropi ("Dropify"), ese pedido se
+  // sincroniza solo a Dropi, sin nada más que hacer acá). Si el producto NO
+  // tiene esa secuencia guardada (landing publicada con una versión vieja
+  // del taller, antes de que existiera el "+"), cae de vuelta a dibujar
+  // simplemente todas las imágenes de la Multimedia, como antes. No depende
+  // del bloque de Descripción ni de ningún campo tipo "richtext" del tema.
   private readonly seccionLandingLiquid = [
     '{%- comment -%}',
-    '  Sección creada automáticamente por Ecom Magnates: dibuja las imágenes',
-    '  del producto (Multimedia) apiladas a pantalla completa. No editar a mano,',
-    '  se sobrescribe si el backend la vuelve a necesitar.',
+    '  Sección creada automáticamente por Ecom Magnates: dibuja la landing',
+    '  (imágenes + botones de comprar intercalados) a pantalla completa.',
+    '  No editar a mano, se sobrescribe si el backend la vuelve a necesitar.',
     '{%- endcomment -%}',
+    '{%- assign secuencia = product.metafields.ecom_magnates.landing_secuencia.value -%}',
     '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
-    '  {%- for image in product.images -%}',
-    '    <img',
-    '      src="{{ image | image_url: width: 1500 }}"',
-    '      alt="{{ image.alt | default: product.title | escape }}"',
-    '      loading="lazy"',
-    '      style="display:block; width:100%; margin:0; padding:0; border:0;"',
-    '    >',
-    '  {%- endfor -%}',
+    '  {%- if secuencia -%}',
+    '    {%- for paso in secuencia -%}',
+    '      {%- if paso.tipo == "boton_comprar" -%}',
+    '        {%- if product.selected_or_first_available_variant -%}',
+    '          <form method="post" action="/cart/add" style="margin:0; padding:12px 16px; font-size:0; line-height:0;">',
+    '            <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
+    '            <input type="hidden" name="quantity" value="1">',
+    '            <button',
+    '              type="submit"',
+    '              name="checkout"',
+    '              style="display:block; width:100%; margin:0; padding:16px; background:#000; color:#fff; border:0; font-size:15px; font-weight:800; letter-spacing:0.03em; border-radius:4px; cursor:pointer;"',
+    '            >COMPRAR AHORA</button>',
+    '          </form>',
+    '        {%- endif -%}',
+    '      {%- else -%}',
+    '        <img',
+    '          src="{{ paso.url }}"',
+    '          alt="{{ product.title | escape }}"',
+    '          loading="lazy"',
+    '          style="display:block; width:100%; margin:0; padding:0; border:0;"',
+    '        >',
+    '      {%- endif -%}',
+    '    {%- endfor -%}',
+    '  {%- else -%}',
+    '    {%- for image in product.images -%}',
+    '      <img',
+    '        src="{{ image | image_url: width: 1500 }}"',
+    '        alt="{{ image.alt | default: product.title | escape }}"',
+    '        loading="lazy"',
+    '        style="display:block; width:100%; margin:0; padding:0; border:0;"',
+    '      >',
+    '    {%- endfor -%}',
+    '  {%- endif -%}',
     '</div>',
     '',
     '{% schema %}',
@@ -252,10 +339,16 @@ export class ShopifyService {
     try {
       const temaId = await this.obtenerTemaActivoId();
 
+      // Se sobrescribe cada vez que el código de la sección cambió (comparación
+      // de texto), no solo la primera vez — así, si este backend le agrega
+      // capacidades nuevas a la sección (como los botones de comprar
+      // intercalados), las tiendas que ya la tenían instalada también quedan
+      // al día solas en la próxima publicación, sin tener que borrar nada a
+      // mano. Si el texto es idéntico no hace ninguna llamada de más.
       const seccionExistente = await this.obtenerAsset(temaId, 'sections/landing-imagenes.liquid');
-      if (seccionExistente === null) {
+      if (seccionExistente !== this.seccionLandingLiquid) {
         await this.guardarAsset(temaId, 'sections/landing-imagenes.liquid', this.seccionLandingLiquid);
-        this.logger.log('Sección "landing-imagenes" creada en el tema.');
+        this.logger.log(seccionExistente === null ? 'Sección "landing-imagenes" creada en el tema.' : 'Sección "landing-imagenes" actualizada en el tema.');
       }
 
       const plantillaExistente = await this.obtenerAsset(temaId, 'templates/product.landing.json');
@@ -392,6 +485,9 @@ export class ShopifyService {
         throw new Error(`No se pudo actualizar el producto en Shopify (HTTP ${actualizar.status}): ${await actualizar.text()}`);
       }
       const json: any = await actualizar.json();
+      if (input.secuencia && input.secuencia.length > 0) {
+        await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
+      }
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
       return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: false };
     }
@@ -414,6 +510,9 @@ export class ShopifyService {
       throw new Error(`No se pudo crear el producto en Shopify (HTTP ${crear.status}): ${await crear.text()}`);
     }
     const json: any = await crear.json();
+    if (input.secuencia && input.secuencia.length > 0) {
+      await this.guardarMetafieldSecuencia(json.product.id, input.secuencia);
+    }
     this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
     return { url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`, handle: json.product.handle, creada: true };
   }
