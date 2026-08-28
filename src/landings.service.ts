@@ -131,4 +131,15 @@ export class LandingsService implements OnModuleInit {
       this.logger.error('No se pudo eliminar la landing ensamblada: ' + (error as Error).message);
     }
   }
+
+  // Borra TODAS las landings ensambladas de un producto — se usa cuando el
+  // usuario elimina el producto completo desde "Generador de Landings".
+  async eliminarPorProducto(nombreProducto: string): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(`DELETE FROM landings_ensambladas WHERE nombre_producto = $1`, [nombreProducto]);
+    } catch (error) {
+      this.logger.error('No se pudo eliminar las landings del producto: ' + (error as Error).message);
+    }
+  }
 }
