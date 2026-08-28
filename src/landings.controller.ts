@@ -35,4 +35,13 @@ export class LandingsController {
     await this.landingsService.eliminar(Number(id));
     return { ok: true };
   }
+
+  // Borra todas las landings ensambladas de un producto (por nombre) — parte de
+  // "eliminar producto" en el taller. Va antes que nada más porque es una ruta
+  // de 2 segmentos (/landings/producto/:nombre), distinta de /landings/:id.
+  @Delete('producto/:nombre')
+  async eliminarProducto(@Param('nombre') nombre: string) {
+    await this.landingsService.eliminarPorProducto(decodeURIComponent(nombre));
+    return { ok: true };
+  }
 }
