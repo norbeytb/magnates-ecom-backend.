@@ -16,6 +16,7 @@ export interface RegistroHistorial {
   costoEstimadoUsd: number;
   fichaJson?: unknown;
   fotoProductoUrl?: string;
+  templateId?: string;
 }
 
 @Injectable()
@@ -52,6 +53,11 @@ export class HistorialService implements OnModuleInit {
       await this.pool.query(`
         ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS foto_producto_url TEXT;
       `);
+      // Sin esto, al recargar la página se pierde de qué plantilla salió cada pieza
+      // y el bloque "Referencia" del visor de una sola pieza queda vacío para siempre.
+      await this.pool.query(`
+        ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS template_id TEXT;
+      `);
       this.logger.log('Conectado a PostgreSQL — tabla "generaciones" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de historial: ' + (error as Error).message);
@@ -65,8 +71,8 @@ export class HistorialService implements OnModuleInit {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json, foto_producto_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json, foto_producto_url, template_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           registro.nombreProducto,
           registro.seccion,
@@ -75,6 +81,7 @@ export class HistorialService implements OnModuleInit {
           registro.costoEstimadoUsd,
           registro.fichaJson ? JSON.stringify(registro.fichaJson) : null,
           registro.fotoProductoUrl || null,
+          registro.templateId || null,
         ],
       );
     } catch (error) {
