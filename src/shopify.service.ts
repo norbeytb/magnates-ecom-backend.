@@ -59,7 +59,13 @@ import { Injectable, Logger } from '@nestjs/common';
 // texto: lo que el estudiante haya escrito para ese botón puntual (editable
 // en el taller, ver realBotonComprarHtml) — si no mandó nada, la sección cae
 // de vuelta a "COMPRAR AHORA" (ver el Liquid: {{ paso.texto | default: ... }}).
-export type LandingSecuenciaPaso = { tipo: 'imagen'; url: string } | { tipo: 'boton_comprar'; texto?: string };
+// color: el fondo elegido con el selector de color del taller (hex); si no
+// mandó nada, cae al amarillo de Releasit por defecto. colorTexto lo calcula
+// el propio taller según el contraste del color elegido (para que el texto
+// nunca quede ilegible) — el backend solo lo usa tal cual viene.
+export type LandingSecuenciaPaso =
+  | { tipo: 'imagen'; url: string }
+  | { tipo: 'boton_comprar'; texto?: string; color?: string; colorTexto?: string };
 
 export interface PublicarLandingInput {
   nombreProducto: string;
@@ -73,6 +79,14 @@ export interface PublicarLandingInput {
   // intercalados, deja una barra fija abajo de la pantalla que sigue al
   // visitante mientras hace scroll.
   botonFlotante?: boolean;
+  // Mismo texto/color personalizable que los botones intercalados
+  // (LandingSecuenciaPaso), pero acá es uno solo por landing — no vienen
+  // dentro de "secuencia" porque el botón flotante no es un paso de la
+  // secuencia de imágenes/botones, es aparte. Si no mandan nada, cae de
+  // vuelta a "COMPRAR AHORA" en amarillo, igual que antes.
+  botonFlotanteTexto?: string;
+  botonFlotanteColor?: string;
+  botonFlotanteColorTexto?: string;
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -365,6 +379,22 @@ export class ShopifyService {
     await this.guardarMetafield(productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false', avisos);
   }
 
+  // Texto/color personalizados del botón flotante (mismo mecanismo que
+  // "texto"/"color"/"colorTexto" de cada paso 'boton_comprar' dentro de la
+  // secuencia, pero acá es un solo botón por landing, así que van en
+  // metafields aparte en vez de ir dentro del JSON de landing_secuencia). Se
+  // guardan solo cuando el taller efectivamente mandó un valor (ver el
+  // "typeof === 'string'" en publicarLanding) — así una landing vieja, que
+  // nunca tocó estos campos, no pisa nada con string vacío.
+  private async guardarMetafieldBotonFlotanteTexto(productId: number, texto: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(productId, 'boton_flotante_texto', 'single_line_text_field', texto, avisos);
+  }
+
+  private async guardarMetafieldBotonFlotanteColor(productId: number, color: string, colorTexto: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(productId, 'boton_flotante_color', 'single_line_text_field', color, avisos);
+    await this.guardarMetafield(productId, 'boton_flotante_color_texto', 'single_line_text_field', colorTexto, avisos);
+  }
+
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
   // (guardada en el metafield ecom_magnates.landing_secuencia — ver
   // guardarMetafieldSecuencia() más abajo) apilada a pantalla completa: cada
@@ -392,6 +422,9 @@ export class ShopifyService {
     '{%- endcomment -%}',
     '{%- assign secuencia = product.metafields.ecom_magnates.landing_secuencia.value -%}',
     '{%- assign boton_flotante = product.metafields.ecom_magnates.boton_flotante.value -%}',
+    '{%- assign boton_flotante_texto = product.metafields.ecom_magnates.boton_flotante_texto.value -%}',
+    '{%- assign boton_flotante_color = product.metafields.ecom_magnates.boton_flotante_color.value -%}',
+    '{%- assign boton_flotante_color_texto = product.metafields.ecom_magnates.boton_flotante_color_texto.value -%}',
     // El "shake" que se mueve solo cada tanto, para llamar la atención igual
     // que hace el botón amarillo de Releasit — la animación se define UNA vez
     // acá (no se puede definir @keyframes dentro de un style="" en línea) y
@@ -426,8 +459,12 @@ export class ShopifyService {
     // que el botón amarillo real de Releasit. El texto sale de paso.texto —
     // lo que el estudiante haya escrito en el taller para ESE botón puntual
     // (ver realBotonComprarHtml) — y si no escribió nada cae en "COMPRAR AHORA".
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
-    '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" }}</button>',
+    // El color (fondo y texto) también sale del taller, elegido con un
+    // selector de color por botón — colorTexto ya viene calculado por el
+    // taller según el contraste del fondo elegido, para que nunca quede
+    // texto negro sobre un fondo oscuro (o blanco sobre uno claro).
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
@@ -458,7 +495,9 @@ export class ShopifyService {
     // Mismo enganche a Releasit que el botón intercalado de arriba (ver
     // comentario ahí): le hace clic al botón real de Releasit en vez de
     // mandar a /cart, con el viejo comportamiento de respaldo si no lo
-    // encuentra.
+    // encuentra. Mismo texto/color personalizable también (ver
+    // guardarMetafieldBotonFlotanteTexto/Color más arriba) — si el estudiante
+    // nunca los tocó en el taller, cae de vuelta a amarillo con "COMPRAR AHORA".
     '    <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
@@ -466,8 +505,8 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
-    '    >🚚 COMPRAR AHORA</button>',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '    >🚚 {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
     '',
@@ -669,6 +708,28 @@ export class ShopifyService {
     return Number.isFinite(n) && n > 0 ? n.toFixed(2) : undefined;
   }
 
+  // Guarda el texto/color personalizado del botón flotante, solo cuando el
+  // taller efectivamente mandó algo para ese campo (typeof === 'string') —
+  // así una landing vieja, o un reenvío desde una versión del taller que
+  // todavía no tiene este selector, no pisa con vacío lo que ya estuviera
+  // guardado. Se llama igual en "actualizar" y en "crear" (ver
+  // publicarLanding más abajo).
+  private async guardarPersonalizacionBotonFlotante(productId: number, input: PublicarLandingInput, avisos: string[]): Promise<void> {
+    if (typeof input.botonFlotanteTexto === 'string' && input.botonFlotanteTexto.trim() !== '') {
+      await this.guardarMetafieldBotonFlotanteTexto(productId, input.botonFlotanteTexto, avisos);
+    }
+    if (typeof input.botonFlotanteColor === 'string' && input.botonFlotanteColor.trim() !== '') {
+      await this.guardarMetafieldBotonFlotanteColor(
+        productId,
+        input.botonFlotanteColor,
+        typeof input.botonFlotanteColorTexto === 'string' && input.botonFlotanteColorTexto.trim() !== ''
+          ? input.botonFlotanteColorTexto
+          : '#111',
+        avisos,
+      );
+    }
+  }
+
   async publicarLanding(input: PublicarLandingInput): Promise<PublicarLandingResultado> {
     if (!this.configurado()) {
       throw new Error(
@@ -738,6 +799,7 @@ export class ShopifyService {
         await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
       }
       await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
+      await this.guardarPersonalizacionBotonFlotante(json.product.id, input, avisos);
       await this.publicarEnTiendaOnline(json.product.id);
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
       return {
@@ -770,6 +832,7 @@ export class ShopifyService {
       await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
     }
     await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
+    await this.guardarPersonalizacionBotonFlotante(json.product.id, input, avisos);
     await this.publicarEnTiendaOnline(json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
     return {
