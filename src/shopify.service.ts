@@ -56,7 +56,10 @@ import { Injectable, Logger } from '@nestjs/common';
 // enviarLandingAShopify() en el frontend. La sección del tema dibuja cada
 // paso en el mismo orden en que viene, así el botón queda exactamente donde
 // el estudiante lo puso dentro de las imágenes (no solo al final).
-export type LandingSecuenciaPaso = { tipo: 'imagen'; url: string } | { tipo: 'boton_comprar' };
+// texto: lo que el estudiante haya escrito para ese botón puntual (editable
+// en el taller, ver realBotonComprarHtml) — si no mandó nada, la sección cae
+// de vuelta a "COMPRAR AHORA" (ver el Liquid: {{ paso.texto | default: ... }}).
+export type LandingSecuenciaPaso = { tipo: 'imagen'; url: string } | { tipo: 'boton_comprar'; texto?: string };
 
 export interface PublicarLandingInput {
   nombreProducto: string;
@@ -389,6 +392,11 @@ export class ShopifyService {
     '{%- endcomment -%}',
     '{%- assign secuencia = product.metafields.ecom_magnates.landing_secuencia.value -%}',
     '{%- assign boton_flotante = product.metafields.ecom_magnates.boton_flotante.value -%}',
+    // El "shake" que se mueve solo cada tanto, para llamar la atención igual
+    // que hace el botón amarillo de Releasit — la animación se define UNA vez
+    // acá (no se puede definir @keyframes dentro de un style="" en línea) y
+    // cada botón de abajo solo la referencia por nombre con animation:.
+    '<style>@keyframes ecomMagnatesBtnShake{0%,100%{transform:translateX(0) rotate(0deg);}92%{transform:translateX(0) rotate(0deg);}93%{transform:translateX(-3px) rotate(-2deg);}94%{transform:translateX(3px) rotate(2deg);}95%{transform:translateX(-3px) rotate(-2deg);}96%{transform:translateX(3px) rotate(2deg);}97%{transform:translateX(-2px) rotate(-1deg);}98%,99%{transform:translateX(0) rotate(0deg);}}</style>',
     '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
     '  {%- if secuencia -%}',
     '    {%- for paso in secuencia -%}',
@@ -413,8 +421,13 @@ export class ShopifyService {
     '            <button',
     '              type="button"',
     '              onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-{{ forloop.index }}\'); if(f){ f.submit(); } }"',
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:8px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;"',
-    '            >COMPRAR AHORA</button>',
+    // border-radius grande (píldora) + el emoji de camión + animation:
+    // referenciando el @keyframes de arriba, para que se vea y se mueva igual
+    // que el botón amarillo real de Releasit. El texto sale de paso.texto —
+    // lo que el estudiante haya escrito en el taller para ESE botón puntual
+    // (ver realBotonComprarHtml) — y si no escribió nada cae en "COMPRAR AHORA".
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" }}</button>',
     '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
@@ -453,8 +466,8 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:8px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;"',
-    '    >COMPRAR AHORA</button>',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '    >🚚 COMPRAR AHORA</button>',
     '  </div>',
     '{%- endif -%}',
     '',
