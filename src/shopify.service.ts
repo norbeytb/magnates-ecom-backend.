@@ -394,21 +394,28 @@ export class ShopifyService {
     '    {%- for paso in secuencia -%}',
     '      {%- if paso.tipo == "boton_comprar" -%}',
     '        {%- if product.selected_or_first_available_variant -%}',
-    '          <form method="post" action="/cart/add" style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
-    '            <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
-    '            <input type="hidden" name="quantity" value="1">',
+    // La tienda tiene instalada Releasit (Contra Entrega): su botón real
+    // ("Pídela y Paga en Casa") vive en el bloque nativo de compra, con
+    // id="rsi_buy_now_button" — visto con el inspector el 29/08. Ese botón
+    // abre el formulario propio de Releasit (COD) en vez de mandar a /cart
+    // como hacía nuestro <form action="/cart/add"> de antes. En vez de
+    // reinventar ese formulario (arriesgado, no sabemos su lógica interna),
+    // el botón de acá simplemente le hace clic A ESE MISMO botón real —
+    // mismo resultado exacto que si el cliente lo tocara él mismo más abajo.
+    // Si por lo que sea Releasit no está instalado o cambia ese id en el
+    // futuro, cae de respaldo al viejo comportamiento (agregar al carrito
+    // normal) para que el botón nunca quede sin hacer nada.
+    '          <div style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
+    '            <form id="rsi-fallback-form-{{ forloop.index }}" method="post" action="/cart/add" style="display:none !important;">',
+    '              <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
+    '              <input type="hidden" name="quantity" value="1">',
+    '            </form>',
     '            <button',
-    '              type="submit"',
-    '              name="checkout"',
-    // Todo con !important: varios temas (Horizon incluido) traen un reset
-    // global de tipo "button { all: unset }" o similar que, al tener más
-    // especificidad efectiva que un style="" inline, puede dejar este botón
-    // con tamaño/color heredados del tema y volverlo invisible (ocupa un
-    // espacio en blanco/negro liso en vez de mostrarse) aunque el <form> y el
-    // <button> sí estén en el HTML — visto en vivo con el inspector el 28/08.
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#000 !important; color:#fff !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:4px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important;"',
+    '              type="button"',
+    '              onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-{{ forloop.index }}\'); if(f){ f.submit(); } }"',
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:8px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;"',
     '            >COMPRAR AHORA</button>',
-    '          </form>',
+    '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
     '        <img',
@@ -435,17 +442,19 @@ export class ShopifyService {
     '</div>',
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
     '  <div style="position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
-    '    <form method="post" action="/cart/add" style="margin:0 !important; display:block !important;">',
+    // Mismo enganche a Releasit que el botón intercalado de arriba (ver
+    // comentario ahí): le hace clic al botón real de Releasit en vez de
+    // mandar a /cart, con el viejo comportamiento de respaldo si no lo
+    // encuentra.
+    '    <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
-    '      <button',
-    '        type="submit"',
-    '        name="checkout"',
-    // Mismo endurecimiento con !important que el botón intercalado de arriba
-    // (ver comentario ahí) — protege contra el mismo reset del tema.
-    '        style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#000 !important; color:#fff !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:4px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important;"',
-    '      >COMPRAR AHORA</button>',
     '    </form>',
+    '    <button',
+    '      type="button"',
+    '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:#f0b90b !important; color:#111 !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:8px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;"',
+    '    >COMPRAR AHORA</button>',
     '  </div>',
     '{%- endif -%}',
     '',
