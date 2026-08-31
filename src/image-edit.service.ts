@@ -42,6 +42,9 @@ export interface FichaTecnica {
 }
 
 export interface GenerarSeccionInput {
+  // Quién pidió esta generación (ver auth.guard.ts) — se usa solo para que el
+  // historial guardado quede a nombre de esta cuenta (ver exito() más abajo).
+  usuarioId: number;
   seccion: string; // 'hero' | 'oferta' | 'logistica' | 'antesdespues' | 'beneficios' | 'tabla' | 'autoridad' | 'testimonios' | 'modouso' | 'faq'
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
   plantillaReferenciaUrl?: string; // YA NO SE USA para generar (ver nota de costo abajo) — se deja en la interfaz solo por compatibilidad con llamadas viejas, se ignora.
@@ -152,7 +155,7 @@ export class ImageEditService {
     fotoProductoUrl: string,
   ): GenerarSeccionResultado {
     const costoEstimadoUsd = numImagenes * this.costoPorCalidad(calidad);
-    this.historialService.guardar({
+    this.historialService.guardar(input.usuarioId, {
       nombreProducto: input.ficha.nombreProducto,
       seccion: input.seccion,
       imagenUrl: imagenesUrl[0] || '',

@@ -4,8 +4,9 @@
 // simular la generación. El frontend nunca ve la API key de fal.ai: solo
 // habla con TU backend, y es tu backend quien habla con fal.ai.
 
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { ImageEditService, GenerarSeccionResultado } from './image-edit.service';
+import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
 interface PersonajesDto {
   nacionalidad?: string;
@@ -54,12 +55,14 @@ interface GenerarSeccionDto {
 }
 
 @Controller('ia/imagenes')
+@UseGuards(JwtAuthGuard)
 export class ImageEditController {
   constructor(private readonly imageEditService: ImageEditService) {}
 
   @Post('generar-seccion')
-  async generarSeccion(@Body() dto: GenerarSeccionDto): Promise<GenerarSeccionResultado> {
+  async generarSeccion(@Body() dto: GenerarSeccionDto, @UsuarioActual() usuario: UsuarioAutenticado): Promise<GenerarSeccionResultado> {
     return this.imageEditService.generarSeccion({
+      usuarioId: usuario.id,
       seccion: dto.seccion,
       imagenProductoUrl: dto.imagenProductoUrl,
       plantillaReferenciaUrl: dto.plantillaReferenciaUrl,

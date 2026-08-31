@@ -4,6 +4,11 @@
 // producto, sección, URL de la imagen, el prompt usado y el costo estimado.
 // La tabla se crea sola la primera vez que el backend arranca con la base de
 // datos conectada — no hace falta correr ninguna migración a mano.
+//
+// Desde que existen cuentas (ver auth.service.ts), cada fila pertenece a un
+// usuario_id — cada quien ve solo su propio historial. Las filas guardadas
+// ANTES de que existieran las cuentas quedan con usuario_id NULL (no se
+// borran, pero tampoco las va a ver nadie).
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
@@ -58,6 +63,10 @@ export class HistorialService implements OnModuleInit {
       await this.pool.query(`
         ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS template_id TEXT;
       `);
+      // Sin FK a "usuarios" a propósito — misma razón que en
+      // productos.service.ts: no hay orden garantizado entre los
+      // onModuleInit de los distintos *.service.ts.
+      await this.pool.query(`ALTER TABLE generaciones ADD COLUMN IF NOT EXISTS usuario_id INTEGER;`);
       this.logger.log('Conectado a PostgreSQL — tabla "generaciones" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de historial: ' + (error as Error).message);
@@ -67,12 +76,12 @@ export class HistorialService implements OnModuleInit {
 
   // Nunca debe romper una generación: si guardar el historial falla, solo se
   // registra en el log y se sigue de largo — el usuario ya tiene su imagen.
-  async guardar(registro: RegistroHistorial): Promise<void> {
+  async guardar(usuarioId: number, registro: RegistroHistorial): Promise<void> {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json, foto_producto_url, template_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO generaciones (nombre_producto, seccion, imagen_url, prompt_usado, costo_estimado_usd, ficha_json, foto_producto_url, template_id, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           registro.nombreProducto,
           registro.seccion,
@@ -82,6 +91,7 @@ export class HistorialService implements OnModuleInit {
           registro.fichaJson ? JSON.stringify(registro.fichaJson) : null,
           registro.fotoProductoUrl || null,
           registro.templateId || null,
+          usuarioId,
         ],
       );
     } catch (error) {
@@ -89,24 +99,24 @@ export class HistorialService implements OnModuleInit {
     }
   }
 
-  async listar(nombreProducto?: string): Promise<any[]> {
+  async listar(usuarioId: number, nombreProducto?: string): Promise<any[]> {
     if (!this.pool) return [];
     const resultado = nombreProducto
       ? await this.pool.query(
-          `SELECT * FROM generaciones WHERE nombre_producto = $1 ORDER BY creado_en DESC LIMIT 200`,
-          [nombreProducto],
+          `SELECT * FROM generaciones WHERE usuario_id = $1 AND nombre_producto = $2 ORDER BY creado_en DESC LIMIT 200`,
+          [usuarioId, nombreProducto],
         )
-      : await this.pool.query(`SELECT * FROM generaciones ORDER BY creado_en DESC LIMIT 200`);
+      : await this.pool.query(`SELECT * FROM generaciones WHERE usuario_id = $1 ORDER BY creado_en DESC LIMIT 200`, [usuarioId]);
     return resultado.rows;
   }
 
   // Borra TODO el historial de piezas generadas de un producto — se usa cuando
   // el usuario elimina el producto completo desde "Generador de Landings".
   // Nunca debe tumbar el flujo del taller: si falla, solo se registra en el log.
-  async eliminarPorProducto(nombreProducto: string): Promise<void> {
+  async eliminarPorProducto(usuarioId: number, nombreProducto: string): Promise<void> {
     if (!this.pool) return;
     try {
-      await this.pool.query(`DELETE FROM generaciones WHERE nombre_producto = $1`, [nombreProducto]);
+      await this.pool.query(`DELETE FROM generaciones WHERE usuario_id = $1 AND nombre_producto = $2`, [usuarioId, nombreProducto]);
     } catch (error) {
       this.logger.error('No se pudo eliminar el historial del producto: ' + (error as Error).message);
     }

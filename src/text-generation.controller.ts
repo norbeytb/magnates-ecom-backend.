@@ -4,8 +4,9 @@
 // taller. El frontend ya no manda ninguna API Key: solo el nombre y los
 // detalles del producto. La key vive únicamente en este servidor.
 
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { TextGenerationService, GenerarCopyResultado } from './text-generation.service';
+import { JwtAuthGuard } from './auth.guard';
 
 interface GenerarCopyDto {
   nombreProducto: string;
@@ -13,6 +14,7 @@ interface GenerarCopyDto {
 }
 
 @Controller('ia/texto')
+@UseGuards(JwtAuthGuard)
 export class TextGenerationController {
   constructor(private readonly textGenerationService: TextGenerationService) {}
 

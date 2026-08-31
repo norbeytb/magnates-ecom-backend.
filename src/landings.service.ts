@@ -6,6 +6,11 @@
 // página o se abra desde otro dispositivo. Sigue el mismo patrón que
 // historial.service.ts: si no hay DATABASE_URL o algo falla, el taller sigue
 // funcionando normal — solo que esa landing no queda guardada.
+//
+// Desde que existen cuentas (ver auth.service.ts), cada landing pertenece a
+// un usuario_id — cada quien ve solo las suyas. Las landings guardadas ANTES
+// de que existieran las cuentas quedan con usuario_id NULL (no se borran,
+// pero tampoco las va a ver nadie).
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
@@ -56,6 +61,11 @@ export class LandingsService implements OnModuleInit {
           actualizado_en TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // El id ya es SERIAL PRIMARY KEY (no depende del nombre del producto),
+      // así que acá alcanza con agregar la columna — sin FK a "usuarios" por
+      // la misma razón que en productos.service.ts (no hay orden garantizado
+      // entre los onModuleInit de los distintos *.service.ts).
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS usuario_id INTEGER;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -65,13 +75,13 @@ export class LandingsService implements OnModuleInit {
 
   // Nunca debe romper el ensamblado en el frontend: si guardar falla, solo se
   // registra en el log y la landing queda solo en memoria del navegador.
-  async guardar(registro: RegistroLanding): Promise<any | null> {
+  async guardar(usuarioId: number, registro: RegistroLanding): Promise<any | null> {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [registro.nombreProducto, registro.num, JSON.stringify(registro.items), !!registro.botonFlotante],
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, usuario_id)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [registro.nombreProducto, registro.num, JSON.stringify(registro.items), !!registro.botonFlotante, usuarioId],
       );
       return resultado.rows[0];
     } catch (error) {
@@ -80,18 +90,21 @@ export class LandingsService implements OnModuleInit {
     }
   }
 
-  async listar(nombreProducto?: string): Promise<any[]> {
+  async listar(usuarioId: number, nombreProducto?: string): Promise<any[]> {
     if (!this.pool) return [];
     const resultado = nombreProducto
       ? await this.pool.query(
-          `SELECT * FROM landings_ensambladas WHERE nombre_producto = $1 ORDER BY creado_en DESC`,
-          [nombreProducto],
+          `SELECT * FROM landings_ensambladas WHERE usuario_id = $1 AND nombre_producto = $2 ORDER BY creado_en DESC`,
+          [usuarioId, nombreProducto],
         )
-      : await this.pool.query(`SELECT * FROM landings_ensambladas ORDER BY creado_en DESC`);
+      : await this.pool.query(`SELECT * FROM landings_ensambladas WHERE usuario_id = $1 ORDER BY creado_en DESC`, [usuarioId]);
     return resultado.rows;
   }
 
-  async actualizar(id: number, cambios: CambiosLanding): Promise<any | null> {
+  // "id" ya identifica una sola fila sin ambigüedad, pero igual se exige
+  // usuario_id en el WHERE — así nadie puede tocar (ni siquiera adivinando el
+  // id) una landing que no es suya.
+  async actualizar(usuarioId: number, id: number, cambios: CambiosLanding): Promise<any | null> {
     if (!this.pool) return null;
     const sets: string[] = [];
     const values: any[] = [];
@@ -110,10 +123,10 @@ export class LandingsService implements OnModuleInit {
     }
     if (sets.length === 0) return null;
     sets.push(`actualizado_en = now()`);
-    values.push(id);
+    values.push(id, usuarioId);
     try {
       const resultado = await this.pool.query(
-        `UPDATE landings_ensambladas SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+        `UPDATE landings_ensambladas SET ${sets.join(', ')} WHERE id = $${i} AND usuario_id = $${i + 1} RETURNING *`,
         values,
       );
       return resultado.rows[0] || null;
@@ -123,10 +136,10 @@ export class LandingsService implements OnModuleInit {
     }
   }
 
-  async eliminar(id: number): Promise<void> {
+  async eliminar(usuarioId: number, id: number): Promise<void> {
     if (!this.pool) return;
     try {
-      await this.pool.query(`DELETE FROM landings_ensambladas WHERE id = $1`, [id]);
+      await this.pool.query(`DELETE FROM landings_ensambladas WHERE id = $1 AND usuario_id = $2`, [id, usuarioId]);
     } catch (error) {
       this.logger.error('No se pudo eliminar la landing ensamblada: ' + (error as Error).message);
     }
@@ -134,10 +147,10 @@ export class LandingsService implements OnModuleInit {
 
   // Borra TODAS las landings ensambladas de un producto — se usa cuando el
   // usuario elimina el producto completo desde "Generador de Landings".
-  async eliminarPorProducto(nombreProducto: string): Promise<void> {
+  async eliminarPorProducto(usuarioId: number, nombreProducto: string): Promise<void> {
     if (!this.pool) return;
     try {
-      await this.pool.query(`DELETE FROM landings_ensambladas WHERE nombre_producto = $1`, [nombreProducto]);
+      await this.pool.query(`DELETE FROM landings_ensambladas WHERE usuario_id = $1 AND nombre_producto = $2`, [usuarioId, nombreProducto]);
     } catch (error) {
       this.logger.error('No se pudo eliminar las landings del producto: ' + (error as Error).message);
     }

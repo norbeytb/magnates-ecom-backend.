@@ -5,34 +5,40 @@
 // "Mis Landings" puede mostrar todas las landings de todos los productos aunque
 // se recargue la página, en vez de perderlas al cerrar el navegador.
 
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { LandingsService } from './landings.service';
+import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
 @Controller('landings')
+@UseGuards(JwtAuthGuard)
 export class LandingsController {
   constructor(private readonly landingsService: LandingsService) {}
 
   @Get()
-  async listar(@Query('producto') producto?: string) {
-    return this.landingsService.listar(producto);
+  async listar(@Query('producto') producto: string | undefined, @UsuarioActual() usuario: UsuarioAutenticado) {
+    return this.landingsService.listar(usuario.id, producto);
   }
 
   @Post()
-  async guardar(@Body() body: { nombreProducto: string; num: number; items: any[]; botonFlotante?: boolean }) {
-    return this.landingsService.guardar(body);
+  async guardar(
+    @Body() body: { nombreProducto: string; num: number; items: any[]; botonFlotante?: boolean },
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ) {
+    return this.landingsService.guardar(usuario.id, body);
   }
 
   @Patch(':id')
   async actualizar(
     @Param('id') id: string,
     @Body() body: { items?: any[]; botonFlotante?: boolean; shopifyUrl?: string },
+    @UsuarioActual() usuario: UsuarioAutenticado,
   ) {
-    return this.landingsService.actualizar(Number(id), body);
+    return this.landingsService.actualizar(usuario.id, Number(id), body);
   }
 
   @Delete(':id')
-  async eliminar(@Param('id') id: string) {
-    await this.landingsService.eliminar(Number(id));
+  async eliminar(@Param('id') id: string, @UsuarioActual() usuario: UsuarioAutenticado) {
+    await this.landingsService.eliminar(usuario.id, Number(id));
     return { ok: true };
   }
 
@@ -40,8 +46,8 @@ export class LandingsController {
   // "eliminar producto" en el taller. Va antes que nada más porque es una ruta
   // de 2 segmentos (/landings/producto/:nombre), distinta de /landings/:id.
   @Delete('producto/:nombre')
-  async eliminarProducto(@Param('nombre') nombre: string) {
-    await this.landingsService.eliminarPorProducto(decodeURIComponent(nombre));
+  async eliminarProducto(@Param('nombre') nombre: string, @UsuarioActual() usuario: UsuarioAutenticado) {
+    await this.landingsService.eliminarPorProducto(usuario.id, decodeURIComponent(nombre));
     return { ok: true };
   }
 }
