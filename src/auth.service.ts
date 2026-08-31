@@ -18,68 +18,65 @@
 // tener que volver a pedir la contraseña cada vez — ver auth.guard.ts.
 //
 // Dependencias que hay que instalar en el proyecto (no vienen con NestJS):
-//   npm install bcryptjs jsonwebtoken nodemailer
-//   npm install -D @types/bcryptjs @types/jsonwebtoken @types/nodemailer
+//   npm install bcryptjs jsonwebtoken
+//   npm install -D @types/bcryptjs @types/jsonwebtoken
 // (se usa "bcryptjs" — versión en JavaScript puro de bcrypt — en vez de
 // "bcrypt" a secas, porque "bcrypt" necesita compilar código nativo en el
 // build de Railway y puede fallar; "bcryptjs" hace exactamente lo mismo sin
 // ese problema).
 //
-// El correo de "olvidé mi contraseña" se manda con "nodemailer" a través del
-// SMTP de Gmail, usando una cuenta de Gmail común (no un servicio de correo
-// transaccional tipo Resend/SendGrid) — así no hace falta comprar ni
-// verificar un dominio propio para poder mandarle el correo a cualquier
-// persona, solo una cuenta de Gmail con una "contraseña de aplicación". Ver
-// la nota completa en enviarCorreoRecuperacion más abajo.
+// "Olvidé mi contraseña" es MANUAL por ahora, no automático: no se manda
+// ningún correo. Esto es a propósito — Railway (donde corre este backend)
+// bloquea las conexiones SMTP salientes en los planes Free/Trial/Hobby (así
+// que un envío directo, por ejemplo desde una cuenta de Gmail, no puede
+// funcionar ahí), y los servicios de correo por HTTPS que sí funcionan en
+// ese plan (como Resend) exigen verificar un dominio propio para poder
+// mandarle el correo a cualquier persona — y verificar un dominio requiere
+// tener uno comprado. Mientras eso no se resuelva, cuando alguien necesita
+// recuperar el acceso escribe al soporte (correo o WhatsApp, ver el botón
+// "¿Olvidaste tu contraseña?" del taller) y un administrador le cambia la
+// contraseña a mano desde el panel de administración — ver
+// listarUsuarios/restablecerPasswordAdmin más abajo y admin.controller.ts.
 //
 // Variables de entorno nuevas que hay que agregar en Railway:
-//   JWT_SECRET         — cualquier texto largo y aleatorio (ej. generado con
-//                         `openssl rand -hex 32`). Si no está configurada, el
-//                         backend arranca igual pero avisa en los logs y usa
-//                         una clave de emergencia solo para no romper — hay
-//                         que configurar la de verdad antes de usar esto en
-//                         serio, porque sin ella cualquiera podría fabricarse
-//                         un token.
-//   GMAIL_USER         — la dirección de Gmail desde la que se manda el
-//                         correo de recuperación (ej. "tucorreo@gmail.com").
-//                         Sin esto, "olvidé mi contraseña" no manda nada —
-//                         solo se avisa en los logs.
-//   GMAIL_APP_PASSWORD — la "contraseña de aplicación" de esa cuenta de
-//                         Gmail (NO la contraseña normal de la cuenta) — se
-//                         genera en myaccount.google.com → Seguridad →
-//                         Verificación en dos pasos → Contraseñas de
-//                         aplicaciones. Hace falta tener activada la
-//                         verificación en dos pasos en esa cuenta de Google
-//                         para poder generarla.
-//   PUBLIC_APP_URL     — la URL pública donde se abre el taller (ej.
-//                         "https://tu-taller.ejemplo.com/"), para poder
-//                         armar el link de recuperación que va dentro del
-//                         correo. Sin esto, el link no va a apuntar a ningún
-//                         lado real.
+//   JWT_SECRET    — cualquier texto largo y aleatorio (ej. generado con
+//                    `openssl rand -hex 32`). Si no está configurada, el
+//                    backend arranca igual pero avisa en los logs y usa una
+//                    clave de emergencia solo para no romper — hay que
+//                    configurar la de verdad antes de usar esto en serio,
+//                    porque sin ella cualquiera podría fabricarse un token.
+//   ADMIN_EMAILS  — uno o más correos separados por coma (ej.
+//                    "vos@gmail.com,otro@gmail.com") que van a poder entrar
+//                    al panel de administración (ver todos los usuarios y
+//                    cambiarles la contraseña a mano). Sin esto configurado,
+//                    nadie tiene acceso de administrador, ni siquiera vos.
 
-import { ConflictException, Injectable, InternalServerErrorException, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { Pool } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
-import * as crypto from 'crypto';
-import * as dns from 'dns';
-import * as nodemailer from 'nodemailer';
-
-// Railway (donde corre este backend) no soporta conexiones salientes por
-// IPv6 — y Gmail publica una dirección IPv6 para su servidor SMTP además de
-// la IPv4 normal. Sin esto, a veces Node elige probar primero la dirección
-// IPv6 de Gmail, que en Railway falla siempre con "ENETUNREACH" (red
-// inalcanzable) aunque las credenciales estén perfectas. Esta línea le dice
-// a Node que, al resolver un nombre de dominio, prefiera siempre la
-// dirección IPv4 si existe — afecta a todo el proceso (no solo al correo),
-// así que alcanza con ponerla una sola vez acá arriba.
-dns.setDefaultResultOrder('ipv4first');
 
 export interface UsuarioPublico {
   id: number;
   email: string;
   nombre?: string;
   apellido?: string;
+  // Ver la nota de ADMIN_EMAILS más arriba — se recalcula en cada pedido
+  // (nunca se confía en lo que diga un token viejo), así que cambiar esa
+  // variable en Railway aplica al toque, sin que nadie tenga que volver a
+  // iniciar sesión.
+  esAdmin: boolean;
+}
+
+// Fila que devuelve listarUsuarios() para el panel de administración — no
+// incluye password_hash ni nada sensible, solo lo que hace falta para
+// mostrar la lista y saber a quién restablecerle la contraseña.
+export interface UsuarioParaAdmin {
+  id: number;
+  email: string;
+  nombre?: string;
+  apellido?: string;
+  creadoEn: string;
 }
 
 export interface SesionResultado extends UsuarioPublico {
@@ -108,21 +105,17 @@ export class AuthService implements OnModuleInit {
     return !!process.env.DATABASE_URL;
   }
 
-  // Cuenta de Gmail desde la que se manda el correo de "recuperar
-  // contraseña". Si falta cualquiera de las dos variables, no se rompe nada
-  // — simplemente no se manda el correo y se avisa en los logs (así el
-  // resto del backend sigue funcionando aunque todavía no se haya
-  // configurado esto).
-  private get gmailUser(): string | null {
-    return process.env.GMAIL_USER || null;
+  // Lista de correos con acceso de administrador — ver la nota de
+  // ADMIN_EMAILS arriba del todo del archivo.
+  private get adminEmails(): string[] {
+    return String(process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((correo) => correo.trim().toLowerCase())
+      .filter(Boolean);
   }
 
-  private get gmailAppPassword(): string | null {
-    return process.env.GMAIL_APP_PASSWORD || null;
-  }
-
-  private get publicAppUrl(): string | null {
-    return process.env.PUBLIC_APP_URL || null;
+  private esAdminEmail(email: string): boolean {
+    return this.adminEmails.includes(this.normalizarEmail(email));
   }
 
   async onModuleInit() {
@@ -146,11 +139,6 @@ export class AuthService implements OnModuleInit {
       // correo pelado en la esquina del taller.
       await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nombre TEXT;`);
       await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS apellido TEXT;`);
-      // Para "olvidé mi contraseña": un token de un solo uso, guardado con su
-      // fecha de vencimiento. Mientras no se pida una recuperación quedan en
-      // NULL.
-      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS reset_token TEXT;`);
-      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS reset_token_expira TIMESTAMPTZ;`);
       this.logger.log('Conectado a PostgreSQL — tabla "usuarios" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de usuarios: ' + (error as Error).message);
@@ -200,7 +188,7 @@ export class AuthService implements OnModuleInit {
       [emailNormalizado, passwordHash, nombreLimpio, apellidoLimpio],
     );
     const fila = resultado.rows[0];
-    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined };
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined, esAdmin: this.esAdminEmail(fila.email) };
     this.logger.log(`Nueva cuenta registrada: ${usuario.email}`);
     return { ...usuario, token: this.firmarToken(usuario) };
   }
@@ -221,7 +209,7 @@ export class AuthService implements OnModuleInit {
     if (!fila || !(await bcrypt.compare(String(password || ''), fila.password_hash))) {
       throw new UnauthorizedException('Correo o contraseña incorrectos.');
     }
-    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined };
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined, esAdmin: this.esAdminEmail(fila.email) };
     return { ...usuario, token: this.firmarToken(usuario) };
   }
 
@@ -231,147 +219,62 @@ export class AuthService implements OnModuleInit {
   verificarToken(token: string): UsuarioPublico {
     try {
       const payload = jwt.verify(token, this.jwtSecret) as jwt.JwtPayload;
+      const email = String(payload.email || '');
       return {
         id: Number(payload.sub),
-        email: String(payload.email || ''),
+        email,
         nombre: payload.nombre ? String(payload.nombre) : undefined,
         apellido: payload.apellido ? String(payload.apellido) : undefined,
+        // A propósito NO se lee de payload: se recalcula siempre contra el
+        // ADMIN_EMAILS actual (ver la nota arriba del todo del archivo), así
+        // un token viejo nunca puede seguir dando acceso de administrador
+        // después de que se lo saque de esa variable en Railway.
+        esAdmin: this.esAdminEmail(email),
       };
     } catch {
       throw new UnauthorizedException('Sesión inválida o vencida — volvé a iniciar sesión.');
     }
   }
 
-  // Cachea el "transporter" de nodemailer (la conexión configurada al SMTP
-  // de Gmail) — no hace falta armarlo de nuevo en cada correo, solo la
-  // primera vez que hace falta mandar uno.
-  private transportadorGmail: nodemailer.Transporter | null = null;
+  // ---------------- PANEL DE ADMINISTRACIÓN ----------------
+  // Ver la nota grande arriba del todo del archivo: mientras no haya un
+  // dominio propio verificado para mandar correos, "olvidé mi contraseña" es
+  // manual — el administrador (cualquier correo en ADMIN_EMAILS) usa estos
+  // dos métodos desde admin.controller.ts para ver quién está registrado y
+  // cambiarle la contraseña a mano cuando alguien lo pida por fuera del
+  // sistema (correo o WhatsApp de soporte).
 
-  private obtenerTransportadorGmail(): nodemailer.Transporter | null {
-    const user = this.gmailUser;
-    const pass = this.gmailAppPassword;
-    if (!user || !pass) return null;
-    if (!this.transportadorGmail) {
-      this.transportadorGmail = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user, pass },
-        // Sin esto, si Gmail no contesta (red bloqueada, credenciales mal,
-        // etc.) la conexión puede quedarse colgada varios minutos — con
-        // estos límites, a los 15 segundos se da por vencida y tira error en
-        // vez de quedarse esperando para siempre.
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-        socketTimeout: 15000,
-      });
-    }
-    return this.transportadorGmail;
+  async listarUsuarios(): Promise<UsuarioParaAdmin[]> {
+    if (!this.pool) return [];
+    const resultado = await this.pool.query(
+      `SELECT id, email, nombre, apellido, creado_en FROM usuarios ORDER BY creado_en DESC`,
+    );
+    return resultado.rows.map((fila) => ({
+      id: fila.id,
+      email: fila.email,
+      nombre: fila.nombre || undefined,
+      apellido: fila.apellido || undefined,
+      creadoEn: fila.creado_en,
+    }));
   }
 
-  // Manda el correo de recuperación con el link para elegir una contraseña
-  // nueva, usando el SMTP de Gmail (con una cuenta de Gmail común y una
-  // "contraseña de aplicación" — no un servicio de correo transaccional como
-  // Resend/SendGrid). Se eligió así para no depender de comprar y verificar
-  // un dominio propio: con una cuenta de Gmail y su contraseña de aplicación
-  // alcanza para mandarle este correo a cualquier persona, gratis. El límite
-  // es de aproximadamente 100-150 correos por día por cuenta de Gmail — de
-  // sobra para esto. Si falta configurar GMAIL_USER/GMAIL_APP_PASSWORD, no
-  // revienta — solo avisa en los logs, para que el resto del sistema
-  // (registro, login) siga funcionando igual.
-  private async enviarCorreoRecuperacion(email: string, nombre: string | null, token: string): Promise<void> {
-    const transportador = this.obtenerTransportadorGmail();
-    if (!transportador) {
-      this.logger.warn(`No se pudo mandar el correo de recuperación a ${email}: falta configurar GMAIL_USER y GMAIL_APP_PASSWORD en Railway.`);
-      return;
-    }
-    const baseUrl = this.publicAppUrl;
-    if (!baseUrl) {
-      this.logger.warn(`No se pudo armar el link de recuperación para ${email}: falta configurar PUBLIC_APP_URL en Railway.`);
-      return;
-    }
-    const separador = baseUrl.includes('?') ? '&' : '?';
-    const link = `${baseUrl}${separador}resetToken=${encodeURIComponent(token)}`;
-    const saludo = nombre ? `Hola, ${nombre}:` : 'Hola:';
-    const html = `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
-        <h2 style="color:#1c1810;">Recuperar contraseña</h2>
-        <p>${saludo}</p>
-        <p>Pediste recuperar el acceso a tu cuenta de Ecom Magnates. Hacé clic en el siguiente botón para elegir una contraseña nueva:</p>
-        <p style="text-align:center;margin:28px 0;">
-          <a href="${link}" style="background:#d4a935;color:#1c1408;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">Elegir nueva contraseña</a>
-        </p>
-        <p>Si el botón no funciona, copiá y pegá este link en tu navegador:<br>${link}</p>
-        <p>Este link vence en 1 hora. Si vos no pediste esto, podés ignorar este correo — tu contraseña sigue igual.</p>
-      </div>
-    `;
-    try {
-      await transportador.sendMail({
-        from: `"Ecom Magnates" <${this.gmailUser}>`,
-        to: email,
-        subject: 'Recuperar tu contraseña — Ecom Magnates',
-        html,
-      });
-    } catch (error) {
-      this.logger.error('No se pudo mandar el correo de recuperación: ' + (error as Error).message);
-    }
-  }
-
-  // Siempre devuelve { ok: true } exista o no esa cuenta — así nadie puede
-  // usar este endpoint para averiguar qué correos están registrados. Si el
-  // correo existe de verdad, por atrás se genera un token y se manda el
-  // correo con el link.
-  async solicitarRecuperacion(email: string): Promise<{ ok: true }> {
-    if (!this.pool) {
-      return { ok: true };
-    }
-    const emailNormalizado = this.normalizarEmail(email);
-    if (!emailNormalizado) {
-      return { ok: true };
-    }
-    const resultado = await this.pool.query(`SELECT id, email, nombre FROM usuarios WHERE email = $1`, [emailNormalizado]);
-    const fila = resultado.rows[0];
-    if (fila) {
-      const token = crypto.randomBytes(32).toString('hex');
-      const expira = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
-      await this.pool.query(`UPDATE usuarios SET reset_token = $1, reset_token_expira = $2 WHERE id = $3`, [token, expira, fila.id]);
-      // OJO: a propósito NO se espera ("await") a que termine de mandarse el
-      // correo antes de responder — así el pedido HTTP le contesta al taller
-      // al toque, sin importar cuánto tarde (o si se cuelga) la conexión
-      // SMTP a Gmail. Antes esto sí se esperaba, y si Gmail no respondía
-      // rápido, la persona se quedaba viendo "Enviando…" en el botón para
-      // siempre, sin ningún aviso.
-      this.enviarCorreoRecuperacion(fila.email, fila.nombre || null, token).catch((error) => {
-        this.logger.error('Fallo al mandar el correo de recuperación (en segundo plano): ' + (error as Error).message);
-      });
-      this.logger.log(`Recuperación de contraseña solicitada para ${fila.email}`);
-    }
-    return { ok: true };
-  }
-
-  async restablecerPassword(token: string, password: string): Promise<{ ok: true }> {
+  async restablecerPasswordAdmin(usuarioId: number, password: string): Promise<{ ok: true }> {
     if (!this.pool) {
       throw new InternalServerErrorException('No se pudo restablecer la contraseña: falta configurar la base de datos en el backend.');
-    }
-    const tokenLimpio = String(token || '').trim();
-    if (!tokenLimpio) {
-      throw new UnauthorizedException('El link de recuperación no es válido — pedí uno nuevo.');
     }
     if (!password || String(password).length < 8) {
       throw new ConflictException('La contraseña debe tener al menos 8 caracteres.');
     }
+    const passwordHash = await bcrypt.hash(String(password), 10);
     const resultado = await this.pool.query(
-      `SELECT id, reset_token_expira FROM usuarios WHERE reset_token = $1`,
-      [tokenLimpio],
+      `UPDATE usuarios SET password_hash = $1 WHERE id = $2 RETURNING id, email`,
+      [passwordHash, usuarioId],
     );
     const fila = resultado.rows[0];
-    if (!fila || !fila.reset_token_expira || new Date(fila.reset_token_expira).getTime() < Date.now()) {
-      throw new UnauthorizedException('El link de recuperación no es válido o ya venció — pedí uno nuevo.');
+    if (!fila) {
+      throw new NotFoundException('No existe ningún usuario con ese id.');
     }
-    const passwordHash = await bcrypt.hash(String(password), 10);
-    await this.pool.query(
-      `UPDATE usuarios SET password_hash = $1, reset_token = NULL, reset_token_expira = NULL WHERE id = $2`,
-      [passwordHash, fila.id],
-    );
-    this.logger.log(`Contraseña restablecida para el usuario id=${fila.id}`);
+    this.logger.log(`Un administrador restableció la contraseña de ${fila.email} (id=${fila.id}).`);
     return { ok: true };
   }
 }
