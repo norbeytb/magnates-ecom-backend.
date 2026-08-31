@@ -20,6 +20,23 @@ interface CredencialesDto {
   apellido?: string;
 }
 
+// Usado por "Mi Perfil" del taller — cambiar nombre/apellido/correo no pide
+// la contraseña (no es un dato sensible como para exigirla de nuevo), pero
+// si el usuario ya inició sesión es porque ya la probó al entrar.
+interface ActualizarPerfilDto {
+  nombre?: string;
+  apellido?: string;
+  email?: string;
+}
+
+// Cambiar la propia contraseña SÍ exige la contraseña actual — a diferencia
+// del panel de administración (restablecerPasswordAdmin), donde un
+// administrador la cambia sin saber la vieja.
+interface CambiarPasswordDto {
+  passwordActual: string;
+  passwordNueva: string;
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -42,5 +59,22 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@UsuarioActual() usuario: UsuarioAutenticado) {
     return usuario;
+  }
+
+  // "Mi Perfil" del taller — editar nombre/apellido/correo de la propia
+  // cuenta. Devuelve un token nuevo (ver auth.service.ts) porque esos datos
+  // van adentro del token.
+  @Post('perfil')
+  @UseGuards(JwtAuthGuard)
+  async actualizarPerfil(@Body() dto: ActualizarPerfilDto, @UsuarioActual() usuario: UsuarioAutenticado) {
+    return this.authService.actualizarPerfil(usuario.id, dto);
+  }
+
+  // "Mi Perfil" del taller — cambiar la contraseña de la propia cuenta,
+  // pidiendo la actual como confirmación.
+  @Post('cambiar-password')
+  @UseGuards(JwtAuthGuard)
+  async cambiarPassword(@Body() dto: CambiarPasswordDto, @UsuarioActual() usuario: UsuarioAutenticado) {
+    return this.authService.cambiarPasswordPropia(usuario.id, dto?.passwordActual, dto?.passwordNueva);
   }
 }
