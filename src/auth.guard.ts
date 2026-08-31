@@ -24,6 +24,13 @@ import { AuthService } from './auth.service';
 export interface UsuarioAutenticado {
   id: number;
   email: string;
+  nombre?: string;
+  apellido?: string;
+  // Calculado en cada pedido (ver AuthService.verificarToken) comparando el
+  // correo contra ADMIN_EMAILS — así, si en algún momento se agrega o saca
+  // un correo de esa variable en Railway, el cambio aplica al toque, sin
+  // que la persona tenga que volver a iniciar sesión para que se note.
+  esAdmin: boolean;
 }
 
 @Injectable()
