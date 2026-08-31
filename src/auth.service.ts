@@ -277,4 +277,86 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Un administrador restableció la contraseña de ${fila.email} (id=${fila.id}).`);
     return { ok: true };
   }
+
+  // ---------------- MI PERFIL (cada usuario sobre su propia cuenta) ----------------
+  // A diferencia de restablecerPasswordAdmin() de arriba (que usa un
+  // administrador para cambiarle la contraseña a CUALQUIERA sin saber la
+  // vieja), acá cada persona edita SU PROPIA cuenta — actualizarPerfil() no
+  // pide contraseña porque solo toca nombre/apellido/correo, pero
+  // cambiarPasswordPropia() sí exige la contraseña actual antes de aceptar
+  // la nueva, como cualquier "cambiar contraseña" normal.
+
+  async actualizarPerfil(usuarioId: number, datos: { nombre?: string; apellido?: string; email?: string }): Promise<SesionResultado> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('No se pudo actualizar el perfil: falta configurar la base de datos en el backend.');
+    }
+    const nombre = datos.nombre !== undefined ? String(datos.nombre).trim() : undefined;
+    const apellido = datos.apellido !== undefined ? String(datos.apellido).trim() : undefined;
+    const email = datos.email !== undefined ? this.normalizarEmail(datos.email) : undefined;
+
+    if (email !== undefined && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      throw new ConflictException('Ingresá un correo válido.');
+    }
+
+    // Arma el UPDATE solo con las columnas que realmente vinieron en el
+    // pedido — así el taller puede mandar nombre/apellido/correo juntos (como
+    // hace ahora, con un solo formulario) sin que un campo vacío borre sin
+    // querer los otros dos.
+    const columnas: string[] = [];
+    const valores: any[] = [];
+    let i = 1;
+    if (nombre !== undefined) { columnas.push(`nombre = $${i++}`); valores.push(nombre || null); }
+    if (apellido !== undefined) { columnas.push(`apellido = $${i++}`); valores.push(apellido || null); }
+    if (email !== undefined) { columnas.push(`email = $${i++}`); valores.push(email); }
+    if (columnas.length === 0) {
+      throw new ConflictException('No hay ningún cambio para guardar.');
+    }
+    valores.push(usuarioId);
+
+    let resultado;
+    try {
+      resultado = await this.pool.query(
+        `UPDATE usuarios SET ${columnas.join(', ')} WHERE id = $${i} RETURNING id, email, nombre, apellido`,
+        valores,
+      );
+    } catch (error: any) {
+      // 23505 = unique_violation — el correo nuevo ya lo está usando otra cuenta.
+      if (error?.code === '23505') {
+        throw new ConflictException('Ese correo ya está siendo usado por otra cuenta.');
+      }
+      throw error;
+    }
+    const fila = resultado.rows[0];
+    if (!fila) {
+      throw new NotFoundException('No existe esa cuenta.');
+    }
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined, esAdmin: this.esAdminEmail(fila.email) };
+    this.logger.log(`Perfil actualizado: ${usuario.email} (id=${usuario.id}).`);
+    // Devuelve un token NUEVO — el correo/nombre pudieron haber cambiado, y
+    // esos datos van adentro del token (ver firmarToken) — así el taller no
+    // se queda mostrando la sesión con los datos viejos hasta que alguien
+    // vuelva a iniciar sesión.
+    return { ...usuario, token: this.firmarToken(usuario) };
+  }
+
+  async cambiarPasswordPropia(usuarioId: number, passwordActual: string, passwordNueva: string): Promise<{ ok: true }> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('No se pudo cambiar la contraseña: falta configurar la base de datos en el backend.');
+    }
+    if (!passwordNueva || String(passwordNueva).length < 8) {
+      throw new ConflictException('La contraseña nueva debe tener al menos 8 caracteres.');
+    }
+    const resultado = await this.pool.query(`SELECT id, password_hash FROM usuarios WHERE id = $1`, [usuarioId]);
+    const fila = resultado.rows[0];
+    if (!fila) {
+      throw new NotFoundException('No existe esa cuenta.');
+    }
+    if (!(await bcrypt.compare(String(passwordActual || ''), fila.password_hash))) {
+      throw new UnauthorizedException('La contraseña actual no es correcta.');
+    }
+    const nuevoHash = await bcrypt.hash(String(passwordNueva), 10);
+    await this.pool.query(`UPDATE usuarios SET password_hash = $1 WHERE id = $2`, [nuevoHash, usuarioId]);
+    this.logger.log(`La cuenta id=${usuarioId} cambió su propia contraseña.`);
+    return { ok: true };
+  }
 }
