@@ -18,41 +18,51 @@
 // tener que volver a pedir la contraseña cada vez — ver auth.guard.ts.
 //
 // Dependencias que hay que instalar en el proyecto (no vienen con NestJS):
-//   npm install bcryptjs jsonwebtoken
-//   npm install -D @types/bcryptjs @types/jsonwebtoken
+//   npm install bcryptjs jsonwebtoken nodemailer
+//   npm install -D @types/bcryptjs @types/jsonwebtoken @types/nodemailer
 // (se usa "bcryptjs" — versión en JavaScript puro de bcrypt — en vez de
 // "bcrypt" a secas, porque "bcrypt" necesita compilar código nativo en el
 // build de Railway y puede fallar; "bcryptjs" hace exactamente lo mismo sin
 // ese problema).
 //
+// El correo de "olvidé mi contraseña" se manda con "nodemailer" a través del
+// SMTP de Gmail, usando una cuenta de Gmail común (no un servicio de correo
+// transaccional tipo Resend/SendGrid) — así no hace falta comprar ni
+// verificar un dominio propio para poder mandarle el correo a cualquier
+// persona, solo una cuenta de Gmail con una "contraseña de aplicación". Ver
+// la nota completa en enviarCorreoRecuperacion más abajo.
+//
 // Variables de entorno nuevas que hay que agregar en Railway:
-//   JWT_SECRET       — cualquier texto largo y aleatorio (ej. generado con
-//                       `openssl rand -hex 32`). Si no está configurada, el
-//                       backend arranca igual pero avisa en los logs y usa
-//                       una clave de emergencia solo para no romper — hay
-//                       que configurar la de verdad antes de usar esto en
-//                       serio, porque sin ella cualquiera podría fabricarse
-//                       un token.
-//   RESEND_API_KEY   — para poder mandar el correo de "recuperar
-//                       contraseña" (se usa el servicio Resend,
-//                       resend.com). Sin esto, "olvidé mi contraseña" no
-//                       manda nada — solo se avisa en los logs.
-//   RESEND_FROM      — el remitente del correo, ej. "Ecom Magnates
-//                       <noreply@tudominio.com>". Si no se verificó un
-//                       dominio propio en Resend, se puede usar el de
-//                       prueba "onboarding@resend.dev" mientras tanto (ver
-//                       nota en enviarCorreoRecuperacion más abajo).
-//   PUBLIC_APP_URL   — la URL pública donde se abre el taller (ej.
-//                       "https://tu-taller.ejemplo.com/taller.html"), para
-//                       poder armar el link de recuperación que va dentro
-//                       del correo. Sin esto, el link no va a apuntar a
-//                       ningún lado real.
+//   JWT_SECRET         — cualquier texto largo y aleatorio (ej. generado con
+//                         `openssl rand -hex 32`). Si no está configurada, el
+//                         backend arranca igual pero avisa en los logs y usa
+//                         una clave de emergencia solo para no romper — hay
+//                         que configurar la de verdad antes de usar esto en
+//                         serio, porque sin ella cualquiera podría fabricarse
+//                         un token.
+//   GMAIL_USER         — la dirección de Gmail desde la que se manda el
+//                         correo de recuperación (ej. "tucorreo@gmail.com").
+//                         Sin esto, "olvidé mi contraseña" no manda nada —
+//                         solo se avisa en los logs.
+//   GMAIL_APP_PASSWORD — la "contraseña de aplicación" de esa cuenta de
+//                         Gmail (NO la contraseña normal de la cuenta) — se
+//                         genera en myaccount.google.com → Seguridad →
+//                         Verificación en dos pasos → Contraseñas de
+//                         aplicaciones. Hace falta tener activada la
+//                         verificación en dos pasos en esa cuenta de Google
+//                         para poder generarla.
+//   PUBLIC_APP_URL     — la URL pública donde se abre el taller (ej.
+//                         "https://tu-taller.ejemplo.com/"), para poder
+//                         armar el link de recuperación que va dentro del
+//                         correo. Sin esto, el link no va a apuntar a ningún
+//                         lado real.
 
 import { ConflictException, Injectable, InternalServerErrorException, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { Pool } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
+import * as nodemailer from 'nodemailer';
 
 export interface UsuarioPublico {
   id: number;
@@ -87,21 +97,17 @@ export class AuthService implements OnModuleInit {
     return !!process.env.DATABASE_URL;
   }
 
-  // Clave de Resend (resend.com) para poder mandar el correo de "recuperar
-  // contraseña". Si no está configurada, no se rompe nada — simplemente no
-  // se manda el correo y se avisa en los logs (así el resto del backend
-  // sigue funcionando aunque todavía no se haya configurado esto).
-  private get resendApiKey(): string | null {
-    return process.env.RESEND_API_KEY || null;
+  // Cuenta de Gmail desde la que se manda el correo de "recuperar
+  // contraseña". Si falta cualquiera de las dos variables, no se rompe nada
+  // — simplemente no se manda el correo y se avisa en los logs (así el
+  // resto del backend sigue funcionando aunque todavía no se haya
+  // configurado esto).
+  private get gmailUser(): string | null {
+    return process.env.GMAIL_USER || null;
   }
 
-  private get resendFrom(): string {
-    // "onboarding@resend.dev" es el remitente de prueba que da Resend sin
-    // necesidad de verificar un dominio propio — sirve para probar, pero
-    // Resend solo deja mandar correos de prueba a la cuenta con la que te
-    // registraste ahí. Para mandarle correos a cualquier usuario real hay
-    // que verificar un dominio propio en Resend y configurar RESEND_FROM.
-    return process.env.RESEND_FROM || 'Ecom Magnates <onboarding@resend.dev>';
+  private get gmailAppPassword(): string | null {
+    return process.env.GMAIL_APP_PASSWORD || null;
   }
 
   private get publicAppUrl(): string | null {
@@ -225,13 +231,38 @@ export class AuthService implements OnModuleInit {
     }
   }
 
+  // Cachea el "transporter" de nodemailer (la conexión configurada al SMTP
+  // de Gmail) — no hace falta armarlo de nuevo en cada correo, solo la
+  // primera vez que hace falta mandar uno.
+  private transportadorGmail: nodemailer.Transporter | null = null;
+
+  private obtenerTransportadorGmail(): nodemailer.Transporter | null {
+    const user = this.gmailUser;
+    const pass = this.gmailAppPassword;
+    if (!user || !pass) return null;
+    if (!this.transportadorGmail) {
+      this.transportadorGmail = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user, pass },
+      });
+    }
+    return this.transportadorGmail;
+  }
+
   // Manda el correo de recuperación con el link para elegir una contraseña
-  // nueva. Si falta configurar Resend, no revienta — solo avisa en los logs,
-  // para que el resto del sistema (registro, login) siga funcionando igual.
+  // nueva, usando el SMTP de Gmail (con una cuenta de Gmail común y una
+  // "contraseña de aplicación" — no un servicio de correo transaccional como
+  // Resend/SendGrid). Se eligió así para no depender de comprar y verificar
+  // un dominio propio: con una cuenta de Gmail y su contraseña de aplicación
+  // alcanza para mandarle este correo a cualquier persona, gratis. El límite
+  // es de aproximadamente 100-150 correos por día por cuenta de Gmail — de
+  // sobra para esto. Si falta configurar GMAIL_USER/GMAIL_APP_PASSWORD, no
+  // revienta — solo avisa en los logs, para que el resto del sistema
+  // (registro, login) siga funcionando igual.
   private async enviarCorreoRecuperacion(email: string, nombre: string | null, token: string): Promise<void> {
-    const apiKey = this.resendApiKey;
-    if (!apiKey) {
-      this.logger.warn(`No se pudo mandar el correo de recuperación a ${email}: falta configurar RESEND_API_KEY en Railway.`);
+    const transportador = this.obtenerTransportadorGmail();
+    if (!transportador) {
+      this.logger.warn(`No se pudo mandar el correo de recuperación a ${email}: falta configurar GMAIL_USER y GMAIL_APP_PASSWORD en Railway.`);
       return;
     }
     const baseUrl = this.publicAppUrl;
@@ -255,23 +286,12 @@ export class AuthService implements OnModuleInit {
       </div>
     `;
     try {
-      const respuesta = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: this.resendFrom,
-          to: [email],
-          subject: 'Recuperar tu contraseña — Ecom Magnates',
-          html,
-        }),
+      await transportador.sendMail({
+        from: `"Ecom Magnates" <${this.gmailUser}>`,
+        to: email,
+        subject: 'Recuperar tu contraseña — Ecom Magnates',
+        html,
       });
-      if (!respuesta.ok) {
-        const texto = await respuesta.text().catch(() => '');
-        this.logger.error(`Resend respondió con error al mandar el correo a ${email}: ${respuesta.status} ${texto}`);
-      }
     } catch (error) {
       this.logger.error('No se pudo mandar el correo de recuperación: ' + (error as Error).message);
     }
