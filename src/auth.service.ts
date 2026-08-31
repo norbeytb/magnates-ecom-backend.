@@ -25,22 +25,40 @@
 // build de Railway y puede fallar; "bcryptjs" hace exactamente lo mismo sin
 // ese problema).
 //
-// Variable de entorno nueva que hay que agregar en Railway:
-//   JWT_SECRET  — cualquier texto largo y aleatorio (ej. generado con
-//                 `openssl rand -hex 32`). Si no está configurada, el
-//                 backend arranca igual pero avisa en los logs y usa una
-//                 clave de emergencia solo para no romper — hay que
-//                 configurar la de verdad antes de usar esto en serio,
-//                 porque sin ella cualquiera podría fabricarse un token.
+// Variables de entorno nuevas que hay que agregar en Railway:
+//   JWT_SECRET       — cualquier texto largo y aleatorio (ej. generado con
+//                       `openssl rand -hex 32`). Si no está configurada, el
+//                       backend arranca igual pero avisa en los logs y usa
+//                       una clave de emergencia solo para no romper — hay
+//                       que configurar la de verdad antes de usar esto en
+//                       serio, porque sin ella cualquiera podría fabricarse
+//                       un token.
+//   RESEND_API_KEY   — para poder mandar el correo de "recuperar
+//                       contraseña" (se usa el servicio Resend,
+//                       resend.com). Sin esto, "olvidé mi contraseña" no
+//                       manda nada — solo se avisa en los logs.
+//   RESEND_FROM      — el remitente del correo, ej. "Ecom Magnates
+//                       <noreply@tudominio.com>". Si no se verificó un
+//                       dominio propio en Resend, se puede usar el de
+//                       prueba "onboarding@resend.dev" mientras tanto (ver
+//                       nota en enviarCorreoRecuperacion más abajo).
+//   PUBLIC_APP_URL   — la URL pública donde se abre el taller (ej.
+//                       "https://tu-taller.ejemplo.com/taller.html"), para
+//                       poder armar el link de recuperación que va dentro
+//                       del correo. Sin esto, el link no va a apuntar a
+//                       ningún lado real.
 
 import { ConflictException, Injectable, InternalServerErrorException, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { Pool } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 
 export interface UsuarioPublico {
   id: number;
   email: string;
+  nombre?: string;
+  apellido?: string;
 }
 
 export interface SesionResultado extends UsuarioPublico {
@@ -69,6 +87,27 @@ export class AuthService implements OnModuleInit {
     return !!process.env.DATABASE_URL;
   }
 
+  // Clave de Resend (resend.com) para poder mandar el correo de "recuperar
+  // contraseña". Si no está configurada, no se rompe nada — simplemente no
+  // se manda el correo y se avisa en los logs (así el resto del backend
+  // sigue funcionando aunque todavía no se haya configurado esto).
+  private get resendApiKey(): string | null {
+    return process.env.RESEND_API_KEY || null;
+  }
+
+  private get resendFrom(): string {
+    // "onboarding@resend.dev" es el remitente de prueba que da Resend sin
+    // necesidad de verificar un dominio propio — sirve para probar, pero
+    // Resend solo deja mandar correos de prueba a la cuenta con la que te
+    // registraste ahí. Para mandarle correos a cualquier usuario real hay
+    // que verificar un dominio propio en Resend y configurar RESEND_FROM.
+    return process.env.RESEND_FROM || 'Ecom Magnates <onboarding@resend.dev>';
+  }
+
+  private get publicAppUrl(): string | null {
+    return process.env.PUBLIC_APP_URL || null;
+  }
+
   async onModuleInit() {
     if (!this.configurado()) {
       this.logger.warn('DATABASE_URL no está configurada — el registro/inicio de sesión no va a funcionar.');
@@ -84,6 +123,17 @@ export class AuthService implements OnModuleInit {
           creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // Nombre y apellido son opcionales (el formulario del taller los pide
+      // al registrarse, pero cuentas creadas antes de este cambio no los
+      // tienen) — se usan solo para mostrar un saludo más lindo que el
+      // correo pelado en la esquina del taller.
+      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nombre TEXT;`);
+      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS apellido TEXT;`);
+      // Para "olvidé mi contraseña": un token de un solo uso, guardado con su
+      // fecha de vencimiento. Mientras no se pida una recuperación quedan en
+      // NULL.
+      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS reset_token TEXT;`);
+      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS reset_token_expira TIMESTAMPTZ;`);
       this.logger.log('Conectado a PostgreSQL — tabla "usuarios" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de usuarios: ' + (error as Error).message);
@@ -97,11 +147,18 @@ export class AuthService implements OnModuleInit {
 
   private firmarToken(usuario: UsuarioPublico): string {
     // Vence a los 30 días — bastante largo para no molestar pidiendo que
-    // vuelva a entrar todo el tiempo, pero no "para siempre".
-    return jwt.sign({ sub: usuario.id, email: usuario.email }, this.jwtSecret, { expiresIn: '30d' });
+    // vuelva a entrar todo el tiempo, pero no "para siempre". Nombre/apellido
+    // van adentro del token (no solo en la respuesta del login) para que
+    // GET /auth/me — lo que valida la sesión guardada al recargar la página —
+    // también los pueda devolver sin tener que ir a buscarlos de nuevo a la base.
+    return jwt.sign(
+      { sub: usuario.id, email: usuario.email, nombre: usuario.nombre || undefined, apellido: usuario.apellido || undefined },
+      this.jwtSecret,
+      { expiresIn: '30d' },
+    );
   }
 
-  async registrar(email: string, password: string): Promise<SesionResultado> {
+  async registrar(email: string, password: string, nombre?: string, apellido?: string): Promise<SesionResultado> {
     if (!this.pool) {
       throw new InternalServerErrorException('El registro no está disponible: falta configurar la base de datos en el backend.');
     }
@@ -109,9 +166,11 @@ export class AuthService implements OnModuleInit {
     if (!emailNormalizado || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalizado)) {
       throw new ConflictException('Ese correo no parece válido.');
     }
-    if (!password || String(password).length < 6) {
-      throw new ConflictException('La contraseña debe tener al menos 6 caracteres.');
+    if (!password || String(password).length < 8) {
+      throw new ConflictException('La contraseña debe tener al menos 8 caracteres.');
     }
+    const nombreLimpio = String(nombre || '').trim() || null;
+    const apellidoLimpio = String(apellido || '').trim() || null;
 
     const existente = await this.pool.query(`SELECT id FROM usuarios WHERE email = $1`, [emailNormalizado]);
     if ((existente.rowCount ?? 0) > 0) {
@@ -120,10 +179,11 @@ export class AuthService implements OnModuleInit {
 
     const passwordHash = await bcrypt.hash(String(password), 10);
     const resultado = await this.pool.query(
-      `INSERT INTO usuarios (email, password_hash) VALUES ($1, $2) RETURNING id, email`,
-      [emailNormalizado, passwordHash],
+      `INSERT INTO usuarios (email, password_hash, nombre, apellido) VALUES ($1, $2, $3, $4) RETURNING id, email, nombre, apellido`,
+      [emailNormalizado, passwordHash, nombreLimpio, apellidoLimpio],
     );
-    const usuario: UsuarioPublico = { id: resultado.rows[0].id, email: resultado.rows[0].email };
+    const fila = resultado.rows[0];
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined };
     this.logger.log(`Nueva cuenta registrada: ${usuario.email}`);
     return { ...usuario, token: this.firmarToken(usuario) };
   }
@@ -134,7 +194,7 @@ export class AuthService implements OnModuleInit {
     }
     const emailNormalizado = this.normalizarEmail(email);
     const resultado = await this.pool.query(
-      `SELECT id, email, password_hash FROM usuarios WHERE email = $1`,
+      `SELECT id, email, password_hash, nombre, apellido FROM usuarios WHERE email = $1`,
       [emailNormalizado],
     );
     const fila = resultado.rows[0];
@@ -144,7 +204,7 @@ export class AuthService implements OnModuleInit {
     if (!fila || !(await bcrypt.compare(String(password || ''), fila.password_hash))) {
       throw new UnauthorizedException('Correo o contraseña incorrectos.');
     }
-    const usuario: UsuarioPublico = { id: fila.id, email: fila.email };
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined };
     return { ...usuario, token: this.firmarToken(usuario) };
   }
 
@@ -154,9 +214,118 @@ export class AuthService implements OnModuleInit {
   verificarToken(token: string): UsuarioPublico {
     try {
       const payload = jwt.verify(token, this.jwtSecret) as jwt.JwtPayload;
-      return { id: Number(payload.sub), email: String(payload.email || '') };
+      return {
+        id: Number(payload.sub),
+        email: String(payload.email || ''),
+        nombre: payload.nombre ? String(payload.nombre) : undefined,
+        apellido: payload.apellido ? String(payload.apellido) : undefined,
+      };
     } catch {
       throw new UnauthorizedException('Sesión inválida o vencida — volvé a iniciar sesión.');
     }
+  }
+
+  // Manda el correo de recuperación con el link para elegir una contraseña
+  // nueva. Si falta configurar Resend, no revienta — solo avisa en los logs,
+  // para que el resto del sistema (registro, login) siga funcionando igual.
+  private async enviarCorreoRecuperacion(email: string, nombre: string | null, token: string): Promise<void> {
+    const apiKey = this.resendApiKey;
+    if (!apiKey) {
+      this.logger.warn(`No se pudo mandar el correo de recuperación a ${email}: falta configurar RESEND_API_KEY en Railway.`);
+      return;
+    }
+    const baseUrl = this.publicAppUrl;
+    if (!baseUrl) {
+      this.logger.warn(`No se pudo armar el link de recuperación para ${email}: falta configurar PUBLIC_APP_URL en Railway.`);
+      return;
+    }
+    const separador = baseUrl.includes('?') ? '&' : '?';
+    const link = `${baseUrl}${separador}resetToken=${encodeURIComponent(token)}`;
+    const saludo = nombre ? `Hola, ${nombre}:` : 'Hola:';
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        <h2 style="color:#1c1810;">Recuperar contraseña</h2>
+        <p>${saludo}</p>
+        <p>Pediste recuperar el acceso a tu cuenta de Ecom Magnates. Hacé clic en el siguiente botón para elegir una contraseña nueva:</p>
+        <p style="text-align:center;margin:28px 0;">
+          <a href="${link}" style="background:#d4a935;color:#1c1408;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">Elegir nueva contraseña</a>
+        </p>
+        <p>Si el botón no funciona, copiá y pegá este link en tu navegador:<br>${link}</p>
+        <p>Este link vence en 1 hora. Si vos no pediste esto, podés ignorar este correo — tu contraseña sigue igual.</p>
+      </div>
+    `;
+    try {
+      const respuesta = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: this.resendFrom,
+          to: [email],
+          subject: 'Recuperar tu contraseña — Ecom Magnates',
+          html,
+        }),
+      });
+      if (!respuesta.ok) {
+        const texto = await respuesta.text().catch(() => '');
+        this.logger.error(`Resend respondió con error al mandar el correo a ${email}: ${respuesta.status} ${texto}`);
+      }
+    } catch (error) {
+      this.logger.error('No se pudo mandar el correo de recuperación: ' + (error as Error).message);
+    }
+  }
+
+  // Siempre devuelve { ok: true } exista o no esa cuenta — así nadie puede
+  // usar este endpoint para averiguar qué correos están registrados. Si el
+  // correo existe de verdad, por atrás se genera un token y se manda el
+  // correo con el link.
+  async solicitarRecuperacion(email: string): Promise<{ ok: true }> {
+    if (!this.pool) {
+      return { ok: true };
+    }
+    const emailNormalizado = this.normalizarEmail(email);
+    if (!emailNormalizado) {
+      return { ok: true };
+    }
+    const resultado = await this.pool.query(`SELECT id, email, nombre FROM usuarios WHERE email = $1`, [emailNormalizado]);
+    const fila = resultado.rows[0];
+    if (fila) {
+      const token = crypto.randomBytes(32).toString('hex');
+      const expira = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+      await this.pool.query(`UPDATE usuarios SET reset_token = $1, reset_token_expira = $2 WHERE id = $3`, [token, expira, fila.id]);
+      await this.enviarCorreoRecuperacion(fila.email, fila.nombre || null, token);
+      this.logger.log(`Recuperación de contraseña solicitada para ${fila.email}`);
+    }
+    return { ok: true };
+  }
+
+  async restablecerPassword(token: string, password: string): Promise<{ ok: true }> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('No se pudo restablecer la contraseña: falta configurar la base de datos en el backend.');
+    }
+    const tokenLimpio = String(token || '').trim();
+    if (!tokenLimpio) {
+      throw new UnauthorizedException('El link de recuperación no es válido — pedí uno nuevo.');
+    }
+    if (!password || String(password).length < 8) {
+      throw new ConflictException('La contraseña debe tener al menos 8 caracteres.');
+    }
+    const resultado = await this.pool.query(
+      `SELECT id, reset_token_expira FROM usuarios WHERE reset_token = $1`,
+      [tokenLimpio],
+    );
+    const fila = resultado.rows[0];
+    if (!fila || !fila.reset_token_expira || new Date(fila.reset_token_expira).getTime() < Date.now()) {
+      throw new UnauthorizedException('El link de recuperación no es válido o ya venció — pedí uno nuevo.');
+    }
+    const passwordHash = await bcrypt.hash(String(password), 10);
+    await this.pool.query(
+      `UPDATE usuarios SET password_hash = $1, reset_token = NULL, reset_token_expira = NULL WHERE id = $2`,
+      [passwordHash, fila.id],
+    );
+    this.logger.log(`Contraseña restablecida para el usuario id=${fila.id}`);
+    return { ok: true };
   }
 }
