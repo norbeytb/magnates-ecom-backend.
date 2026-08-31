@@ -244,6 +244,13 @@ export class AuthService implements OnModuleInit {
       this.transportadorGmail = nodemailer.createTransport({
         service: 'gmail',
         auth: { user, pass },
+        // Sin esto, si Gmail no contesta (red bloqueada, credenciales mal,
+        // etc.) la conexión puede quedarse colgada varios minutos — con
+        // estos límites, a los 15 segundos se da por vencida y tira error en
+        // vez de quedarse esperando para siempre.
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 15000,
       });
     }
     return this.transportadorGmail;
@@ -315,7 +322,15 @@ export class AuthService implements OnModuleInit {
       const token = crypto.randomBytes(32).toString('hex');
       const expira = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
       await this.pool.query(`UPDATE usuarios SET reset_token = $1, reset_token_expira = $2 WHERE id = $3`, [token, expira, fila.id]);
-      await this.enviarCorreoRecuperacion(fila.email, fila.nombre || null, token);
+      // OJO: a propósito NO se espera ("await") a que termine de mandarse el
+      // correo antes de responder — así el pedido HTTP le contesta al taller
+      // al toque, sin importar cuánto tarde (o si se cuelga) la conexión
+      // SMTP a Gmail. Antes esto sí se esperaba, y si Gmail no respondía
+      // rápido, la persona se quedaba viendo "Enviando…" en el botón para
+      // siempre, sin ningún aviso.
+      this.enviarCorreoRecuperacion(fila.email, fila.nombre || null, token).catch((error) => {
+        this.logger.error('Fallo al mandar el correo de recuperación (en segundo plano): ' + (error as Error).message);
+      });
       this.logger.log(`Recuperación de contraseña solicitada para ${fila.email}`);
     }
     return { ok: true };
