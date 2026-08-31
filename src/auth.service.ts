@@ -62,7 +62,18 @@ import { Pool } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
+import * as dns from 'dns';
 import * as nodemailer from 'nodemailer';
+
+// Railway (donde corre este backend) no soporta conexiones salientes por
+// IPv6 — y Gmail publica una dirección IPv6 para su servidor SMTP además de
+// la IPv4 normal. Sin esto, a veces Node elige probar primero la dirección
+// IPv6 de Gmail, que en Railway falla siempre con "ENETUNREACH" (red
+// inalcanzable) aunque las credenciales estén perfectas. Esta línea le dice
+// a Node que, al resolver un nombre de dominio, prefiera siempre la
+// dirección IPv4 si existe — afecta a todo el proceso (no solo al correo),
+// así que alcanza con ponerla una sola vez acá arriba.
+dns.setDefaultResultOrder('ipv4first');
 
 export interface UsuarioPublico {
   id: number;
