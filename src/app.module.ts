@@ -17,9 +17,10 @@ import { ProductosService } from './productos.service';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './auth.guard';
+import { AdminController } from './admin.controller';
 
 @Module({
-  controllers: [AuthController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController],
+  controllers: [AuthController, AdminController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController],
   providers: [AuthService, JwtAuthGuard, ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService],
 })
 export class AppModule {}
