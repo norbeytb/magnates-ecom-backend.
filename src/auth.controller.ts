@@ -14,6 +14,19 @@ import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 interface CredencialesDto {
   email: string;
   password: string;
+  // Solo se usan al registrarse (el formulario de "Crear cuenta" del taller
+  // los pide) — el login no los necesita.
+  nombre?: string;
+  apellido?: string;
+}
+
+interface OlvideDto {
+  email: string;
+}
+
+interface RestablecerDto {
+  token: string;
+  password: string;
 }
 
 @Controller('auth')
@@ -22,7 +35,7 @@ export class AuthController {
 
   @Post('registro')
   async registro(@Body() dto: CredencialesDto) {
-    return this.authService.registrar(dto?.email, dto?.password);
+    return this.authService.registrar(dto?.email, dto?.password, dto?.nombre, dto?.apellido);
   }
 
   @Post('login')
@@ -38,5 +51,22 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@UsuarioActual() usuario: UsuarioAutenticado) {
     return usuario;
+  }
+
+  // El taller llama esto desde el link "¿Olvidaste tu contraseña?" — siempre
+  // responde { ok: true } exista o no esa cuenta, para no confirmarle a
+  // nadie qué correos están registrados.
+  @Post('olvide-password')
+  @HttpCode(200)
+  async olvidePassword(@Body() dto: OlvideDto) {
+    return this.authService.solicitarRecuperacion(dto?.email);
+  }
+
+  // El taller llama esto desde la pantalla de "elegir nueva contraseña" a la
+  // que se llega abriendo el link que manda el correo (?resetToken=...).
+  @Post('restablecer-password')
+  @HttpCode(200)
+  async restablecerPassword(@Body() dto: RestablecerDto) {
+    return this.authService.restablecerPassword(dto?.token, dto?.password);
   }
 }
