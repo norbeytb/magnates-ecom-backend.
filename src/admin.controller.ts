@@ -3,8 +3,9 @@
 // Endpoints solo para administradores (los correos que estén en la variable
 // de entorno ADMIN_EMAILS de Railway, separados por coma — ver la nota
 // grande arriba del todo de auth.service.ts). Le dejan al administrador ver
-// la lista de todos los usuarios registrados y cambiarle la contraseña a
-// cualquiera de ellos a mano.
+// la lista de todos los usuarios registrados, cambiarle la contraseña a
+// cualquiera de ellos a mano, y bloquearle/desbloquearle el acceso al
+// taller (por ejemplo si dejó de pagar el curso).
 //
 // Por qué existe esto: mientras no haya un dominio propio verificado para
 // mandar correos reales, "olvidé mi contraseña" no puede ser automático
@@ -21,6 +22,10 @@ import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
 interface RestablecerPasswordAdminDto {
   password: string;
+}
+
+interface BloquearUsuarioDto {
+  bloqueado: boolean;
 }
 
 @Controller('admin')
@@ -52,5 +57,19 @@ export class AdminController {
   ) {
     this.exigirAdmin(usuario);
     return this.authService.restablecerPasswordAdmin(Number(id), dto?.password);
+  }
+
+  // Bloquea o desbloquea el acceso de una cuenta — por ejemplo si un
+  // estudiante dejó de pagar el curso. La cuenta bloqueada no puede iniciar
+  // sesión, y si ya tenía una sesión abierta pierde el acceso en su próximo
+  // pedido (ver auth.guard.ts, verificarNoBloqueado).
+  @Post('usuarios/:id/bloquear')
+  async bloquear(
+    @Param('id') id: string,
+    @Body() dto: BloquearUsuarioDto,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ) {
+    this.exigirAdmin(usuario);
+    return this.authService.bloquearUsuario(Number(id), !!dto?.bloqueado);
   }
 }

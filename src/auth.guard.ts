@@ -37,7 +37,7 @@ export interface UsuarioAutenticado {
 export class JwtAuthGuard implements CanActivate {
   constructor(private readonly authService: AuthService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req: any = context.switchToHttp().getRequest();
     const encabezado: string | undefined = req.headers?.authorization;
     const token = encabezado && encabezado.startsWith('Bearer ') ? encabezado.slice('Bearer '.length).trim() : null;
@@ -47,6 +47,13 @@ export class JwtAuthGuard implements CanActivate {
     // Lanza UnauthorizedException si el token es inválido/venció — se deja
     // propagar tal cual, Nest la convierte sola en un 401 para el taller.
     const usuario = this.authService.verificarToken(token);
+    // Revisa en la base de datos si un administrador bloqueó esta cuenta
+    // (ver auth.service.ts, verificarNoBloqueado/bloquearUsuario) — a
+    // propósito EN CADA PEDIDO, no solo al iniciar sesión: el token dura 30
+    // días, así que sin este chequeo alguien bloqueado seguiría teniendo
+    // acceso hasta que ese token venza solo. Lanza ForbiddenException (403)
+    // si está bloqueada.
+    await this.authService.verificarNoBloqueado(usuario.id);
     // Queda disponible en el resto del pedido a través de @UsuarioActual().
     req.usuario = usuario;
     return true;

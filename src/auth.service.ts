@@ -77,6 +77,10 @@ export interface UsuarioParaAdmin {
   nombre?: string;
   apellido?: string;
   creadoEn: string;
+  // Ver bloquearUsuario()/verificarNoBloqueado() más abajo — si está en
+  // true, esta cuenta no puede iniciar sesión ni usar el taller (aunque ya
+  // tenga una sesión abierta) hasta que un administrador la desbloquee.
+  bloqueado: boolean;
 }
 
 export interface SesionResultado extends UsuarioPublico {
@@ -139,6 +143,10 @@ export class AuthService implements OnModuleInit {
       // correo pelado en la esquina del taller.
       await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nombre TEXT;`);
       await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS apellido TEXT;`);
+      // Bloqueo de acceso manual desde el panel de administración — ver
+      // bloquearUsuario()/verificarNoBloqueado() más abajo. DEFAULT false para
+      // que las cuentas existentes (y las nuevas) arranquen sin bloquear.
+      await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS bloqueado BOOLEAN NOT NULL DEFAULT false;`);
       this.logger.log('Conectado a PostgreSQL — tabla "usuarios" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de usuarios: ' + (error as Error).message);
@@ -199,7 +207,7 @@ export class AuthService implements OnModuleInit {
     }
     const emailNormalizado = this.normalizarEmail(email);
     const resultado = await this.pool.query(
-      `SELECT id, email, password_hash, nombre, apellido FROM usuarios WHERE email = $1`,
+      `SELECT id, email, password_hash, nombre, apellido, bloqueado FROM usuarios WHERE email = $1`,
       [emailNormalizado],
     );
     const fila = resultado.rows[0];
@@ -209,8 +217,28 @@ export class AuthService implements OnModuleInit {
     if (!fila || !(await bcrypt.compare(String(password || ''), fila.password_hash))) {
       throw new UnauthorizedException('Correo o contraseña incorrectos.');
     }
+    // El chequeo de bloqueo va DESPUÉS de validar la contraseña (no antes) —
+    // así alguien que solo esté adivinando contraseñas nunca se entera, con
+    // este mensaje distinto, de que un correo puntual existe y está
+    // bloqueado; solo lo ve quien realmente conoce la contraseña correcta.
+    if (fila.bloqueado) {
+      throw new ForbiddenException('Tu cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+    }
     const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined, esAdmin: this.esAdminEmail(fila.email) };
     return { ...usuario, token: this.firmarToken(usuario) };
+  }
+
+  // Usado por JwtAuthGuard en CADA pedido protegido (no solo al iniciar
+  // sesión) — así, si un administrador bloquea a alguien mientras esa
+  // persona ya tiene una sesión abierta (el token dura 30 días), pierde el
+  // acceso al toque en el siguiente pedido que haga, en vez de tener que
+  // esperar a que ese token venza solo.
+  async verificarNoBloqueado(usuarioId: number): Promise<void> {
+    if (!this.pool) return;
+    const resultado = await this.pool.query(`SELECT bloqueado FROM usuarios WHERE id = $1`, [usuarioId]);
+    if (resultado.rows[0]?.bloqueado) {
+      throw new ForbiddenException('Tu cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+    }
   }
 
   // Usado por AuthGuard en cada pedido protegido: valida la firma del token
@@ -247,7 +275,7 @@ export class AuthService implements OnModuleInit {
   async listarUsuarios(): Promise<UsuarioParaAdmin[]> {
     if (!this.pool) return [];
     const resultado = await this.pool.query(
-      `SELECT id, email, nombre, apellido, creado_en FROM usuarios ORDER BY creado_en DESC`,
+      `SELECT id, email, nombre, apellido, creado_en, bloqueado FROM usuarios ORDER BY creado_en DESC`,
     );
     return resultado.rows.map((fila) => ({
       id: fila.id,
@@ -255,7 +283,31 @@ export class AuthService implements OnModuleInit {
       nombre: fila.nombre || undefined,
       apellido: fila.apellido || undefined,
       creadoEn: fila.creado_en,
+      bloqueado: !!fila.bloqueado,
     }));
+  }
+
+  // Bloquea o desbloquea el acceso de una cuenta a mano desde el panel de
+  // administración — por ejemplo si un estudiante dejó de pagar el curso, o
+  // hay que cortarle el acceso por cualquier otro motivo. No se puede
+  // bloquear una cuenta de administrador (evita que alguien se bloquee sin
+  // querer a sí mismo, o a otro administrador, y se quede sin poder entrar a
+  // desbloquearse).
+  async bloquearUsuario(usuarioId: number, bloqueado: boolean): Promise<{ ok: true; bloqueado: boolean }> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('No se pudo actualizar el acceso: falta configurar la base de datos en el backend.');
+    }
+    const resultado = await this.pool.query(`SELECT id, email FROM usuarios WHERE id = $1`, [usuarioId]);
+    const fila = resultado.rows[0];
+    if (!fila) {
+      throw new NotFoundException('No existe ningún usuario con ese id.');
+    }
+    if (bloqueado && this.esAdminEmail(fila.email)) {
+      throw new ConflictException('No podés bloquear una cuenta de administrador.');
+    }
+    await this.pool.query(`UPDATE usuarios SET bloqueado = $1 WHERE id = $2`, [bloqueado, usuarioId]);
+    this.logger.log(`Un administrador ${bloqueado ? 'bloqueó' : 'desbloqueó'} la cuenta ${fila.email} (id=${fila.id}).`);
+    return { ok: true, bloqueado };
   }
 
   async restablecerPasswordAdmin(usuarioId: number, password: string): Promise<{ ok: true }> {
