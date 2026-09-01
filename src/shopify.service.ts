@@ -1,54 +1,60 @@
 // shopify.service.ts
 //
 // Publica una landing ensamblada (una lista de imágenes ya generadas) como un
-// PRODUCTO en la tienda de Shopify del cliente, usando la Admin API. Todas
+// PRODUCTO en la tienda de Shopify DEL ESTUDIANTE, usando la Admin API. Todas
 // las imágenes suben a la Multimedia del producto, y ADEMÁS este backend le
-// prepara automáticamente al tema del cliente una plantilla alterna
+// prepara automáticamente al tema de esa tienda una plantilla alterna
 // "landing" con una sección propia que dibuja esas mismas imágenes una
 // debajo de otra, a pantalla completa (sin título/reseñas encima) — ver
 // asegurarPlantillaLanding() más abajo. Esto es lo mismo que hacen otras
 // herramientas de landings: le agregan al tema su propia sección al
 // instalarse, en vez de depender del bloque de "Descripción" del tema (que
-// en muchos temas nuevos —como el tema Horizon del cliente— usa un campo de
-// tipo "richtext" que no acepta imágenes sueltas). Además, la sección normal
-// de producto de esa plantilla se recorta (simplificarSeccionProducto) para
-// que solo queden el precio y el botón nativo de comprar debajo de las
-// imágenes — nada de galería/título/descripción duplicados. Esa preparación
-// del tema se hace UNA sola vez por tienda (revisa si ya existe antes de
-// crear nada, y repara sola la plantilla si ya existía de antes de este
-// recorte) y no requiere que el estudiante toque el editor del tema. El
-// precio se toma de la Ficha Técnica (Oferta → Precio 1) que el usuario ya
-// llenó en el taller.
+// en muchos temas nuevos —como Horizon— usa un campo de tipo "richtext" que
+// no acepta imágenes sueltas). Además, la sección normal de producto de esa
+// plantilla se recorta (simplificarSeccionProducto) para que solo queden el
+// precio y el botón nativo de comprar debajo de las imágenes — nada de
+// galería/título/descripción duplicados. Esa preparación del tema se hace
+// UNA sola vez por tienda (revisa si ya existe antes de crear nada, y repara
+// sola la plantilla si ya existía de antes de este recorte) y no requiere
+// que el estudiante toque el editor del tema. El precio se toma de la Ficha
+// Técnica (Oferta → Precio 1) que el usuario ya llenó en el taller.
 //
-// Shopify cambió su forma de dar acceso: ya no se puede crear una app
-// personalizada directamente en el admin y copiar un token fijo (shpat_...).
-// Ahora las apps se crean en el Dev Dashboard (dev.shopify.com/dashboard) y
-// dan un Client ID + Client secret, que este backend intercambia por un
-// access token de corta duración (24h) cada vez que lo necesita — ver
-// obtenerAccessToken() más abajo. El token se guarda en memoria y se
-// reutiliza hasta que esté por vencer, así no se pide uno nuevo en cada
-// publicación.
+// CADA USUARIO CONECTA SU PROPIA TIENDA (módulo de Integraciones, ver
+// integraciones.service.ts): en vez de una sola tienda compartida configurada
+// con variables de entorno de Railway, cada estudiante crea una "app
+// personalizada" en el admin de SU PROPIA tienda de Shopify y pega acá el
+// dominio + el Token de acceso de API Admin (shpat_...) que le da esa app —
+// ese token no vence (a diferencia de un token de OAuth de corta duración),
+// así que este servicio ya NO intercambia ni cachea ningún token: cada
+// llamada recibe las credenciales de la tienda de quien está publicando
+// (storeDomain + accessToken) como parámetro, nunca desde variables de
+// entorno globales ni desde un estado guardado en el servicio (el servicio
+// es un singleton compartido por todos los usuarios a la vez).
 //
-// Necesita 3 variables de entorno en Railway (nunca se exponen al frontend):
-//   SHOPIFY_STORE_DOMAIN    -> ej: mitienda.myshopify.com
-//   SHOPIFY_CLIENT_ID       -> Client ID de la app, desde Dev Dashboard → tu app → Configuración
-//   SHOPIFY_CLIENT_SECRET   -> Client secret de la misma pantalla
-//
-// La app en el Dev Dashboard necesita los alcances (scopes):
-//   read_products,write_products,read_themes,write_themes,write_publications
+// La app personalizada de cada estudiante necesita estos permisos de Admin
+// API (Configuración → Apps y canales de venta → Desarrollar apps → su app →
+// Configuración → Alcances de API de administración):
+//   read_products, write_products, read_themes, write_themes, write_publications
 // (read_themes/write_themes son para poder crearle al tema la plantilla/
 // sección automática de la landing — ver asegurarPlantillaLanding().
-// write_publications es NUEVO y es imprescindible: sin él el producto queda
-// creado pero NUNCA se ve en la tienda pública, solo en la vista previa del
-// admin — ver publicarEnTiendaOnline() más abajo. Si se agrega este scope a
-// una app que ya estaba instalada, Shopify no lo re-otorga solo: hay que
-// guardar una versión nueva en el Dev Dashboard y REINSTALAR la app en la
-// tienda, igual que la vez que se agregó read_products/write_products).
+// write_publications es imprescindible: sin él el producto queda creado pero
+// NUNCA se ve en la tienda pública, solo en la vista previa del admin — ver
+// publicarEnTiendaOnline() más abajo).
 //
 // Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
 // el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
 
 import { Injectable, Logger } from '@nestjs/common';
+
+// Credenciales de la tienda de Shopify de UN usuario puntual — las devuelve
+// IntegracionesService.obtenerCredencialesShopify(usuarioId) y las pasa el
+// controlador en cada llamada. Nunca se guardan en este servicio (que es un
+// singleton compartido por todos los usuarios): viajan como parámetro en
+// cada método, de punta a punta.
+export interface ShopifyCredenciales {
+  storeDomain: string;
+  accessToken: string;
+}
 
 // Un paso de la secuencia editable de la landing: o una imagen (el orden en
 // que se suben a la Multimedia) o un marcador de "botón de comprar" que el
@@ -103,78 +109,52 @@ export interface PublicarLandingResultado {
   avisos?: string[];
 }
 
-interface TokenEnCache {
-  token: string;
-  expiraEn: number; // timestamp epoch ms
-}
-
 @Injectable()
 export class ShopifyService {
   private readonly logger = new Logger(ShopifyService.name);
   private readonly apiVersion = '2026-07';
-  private tokenEnCache: TokenEnCache | null = null;
-  // Id (GraphQL) del canal "Tienda online" — se busca una sola vez y se
-  // reutiliza, ver obtenerPublicationIdTiendaOnline() más abajo.
-  private publicationIdTiendaOnline: string | null = null;
+  // Id (GraphQL) del canal "Tienda online" de cada tienda — se busca una sola
+  // vez POR TIENDA y se reutiliza (ver obtenerPublicationIdTiendaOnline() más
+  // abajo). Antes esto era un solo campo porque solo existía una tienda; ahora
+  // cada estudiante tiene la suya, así que se cachea en un mapa por dominio.
+  private readonly publicationIdPorTienda = new Map<string, string>();
 
-  private configurado(): boolean {
-    return !!(process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET);
-  }
-
-  private baseUrl(): string {
-    return `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${this.apiVersion}`;
-  }
-
-  // Intercambia Client ID + Client secret por un access token (Client Credentials
-  // Grant). Los tokens de Shopify duran 24h — se cachea y se renueva 1 minuto
-  // antes de vencer para no pedir uno nuevo en cada llamada.
-  private async obtenerAccessToken(): Promise<string> {
-    const ahora = Date.now();
-    if (this.tokenEnCache && this.tokenEnCache.expiraEn > ahora + 60_000) {
-      return this.tokenEnCache.token;
+  // Confirma que llegaron credenciales antes de llamar a Shopify — si esto
+  // dispara es porque algo llamó a este servicio sin pasar por
+  // IntegracionesService.obtenerCredencialesShopify() primero (el controlador
+  // ya hace esa validación con un mensaje más amigable antes de llegar acá;
+  // esto es solo un respaldo).
+  private validarCredenciales(credenciales?: ShopifyCredenciales | null): ShopifyCredenciales {
+    if (!credenciales || !credenciales.storeDomain || !credenciales.accessToken) {
+      throw new Error('No hay una tienda de Shopify conectada. Conectala primero en "Integraciones".');
     }
-
-    const resp = await fetch(`https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: process.env.SHOPIFY_CLIENT_ID as string,
-        client_secret: process.env.SHOPIFY_CLIENT_SECRET as string,
-      }).toString(),
-    });
-    if (!resp.ok) {
-      throw new Error(
-        `No se pudo autenticar con Shopify (HTTP ${resp.status}): ${await resp.text()}. Revisa que la app esté instalada en la tienda y que el Client ID/secret sean correctos.`,
-      );
-    }
-    const json: any = await resp.json();
-    const expiraSegundos = typeof json.expires_in === 'number' ? json.expires_in : 23 * 60 * 60;
-    this.tokenEnCache = { token: json.access_token, expiraEn: ahora + expiraSegundos * 1000 };
-    return this.tokenEnCache.token;
+    return credenciales;
   }
 
-  private async headers(): Promise<Record<string, string>> {
-    const token = await this.obtenerAccessToken();
+  private baseUrl(storeDomain: string): string {
+    return `https://${storeDomain}/admin/api/${this.apiVersion}`;
+  }
+
+  private headers(accessToken: string): Record<string, string> {
     return {
-      'X-Shopify-Access-Token': token,
+      'X-Shopify-Access-Token': accessToken,
       'Content-Type': 'application/json',
     };
   }
 
-  // Llama a la Admin API con el token cacheado. Si Shopify responde 401 (token
-  // inválido — por ejemplo porque la app se reinstaló o el secreto se rotó
-  // después de haber cacheado un token), descarta el token en memoria y
-  // reintenta UNA vez con uno recién pedido, para que el usuario no tenga que
-  // reiniciar el backend a mano cada vez que eso pase.
-  private async llamarShopify(path: string, opciones: RequestInit = {}, reintentando = false): Promise<Response> {
-    const headers = await this.headers();
-    const resp = await fetch(`${this.baseUrl()}${path}`, { ...opciones, headers: { ...headers, ...(opciones.headers as Record<string, string> | undefined) } });
-    if (resp.status === 401 && !reintentando) {
-      this.tokenEnCache = null;
-      return this.llamarShopify(path, opciones, true);
-    }
-    return resp;
+  // Llama a la Admin API de la tienda del usuario con su token guardado. A
+  // diferencia de la versión vieja (con OAuth de corta duración), acá el
+  // token es fijo (el que el estudiante pegó en Integraciones) — si Shopify
+  // responde 401/403 es porque ese token es inválido o fue revocado (por
+  // ejemplo, el estudiante desinstaló la app en su tienda), no algo que este
+  // backend pueda arreglar reintentando: el error sube tal cual para que el
+  // taller le avise al estudiante que revise su conexión.
+  private async llamarShopify(credenciales: ShopifyCredenciales, path: string, opciones: RequestInit = {}): Promise<Response> {
+    const headers = this.headers(credenciales.accessToken);
+    return fetch(`${this.baseUrl(credenciales.storeDomain)}${path}`, {
+      ...opciones,
+      headers: { ...headers, ...(opciones.headers as Record<string, string> | undefined) },
+    });
   }
 
   // Llama al endpoint de GraphQL de la Admin API (mismo dominio/token que
@@ -182,8 +162,8 @@ export class ShopifyService {
   // "Tienda online" — ver publicarEnTiendaOnline() más abajo — porque eso ya
   // no se puede hacer de forma confiable por REST (Shopify lo dejó solo en
   // GraphQL, con la mutación publishablePublish).
-  private async graphql(query: string, variables?: Record<string, unknown>): Promise<any> {
-    const resp = await this.llamarShopify('/graphql.json', {
+  private async graphql(credenciales: ShopifyCredenciales, query: string, variables?: Record<string, unknown>): Promise<any> {
+    const resp = await this.llamarShopify(credenciales, '/graphql.json', {
       method: 'POST',
       body: JSON.stringify({ query, variables }),
     });
@@ -197,20 +177,23 @@ export class ShopifyService {
     return json.data;
   }
 
-  // Busca (una sola vez, se cachea) el id del canal "Tienda online" — el que
-  // hay que usar para que el producto se pueda ver en la URL pública de la
-  // tienda, no solo en la vista previa del admin. Este backend lo va a usar
-  // cualquier estudiante con SU PROPIA tienda (no solo la del cliente
-  // original), y el admin de cada tienda puede estar en cualquier idioma —
-  // así que no alcanza con buscar el canal por el texto "Online Store" (ese
-  // nombre puede venir traducido, ej. "Tienda online" en español, y además
-  // Shopify lo tiene marcado como campo obsoleto). Por eso se intenta primero
-  // por el id de la app del canal (fijo, no cambia con el idioma) y solo si
-  // eso no aparece, se cae de vuelta a buscar por nombre probando las
-  // traducciones más comunes.
-  private async obtenerPublicationIdTiendaOnline(): Promise<string> {
-    if (this.publicationIdTiendaOnline) return this.publicationIdTiendaOnline;
-    const data = await this.graphql(`{
+  // Busca (una sola vez por tienda, se cachea) el id del canal "Tienda
+  // online" — el que hay que usar para que el producto se pueda ver en la
+  // URL pública de la tienda, no solo en la vista previa del admin. Cada
+  // estudiante tiene su propia tienda y su admin puede estar en cualquier
+  // idioma — así que no alcanza con buscar el canal por el texto "Online
+  // Store" (ese nombre puede venir traducido, ej. "Tienda online" en
+  // español, y además Shopify lo tiene marcado como campo obsoleto). Por eso
+  // se intenta primero por el id de la app del canal (fijo, no cambia con el
+  // idioma) y solo si eso no aparece, se cae de vuelta a buscar por nombre
+  // probando las traducciones más comunes.
+  private async obtenerPublicationIdTiendaOnline(credenciales: ShopifyCredenciales): Promise<string> {
+    const cacheado = this.publicationIdPorTienda.get(credenciales.storeDomain);
+    if (cacheado) return cacheado;
+
+    const data = await this.graphql(
+      credenciales,
+      `{
       publications(first: 20) {
         edges {
           node {
@@ -220,7 +203,8 @@ export class ShopifyService {
           }
         }
       }
-    }`);
+    }`,
+    );
     const nodos = ((data?.publications?.edges || []) as any[]).map((e) => e.node);
 
     const APP_ID_TIENDA_ONLINE = 'gid://shopify/App/580111';
@@ -233,29 +217,29 @@ export class ShopifyService {
     if (!nodo) {
       throw new Error('No se encontró el canal "Tienda online" entre los canales de venta de la tienda.');
     }
-    this.publicationIdTiendaOnline = nodo.id;
+    this.publicationIdPorTienda.set(credenciales.storeDomain, nodo.id);
     return nodo.id;
   }
 
   // Publica el producto en el canal "Tienda online" — IMPRESCINDIBLE para
-  // que la landing se vea en la URL pública para cualquier visitante. Antes
-  // este backend solo mandaba status:"active" al crear/actualizar el
-  // producto por REST, lo cual lo deja activo EN EL ADMIN pero, en las
-  // versiones actuales de la API de Shopify, ya NO lo publica solo en
-  // ningún canal de venta — por eso la landing se veía bien en la vista
-  // previa del editor de temas (el admin sí puede ver productos sin
-  // publicar) pero daba 404 para un visitante cualquiera. Se llama después
-  // de crear/actualizar el producto, tanto en la primera publicación como en
-  // cada reenvío (si ya estaba publicado, volver a publicarlo no hace daño).
-  // Si esto falla (por ejemplo porque el scope write_publications todavía no
-  // está en la app — hay que agregarlo en el Dev Dashboard y reinstalar,
-  // igual que la vez pasada con los scopes de productos), no debe tumbar la
-  // publicación: el producto igual queda creado/actualizado, solo sin
-  // publicar en el canal por esta vez.
-  private async publicarEnTiendaOnline(productId: number): Promise<void> {
+  // que la landing se vea en la URL pública para cualquier visitante. Mandar
+  // status:"active" al crear/actualizar el producto por REST lo deja activo
+  // EN EL ADMIN pero, en las versiones actuales de la API de Shopify, ya NO
+  // lo publica solo en ningún canal de venta — por eso la landing se vería
+  // bien en la vista previa del editor de temas (el admin sí puede ver
+  // productos sin publicar) pero daría 404 para un visitante cualquiera. Se
+  // llama después de crear/actualizar el producto, tanto en la primera
+  // publicación como en cada reenvío (si ya estaba publicado, volver a
+  // publicarlo no hace daño). Si esto falla (por ejemplo porque el scope
+  // write_publications todavía no está en la app del estudiante — hay que
+  // agregarlo en la configuración de la app y reinstalarla en su tienda), no
+  // debe tumbar la publicación: el producto igual queda creado/actualizado,
+  // solo sin publicar en el canal por esta vez.
+  private async publicarEnTiendaOnline(credenciales: ShopifyCredenciales, productId: number): Promise<void> {
     try {
-      const publicationId = await this.obtenerPublicationIdTiendaOnline();
+      const publicationId = await this.obtenerPublicationIdTiendaOnline(credenciales);
       const data = await this.graphql(
+        credenciales,
         `mutation PublicarProducto($id: ID!, $input: [PublicationInput!]!) {
           publishablePublish(id: $id, input: $input) {
             userErrors { field message }
@@ -267,17 +251,17 @@ export class ShopifyService {
       if (errores && errores.length > 0) {
         throw new Error(errores.map((e: any) => e.message).join('; '));
       }
-      this.logger.log(`Producto ${productId} publicado en el canal "Tienda online".`);
+      this.logger.log(`Producto ${productId} publicado en el canal "Tienda online" (${credenciales.storeDomain}).`);
     } catch (err) {
-      this.logger.warn(`No se pudo publicar el producto ${productId} en el canal "Tienda online" (revisa el scope write_publications en la app): ${(err as Error).message}`);
+      this.logger.warn(`No se pudo publicar el producto ${productId} en el canal "Tienda online" de ${credenciales.storeDomain} (revisa el scope write_publications en la app): ${(err as Error).message}`);
     }
   }
 
   // ---------- Preparación automática del tema (plantilla "landing") ----------
 
   // Busca el tema activo/publicado de la tienda (el que ven los clientes).
-  private async obtenerTemaActivoId(): Promise<number> {
-    const resp = await this.llamarShopify('/themes.json');
+  private async obtenerTemaActivoId(credenciales: ShopifyCredenciales): Promise<number> {
+    const resp = await this.llamarShopify(credenciales, '/themes.json');
     if (!resp.ok) {
       throw new Error(`No se pudo listar los temas de la tienda (HTTP ${resp.status}): ${await resp.text()}`);
     }
@@ -291,8 +275,8 @@ export class ShopifyService {
 
   // Lee un archivo del tema (por ejemplo "templates/product.json"). Devuelve
   // null si el archivo no existe todavía (para poder crearlo).
-  private async obtenerAsset(temaId: number, key: string): Promise<string | null> {
-    const resp = await this.llamarShopify(`/themes/${temaId}/assets.json?asset[key]=${encodeURIComponent(key)}`);
+  private async obtenerAsset(credenciales: ShopifyCredenciales, temaId: number, key: string): Promise<string | null> {
+    const resp = await this.llamarShopify(credenciales, `/themes/${temaId}/assets.json?asset[key]=${encodeURIComponent(key)}`);
     if (resp.status === 404) return null;
     if (!resp.ok) {
       throw new Error(`No se pudo leer "${key}" del tema (HTTP ${resp.status}): ${await resp.text()}`);
@@ -302,8 +286,8 @@ export class ShopifyService {
   }
 
   // Crea o sobrescribe un archivo del tema.
-  private async guardarAsset(temaId: number, key: string, value: string): Promise<void> {
-    const resp = await this.llamarShopify(`/themes/${temaId}/assets.json`, {
+  private async guardarAsset(credenciales: ShopifyCredenciales, temaId: number, key: string, value: string): Promise<void> {
+    const resp = await this.llamarShopify(credenciales, `/themes/${temaId}/assets.json`, {
       method: 'PUT',
       body: JSON.stringify({ asset: { key, value } }),
     });
@@ -323,24 +307,24 @@ export class ShopifyService {
   // legible — así publicarLanding() puede devolverle al taller la lista de
   // cosas que no se guardaron, en vez de que el estudiante solo vea
   // "Publicado" y se quede sin saber por qué falta algo en la página real.
-  private async guardarMetafield(productId: number, key: string, type: string, value: string, avisos?: string[]): Promise<void> {
+  private async guardarMetafield(credenciales: ShopifyCredenciales, productId: number, key: string, type: string, value: string, avisos?: string[]): Promise<void> {
     try {
       // Shopify no deja "POST" dos veces el mismo namespace+key en un
       // producto (da error de duplicado) — hay que revisar primero si ya
       // existe (de una publicación anterior de esta misma landing) para
       // actualizarlo (PUT) en vez de crearlo de nuevo, o el dato se quedaría
       // pegado en la primera versión para siempre en los reenvíos.
-      const buscar = await this.llamarShopify(`/products/${productId}/metafields.json?namespace=ecom_magnates&key=${encodeURIComponent(key)}`);
+      const buscar = await this.llamarShopify(credenciales, `/products/${productId}/metafields.json?namespace=ecom_magnates&key=${encodeURIComponent(key)}`);
       if (!buscar.ok) throw new Error(`HTTP ${buscar.status} al buscar el metafield "${key}": ${await buscar.text()}`);
       const buscarJson: any = await buscar.json();
       const existente = buscarJson?.metafields?.[0];
 
       const resp = existente
-        ? await this.llamarShopify(`/products/${productId}/metafields/${existente.id}.json`, {
+        ? await this.llamarShopify(credenciales, `/products/${productId}/metafields/${existente.id}.json`, {
             method: 'PUT',
             body: JSON.stringify({ metafield: { id: existente.id, type, value } }),
           })
-        : await this.llamarShopify(`/products/${productId}/metafields.json`, {
+        : await this.llamarShopify(credenciales, `/products/${productId}/metafields.json`, {
             method: 'POST',
             body: JSON.stringify({ metafield: { namespace: 'ecom_magnates', key, type, value } }),
           });
@@ -365,8 +349,8 @@ export class ShopifyService {
   // dejó en el taller). La sección "landing-imagenes" del tema lee este
   // metafield para saber dónde dibujar cada botón — ver seccionLandingLiquid
   // más arriba.
-  private async guardarMetafieldSecuencia(productId: number, secuencia: LandingSecuenciaPaso[], avisos?: string[]): Promise<void> {
-    await this.guardarMetafield(productId, 'landing_secuencia', 'json', JSON.stringify(secuencia), avisos);
+  private async guardarMetafieldSecuencia(credenciales: ShopifyCredenciales, productId: number, secuencia: LandingSecuenciaPaso[], avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'landing_secuencia', 'json', JSON.stringify(secuencia), avisos);
   }
 
   // El metafield del "Botón Flotante" (checkbox del taller): si está
@@ -375,8 +359,8 @@ export class ShopifyService {
   // de (no en vez de) los botones intercalados entre imágenes. Se guarda
   // SIEMPRE (true o false), a diferencia de la secuencia, para que también
   // se pueda APAGAR en un reenvío si el estudiante desmarca el checkbox.
-  private async guardarMetafieldBotonFlotante(productId: number, activo: boolean, avisos?: string[]): Promise<void> {
-    await this.guardarMetafield(productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false', avisos);
+  private async guardarMetafieldBotonFlotante(credenciales: ShopifyCredenciales, productId: number, activo: boolean, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false', avisos);
   }
 
   // Texto/color personalizados del botón flotante (mismo mecanismo que
@@ -386,13 +370,13 @@ export class ShopifyService {
   // guardan solo cuando el taller efectivamente mandó un valor (ver el
   // "typeof === 'string'" en publicarLanding) — así una landing vieja, que
   // nunca tocó estos campos, no pisa nada con string vacío.
-  private async guardarMetafieldBotonFlotanteTexto(productId: number, texto: string, avisos?: string[]): Promise<void> {
-    await this.guardarMetafield(productId, 'boton_flotante_texto', 'single_line_text_field', texto, avisos);
+  private async guardarMetafieldBotonFlotanteTexto(credenciales: ShopifyCredenciales, productId: number, texto: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'boton_flotante_texto', 'single_line_text_field', texto, avisos);
   }
 
-  private async guardarMetafieldBotonFlotanteColor(productId: number, color: string, colorTexto: string, avisos?: string[]): Promise<void> {
-    await this.guardarMetafield(productId, 'boton_flotante_color', 'single_line_text_field', color, avisos);
-    await this.guardarMetafield(productId, 'boton_flotante_color_texto', 'single_line_text_field', colorTexto, avisos);
+  private async guardarMetafieldBotonFlotanteColor(credenciales: ShopifyCredenciales, productId: number, color: string, colorTexto: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'boton_flotante_color', 'single_line_text_field', color, avisos);
+    await this.guardarMetafield(credenciales, productId, 'boton_flotante_color_texto', 'single_line_text_field', colorTexto, avisos);
   }
 
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
@@ -522,10 +506,9 @@ export class ShopifyService {
 
   // Tipos de SECCIÓN (no de bloque) que en distintos temas corresponden a la
   // ficha de producto de siempre (título/precio/galería/comprar/descripción).
-  // En Dawn y temas viejos se llama "main-product"; en Horizon (el tema real
-  // del cliente, confirmado leyendo su templates/product.landing.json) se
-  // llama "product-information" — se dejan los dos para no romper si el
-  // cliente cambia de tema más adelante.
+  // En Dawn y temas viejos se llama "main-product"; en Horizon se llama
+  // "product-information" — se dejan los dos para no romper si algún
+  // estudiante tiene un tema distinto.
   private readonly TIPOS_SECCION_PRODUCTO = ['product-information', 'main-product'];
 
   // Recorre TODOS los bloques de una sección, incluidos los anidados dentro
@@ -563,12 +546,12 @@ export class ShopifyService {
 
   // Dentro de la sección de producto (product-information / main-product) de
   // la plantilla, APAGA (con "disabled": true — el mismo mecanismo que ya
-  // usa el propio tema del cliente para sus otros bloques) el bloque de
-  // galería nativa y el de Descripción, en cualquier nivel de anidamiento.
-  // No se BORRAN los bloques (en Horizon el de galería es "estático" y no
-  // se puede quitar del JSON) y no se toca nada más de esa sección (precio,
-  // variantes, botón de comprar, etc. quedan exactamente como el cliente los
-  // tenga configurados en su tema — no es cosa nuestra decidir eso). Así la
+  // usa el propio tema para sus otros bloques) el bloque de galería nativa y
+  // el de Descripción, en cualquier nivel de anidamiento. No se BORRAN los
+  // bloques (en Horizon el de galería es "estático" y no se puede quitar del
+  // JSON) y no se toca nada más de esa sección (precio, variantes, botón de
+  // comprar, etc. quedan exactamente como el estudiante los tenga
+  // configurados en su tema — no es cosa nuestra decidir eso). Así la
   // plantilla "landing" queda mostrando solo la sección propia
   // (landing-imagenes) a pantalla completa, sin la Multimedia ni la
   // Descripción duplicando las mismas fotos debajo. No toca ninguna otra
@@ -597,7 +580,7 @@ export class ShopifyService {
   // Se asegura de que el tema activo tenga la sección y la plantilla alterna
   // "landing" necesarias — las crea solo si todavía no existen (no toca nada
   // más si ya estaban, y nunca modifica la plantilla NORMAL de producto, así
-  // que el resto del catálogo del cliente no se ve afectado). Si la
+  // que el resto del catálogo del estudiante no se ve afectado). Si la
   // plantilla "landing" ya existía (por ejemplo de antes de que existiera
   // simplificarSeccionProducto), se revisa y se repara en el momento si su
   // sección de producto todavía trae de más (galería, título, descripción,
@@ -606,9 +589,9 @@ export class ShopifyService {
   // ejemplo, el permiso de temas todavía no está activo), no debe tumbar la
   // publicación del producto — solo queda sin la plantilla especial (o sin
   // la reparación) por esta vez.
-  private async asegurarPlantillaLanding(avisos?: string[]): Promise<void> {
+  private async asegurarPlantillaLanding(credenciales: ShopifyCredenciales, avisos?: string[]): Promise<void> {
     try {
-      const temaId = await this.obtenerTemaActivoId();
+      const temaId = await this.obtenerTemaActivoId(credenciales);
 
       // Se sobrescribe cada vez que el código de la sección cambió (comparación
       // de texto), no solo la primera vez — así, si este backend le agrega
@@ -623,22 +606,22 @@ export class ShopifyService {
       // página real va a seguir apareciendo solo uno (o ninguno) aunque el
       // taller y el metafield ya tengan varios guardados bien. Por eso ahora
       // se avisa en vez de solo loguearlo.
-      const seccionExistente = await this.obtenerAsset(temaId, 'sections/landing-imagenes.liquid');
+      const seccionExistente = await this.obtenerAsset(credenciales, temaId, 'sections/landing-imagenes.liquid');
       if (seccionExistente !== this.seccionLandingLiquid) {
-        await this.guardarAsset(temaId, 'sections/landing-imagenes.liquid', this.seccionLandingLiquid);
+        await this.guardarAsset(credenciales, temaId, 'sections/landing-imagenes.liquid', this.seccionLandingLiquid);
         this.logger.log(seccionExistente === null ? 'Sección "landing-imagenes" creada en el tema.' : 'Sección "landing-imagenes" actualizada en el tema.');
       }
 
-      const plantillaExistente = await this.obtenerAsset(temaId, 'templates/product.landing.json');
+      const plantillaExistente = await this.obtenerAsset(credenciales, temaId, 'templates/product.landing.json');
       if (plantillaExistente === null) {
-        const baseTexto = await this.obtenerAsset(temaId, 'templates/product.json');
+        const baseTexto = await this.obtenerAsset(credenciales, temaId, 'templates/product.json');
         const base = baseTexto ? JSON.parse(baseTexto) : { sections: {}, order: [] };
         base.sections = base.sections || {};
         base.order = Array.isArray(base.order) ? base.order : [];
         this.simplificarSeccionProducto(base);
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
-        await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
+        await this.guardarAsset(credenciales, temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
         this.logger.log('Plantilla "product.landing.json" creada en el tema.');
       } else {
         try {
@@ -646,7 +629,7 @@ export class ShopifyService {
           const antes = JSON.stringify(plantilla);
           this.simplificarSeccionProducto(plantilla);
           if (JSON.stringify(plantilla) !== antes) {
-            await this.guardarAsset(temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
+            await this.guardarAsset(credenciales, temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
             this.logger.log('Plantilla "product.landing.json" existente reparada: galería/descripción nativas apagadas.');
           }
         } catch (err) {
@@ -675,7 +658,7 @@ export class ShopifyService {
   // bloque donde el tema las dibuje ("Product description"), sin espacios ni
   // recortes entre ellas. Antes se usaba un truco de "width:100vw" con
   // márgenes negativos para forzar ancho de pantalla completa saliéndose del
-  // contenedor del tema, pero en el tema del cliente ese contenedor recorta
+  // contenedor del tema, pero en varios temas ese contenedor recorta
   // (overflow) lo que se sale de su caja, así que el truco dejaba las
   // imágenes invisibles en vez de a pantalla completa. Con 100% (sin salirse
   // del contenedor) las imágenes se ven siempre, y quedan tan anchas como
@@ -687,11 +670,11 @@ export class ShopifyService {
       .join('');
     // Ojo: si la Descripción no tiene NINGÚN texto (solo imágenes), varios
     // temas la consideran "vacía" (revisan el texto plano, sin las etiquetas
-    // HTML) y esconden todo el bloque, aunque sí tenga imágenes — así se veía
-    // en el tema del cliente. Por eso se agrega un textito real al principio:
-    // como el div que lo envuelve ya tiene font-size:0, ese texto queda
-    // invisible en pantalla, pero sigue contando como "hay texto" para que
-    // el tema no oculte el bloque completo.
+    // HTML) y esconden todo el bloque, aunque sí tenga imágenes. Por eso se
+    // agrega un textito real al principio: como el div que lo envuelve ya
+    // tiene font-size:0, ese texto queda invisible en pantalla, pero sigue
+    // contando como "hay texto" para que el tema no oculte el bloque
+    // completo.
     return `<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;"><span>Landing</span>${imgsHtml}</div>`;
   }
 
@@ -714,12 +697,13 @@ export class ShopifyService {
   // todavía no tiene este selector, no pisa con vacío lo que ya estuviera
   // guardado. Se llama igual en "actualizar" y en "crear" (ver
   // publicarLanding más abajo).
-  private async guardarPersonalizacionBotonFlotante(productId: number, input: PublicarLandingInput, avisos: string[]): Promise<void> {
+  private async guardarPersonalizacionBotonFlotante(credenciales: ShopifyCredenciales, productId: number, input: PublicarLandingInput, avisos: string[]): Promise<void> {
     if (typeof input.botonFlotanteTexto === 'string' && input.botonFlotanteTexto.trim() !== '') {
-      await this.guardarMetafieldBotonFlotanteTexto(productId, input.botonFlotanteTexto, avisos);
+      await this.guardarMetafieldBotonFlotanteTexto(credenciales, productId, input.botonFlotanteTexto, avisos);
     }
     if (typeof input.botonFlotanteColor === 'string' && input.botonFlotanteColor.trim() !== '') {
       await this.guardarMetafieldBotonFlotanteColor(
+        credenciales,
         productId,
         input.botonFlotanteColor,
         typeof input.botonFlotanteColorTexto === 'string' && input.botonFlotanteColorTexto.trim() !== ''
@@ -730,12 +714,8 @@ export class ShopifyService {
     }
   }
 
-  async publicarLanding(input: PublicarLandingInput): Promise<PublicarLandingResultado> {
-    if (!this.configurado()) {
-      throw new Error(
-        'Shopify no está configurado en este backend (faltan SHOPIFY_STORE_DOMAIN, SHOPIFY_CLIENT_ID y/o SHOPIFY_CLIENT_SECRET en las variables de entorno de Railway).',
-      );
-    }
+  async publicarLanding(credenciales: ShopifyCredenciales, input: PublicarLandingInput): Promise<PublicarLandingResultado> {
+    this.validarCredenciales(credenciales);
     if (!input?.imagenes || input.imagenes.length === 0) {
       throw new Error('La landing no tiene imágenes para publicar.');
     }
@@ -751,7 +731,7 @@ export class ShopifyService {
 
     // Se asegura (una sola vez por tienda) de que el tema tenga la plantilla
     // alterna "landing" lista, antes de crear/actualizar el producto.
-    await this.asegurarPlantillaLanding(avisos);
+    await this.asegurarPlantillaLanding(credenciales, avisos);
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
@@ -766,8 +746,11 @@ export class ShopifyService {
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
     // Busca si ya existe un producto con este handle, para actualizarlo en vez de duplicar.
-    const buscar = await this.llamarShopify(`/products.json?handle=${encodeURIComponent(handle)}&limit=1`);
+    const buscar = await this.llamarShopify(credenciales, `/products.json?handle=${encodeURIComponent(handle)}&limit=1`);
     if (!buscar.ok) {
+      if (buscar.status === 401 || buscar.status === 403) {
+        throw new Error('Shopify rechazó tu token de acceso — puede que lo hayas desconectado o que le hayas quitado permisos a la app. Revisá tu conexión en "Integraciones".');
+      }
       throw new Error(`No se pudo consultar Shopify (HTTP ${buscar.status}): ${await buscar.text()}`);
     }
     const buscarJson: any = await buscar.json();
@@ -775,7 +758,7 @@ export class ShopifyService {
 
     if (existente) {
       const varianteId = existente.variants?.[0]?.id;
-      const actualizar = await this.llamarShopify(`/products/${existente.id}.json`, {
+      const actualizar = await this.llamarShopify(credenciales, `/products/${existente.id}.json`, {
         method: 'PUT',
         body: JSON.stringify({
           product: {
@@ -796,21 +779,21 @@ export class ShopifyService {
       }
       const json: any = await actualizar.json();
       if (input.secuencia && input.secuencia.length > 0) {
-        await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
+        await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
       }
-      await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
-      await this.guardarPersonalizacionBotonFlotante(json.product.id, input, avisos);
-      await this.publicarEnTiendaOnline(json.product.id);
-      this.logger.log(`Producto de Shopify actualizado: ${json.product.handle}`);
+      await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
+      await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
+      await this.publicarEnTiendaOnline(credenciales, json.product.id);
+      this.logger.log(`Producto de Shopify actualizado: ${json.product.handle} (${credenciales.storeDomain})`);
       return {
-        url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`,
+        url: `https://${credenciales.storeDomain}/products/${json.product.handle}`,
         handle: json.product.handle,
         creada: false,
         avisos: avisos.length > 0 ? avisos : undefined,
       };
     }
 
-    const crear = await this.llamarShopify('/products.json', {
+    const crear = await this.llamarShopify(credenciales, '/products.json', {
       method: 'POST',
       body: JSON.stringify({
         product: {
@@ -829,14 +812,14 @@ export class ShopifyService {
     }
     const json: any = await crear.json();
     if (input.secuencia && input.secuencia.length > 0) {
-      await this.guardarMetafieldSecuencia(json.product.id, input.secuencia, avisos);
+      await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
     }
-    await this.guardarMetafieldBotonFlotante(json.product.id, !!input.botonFlotante, avisos);
-    await this.guardarPersonalizacionBotonFlotante(json.product.id, input, avisos);
-    await this.publicarEnTiendaOnline(json.product.id);
-    this.logger.log(`Producto de Shopify creado: ${json.product.handle}`);
+    await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
+    await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
+    await this.publicarEnTiendaOnline(credenciales, json.product.id);
+    this.logger.log(`Producto de Shopify creado: ${json.product.handle} (${credenciales.storeDomain})`);
     return {
-      url: `https://${process.env.SHOPIFY_STORE_DOMAIN}/products/${json.product.handle}`,
+      url: `https://${credenciales.storeDomain}/products/${json.product.handle}`,
       handle: json.product.handle,
       creada: true,
       avisos: avisos.length > 0 ? avisos : undefined,

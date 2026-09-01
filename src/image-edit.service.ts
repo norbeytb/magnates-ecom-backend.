@@ -5,11 +5,22 @@
 // landing, usando la foto real del producto + toda la ficha técnica que
 // la persona llenó en el taller.
 //
+// CADA USUARIO USA SU PROPIA CLAVE DE fal.ai (módulo de Integraciones, ver
+// integraciones.service.ts): antes este servicio configuraba una sola clave
+// global (FAL_API_KEY de Railway) con fal.config() al arrancar el backend.
+// Ahora cada llamada recibe la clave del usuario que la pidió (falApiKey) y
+// crea con ella un cliente de fal AISLADO con createFalClient({credentials})
+// — nunca se usa fal.config()/el cliente "fal" global, porque ese es un
+// estado compartido por todas las peticiones a la vez (este servicio es un
+// singleton) y dos usuarios generando al mismo tiempo pisarían la clave del
+// otro. createFalClient() en cambio da una instancia nueva e independiente
+// por llamada, segura para varias peticiones en simultáneo.
+//
 // Instalar el SDK oficial de fal antes de usar esto:
 //   npm install @fal-ai/client
 
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { fal } from '@fal-ai/client';
+import { createFalClient, FalClient } from '@fal-ai/client';
 import { HistorialService } from './historial.service';
 
 export interface FichaTecnica {
@@ -45,6 +56,10 @@ export interface GenerarSeccionInput {
   // Quién pidió esta generación (ver auth.guard.ts) — se usa solo para que el
   // historial guardado quede a nombre de esta cuenta (ver exito() más abajo).
   usuarioId: number;
+  // La clave de fal.ai DE ESE USUARIO (ver integraciones.service.ts) — el
+  // controlador la busca antes de llamar acá y avisa con un error claro si
+  // el usuario todavía no conectó ninguna en "Integraciones".
+  falApiKey: string;
   seccion: string; // 'hero' | 'oferta' | 'logistica' | 'antesdespues' | 'beneficios' | 'tabla' | 'autoridad' | 'testimonios' | 'modouso' | 'faq'
   imagenProductoUrl: string; // foto real subida por el usuario (imgSlot1/2/3) — acepta URL pública o data URI base64
   plantillaReferenciaUrl?: string; // YA NO SE USA para generar (ver nota de costo abajo) — se deja en la interfaz solo por compatibilidad con llamadas viejas, se ignora.
@@ -64,13 +79,19 @@ export interface GenerarSeccionResultado {
 
 @Injectable()
 export class ImageEditService {
-  constructor(private readonly historialService: HistorialService) {
-    fal.config({
-      credentials: process.env.FAL_API_KEY, // nunca hardcodear, nunca enviar al frontend
-    });
+  constructor(private readonly historialService: HistorialService) {}
+
+  // Instancia de fal AISLADA para esta llamada puntual — nunca la global
+  // "fal" (ver nota grande arriba del archivo).
+  private clienteFal(apiKey: string): FalClient {
+    return createFalClient({ credentials: apiKey });
   }
 
   async generarSeccion(input: GenerarSeccionInput): Promise<GenerarSeccionResultado> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+    const falClient = this.clienteFal(input.falApiKey);
     const prompt = this.construirPrompt(input);
     const numImagenes = input.numImagenes ?? 1;
 
@@ -79,7 +100,7 @@ export class ImageEditService {
       // directamente en image_urls: necesita una URL real ya alojada. Si el
       // taller nos manda la foto como base64 (data:image/...;base64,...), la
       // subimos primero al storage de fal.ai y usamos la URL que nos regresa.
-      const imagenUrl = await this.resolverImagenUrl(input.imagenProductoUrl);
+      const imagenUrl = await this.resolverImagenUrl(falClient, input.imagenProductoUrl);
 
       // ---- Nota de costo (importante, no bajar la guardia aquí) ----
       // Antes se mandaba TAMBIÉN la miniatura de la plantilla elegida como
@@ -120,7 +141,7 @@ export class ImageEditService {
       const calidad = input.calidad ?? 'low';
 
       try {
-        const imagenesUrl = await this.llamarFal(imageUrls, prompt, numImagenes, calidad);
+        const imagenesUrl = await this.llamarFal(falClient, imageUrls, prompt, numImagenes, calidad);
         return this.exito(imagenesUrl, prompt, calidad, numImagenes, input, imagenUrl);
       } catch (error) {
         // El filtro de contenido de OpenAI revisa TANTO el texto como la foto del
@@ -131,6 +152,11 @@ export class ImageEditService {
         if (this.esErrorDeContentChecker(error)) {
           throw new InternalServerErrorException(
             `La sección "${input.seccion}" quedó bloqueada por el filtro de contenido de OpenAI — la causa es la foto del producto o el texto de la ficha. Prueba con otra foto del producto (ej. en maniquí, empacado, o sin una persona puesta) y vuelve a intentar.`,
+          );
+        }
+        if (this.esErrorDeClaveFalInvalida(error)) {
+          throw new InternalServerErrorException(
+            'fal.ai rechazó tu clave — revisá que la hayas pegado completa en "Integraciones" y que tengas créditos cargados en tu cuenta de fal.ai.',
           );
         }
         throw error;
@@ -176,12 +202,13 @@ export class ImageEditService {
   }
 
   private async llamarFal(
+    falClient: FalClient,
     imageUrls: string[],
     prompt: string,
     numImagenes: number,
     calidad: 'low' | 'medium' | 'high',
   ): Promise<string[]> {
-    const resultado = await fal.subscribe('openai/gpt-image-2/edit', {
+    const resultado = await falClient.subscribe('openai/gpt-image-2/edit', {
       input: {
         image_urls: imageUrls,
         prompt,
@@ -213,13 +240,22 @@ export class ImageEditService {
     return detalle.includes('content checker') || detalle.includes('flagged');
   }
 
+  // Distingue un token/clave de fal.ai inválida (401/403 — el usuario pegó
+  // mal la clave, o la borró/regeneró en su cuenta de fal.ai) de cualquier
+  // otro error (moderación, tamaño de imagen, etc.), para poder darle al
+  // usuario un mensaje que lo mande directo a revisar su conexión.
+  private esErrorDeClaveFalInvalida(error: unknown): boolean {
+    const status = (error as any)?.status;
+    return status === 401 || status === 403;
+  }
+
   /**
    * Si la imagen viene como data URI base64 (foto subida directamente en el
    * taller, sin backend propio de assets todavía), la sube al storage de
-   * fal.ai y devuelve la URL pública resultante. Si ya es una URL normal
-   * (http/https), la deja tal cual.
+   * fal.ai (con la clave de ESE usuario) y devuelve la URL pública
+   * resultante. Si ya es una URL normal (http/https), la deja tal cual.
    */
-  private async resolverImagenUrl(imagenProductoUrl: string): Promise<string> {
+  private async resolverImagenUrl(falClient: FalClient, imagenProductoUrl: string): Promise<string> {
     if (!imagenProductoUrl || !imagenProductoUrl.startsWith('data:')) {
       return imagenProductoUrl; // ya es una URL pública, no hay nada que subir
     }
@@ -232,7 +268,7 @@ export class ImageEditService {
     const [, mimeType, base64Data] = match;
     const buffer = Buffer.from(base64Data, 'base64');
     const blob = new Blob([buffer], { type: mimeType });
-    return fal.storage.upload(blob);
+    return falClient.storage.upload(blob);
   }
 
   // Wrapper público del mismo helper de arriba — lo usa el endpoint
@@ -240,8 +276,13 @@ export class ImageEditService {
   // una URL real y persistente en fal.storage, en vez de guardar el data URI
   // base64 crudo (enorme) en la base de datos. Así el taller puede recordar la
   // foto del producto aunque el usuario nunca llegue a generar ninguna sección.
-  async subirFotoProducto(dataUri: string): Promise<string> {
-    return this.resolverImagenUrl(dataUri);
+  // Recibe la clave de fal.ai de ese usuario — la sube con SU cuenta, no con
+  // una compartida.
+  async subirFotoProducto(dataUri: string, falApiKey: string): Promise<string> {
+    if (!falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+    return this.resolverImagenUrl(this.clienteFal(falApiKey), dataUri);
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {

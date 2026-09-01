@@ -2,15 +2,27 @@
 //
 // Módulo IA — Agente de Copywriting (texto). Antes esta llamada la hacía el
 // propio navegador del usuario, pidiéndole que pegara su propia API Key de
-// Anthropic. Ahora vive aquí, en el backend, usando la ANTHROPIC_API_KEY
-// del servidor (variable de entorno en Railway) — el usuario del taller ya
-// no necesita tener ni pegar ninguna key.
+// Anthropic; después pasó a vivir en el backend usando una ANTHROPIC_API_KEY
+// compartida del servidor.
+//
+// Ahora usa la MISMA clave de fal.ai que el usuario ya conectó para generar
+// imágenes (ver integraciones.service.ts / image-edit.service.ts) — a
+// propósito, para que cada estudiante tenga UNA sola clave que pagar y
+// conectar, no dos. fal.ai expone modelos de texto (incluido Claude) a
+// través de su endpoint unificado "fal-ai/any-llm", autenticado con la misma
+// clave que los modelos de imagen — por eso ya no hace falta una
+// ANTHROPIC_API_KEY aparte ni que el usuario pegue una segunda clave.
 
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { createFalClient } from '@fal-ai/client';
 
 export interface GenerarCopyInput {
   nombreProducto: string;
   detallesProducto: string;
+  // La clave de fal.ai DE ESE USUARIO — el controlador la busca antes de
+  // llamar acá y avisa con un error claro si el usuario todavía no la
+  // conectó en "Integraciones".
+  falApiKey: string;
 }
 
 export interface GenerarCopyResultado {
@@ -22,14 +34,17 @@ export interface GenerarCopyResultado {
   mecanismo: string;
 }
 
+// Modelo de Claude servido a través del router de fal.ai (fal-ai/any-llm) —
+// mismo modelo (Haiku) que se usaba antes llamando directo a la API de
+// Anthropic: alcanza de sobra para esta tarea (redactar texto corto y
+// estructurado) y es el más económico de la familia Claude.
+const MODELO_TEXTO = 'anthropic/claude-haiku-4.5';
+
 @Injectable()
 export class TextGenerationService {
   async generarCopy(input: GenerarCopyInput): Promise<GenerarCopyResultado> {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new InternalServerErrorException(
-        'El servidor no tiene configurada la variable de entorno ANTHROPIC_API_KEY.',
-      );
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
     }
 
     const systemPrompt = `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
@@ -51,46 +66,35 @@ REGLA IMPORTANTE (aplica a las 6 claves, especialmente para productos de belleza
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 
-    let response;
+    const falClient = createFalClient({ credentials: input.falApiKey });
+
+    let resultado;
     try {
-      response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          // Haiku 4.5: suficiente para esta tarea (extraer/redactar texto corto
-          // y estructurado) y mucho más económico que un modelo más grande.
-          model: 'claude-haiku-4-5',
+      resultado = await falClient.subscribe('fal-ai/any-llm', {
+        input: {
+          model: MODELO_TEXTO,
+          prompt: userMsg,
+          system_prompt: systemPrompt,
           max_tokens: 1000,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userMsg }],
-        }),
+          temperature: 0.7,
+        },
+        logs: false,
       });
     } catch (error) {
-      throw new InternalServerErrorException(
-        'No se pudo contactar la API de Claude: ' + (error as Error).message,
-      );
+      if (this.esErrorDeClaveFalInvalida(error)) {
+        throw new InternalServerErrorException(
+          'fal.ai rechazó tu clave — revisá que la hayas pegado completa en "Integraciones" y que tengas créditos cargados en tu cuenta de fal.ai.',
+        );
+      }
+      throw new InternalServerErrorException('No se pudo contactar a fal.ai: ' + this.extraerDetalleError(error));
     }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new InternalServerErrorException(
-        `La API de Claude respondió ${response.status}: ${errText.slice(0, 220)}`,
-      );
+    const texto = (resultado?.data as any)?.output;
+    if (!texto || typeof texto !== 'string') {
+      throw new InternalServerErrorException('La respuesta de fal.ai no incluyó texto.');
     }
 
-    const data = await response.json();
-    const textBlock = (data.content ?? []).find(
-      (b: { type: string }) => b.type === 'text',
-    );
-    if (!textBlock) {
-      throw new InternalServerErrorException('La respuesta de Claude no incluyó texto.');
-    }
-
-    const clean = (textBlock.text as string)
+    const clean = texto
       .trim()
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/, '')
@@ -100,7 +104,26 @@ REGLA IMPORTANTE (aplica a las 6 claves, especialmente para productos de belleza
     try {
       return JSON.parse(clean);
     } catch {
-      throw new InternalServerErrorException('La respuesta de Claude no fue un JSON válido.');
+      throw new InternalServerErrorException('La respuesta de fal.ai no fue un JSON válido.');
     }
+  }
+
+  // Sacar el detalle real del error de fal.ai (no solo "Unprocessable
+  // Entity" genérico) — el SDK de fal suele traer el motivo exacto en
+  // error.body.detail (mismo patrón que usa image-edit.service.ts).
+  private extraerDetalleError(error: unknown): string {
+    const err = error as any;
+    return (
+      (Array.isArray(err?.body?.detail)
+        ? err.body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+        : err?.body?.detail) ||
+      err?.message ||
+      String(error)
+    );
+  }
+
+  private esErrorDeClaveFalInvalida(error: unknown): boolean {
+    const status = (error as any)?.status;
+    return status === 401 || status === 403;
   }
 }
