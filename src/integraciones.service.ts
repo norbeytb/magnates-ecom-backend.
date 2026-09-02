@@ -10,16 +10,18 @@
 // tabla en onModuleInit, sin garantía de orden entre ellos).
 //
 // Cómo consigue esto cada usuario:
-//  - Shopify: crea una "app personalizada" en SU PROPIA tienda (Configuración
-//    → Apps y canales de venta → Desarrollar apps → Crear una app), le da
-//    permisos de lectura/escritura de productos (read_products,
-//    write_products) y de publicaciones (read_publications,
-//    write_publications), instala la app en su tienda, y copia el "Token de
-//    acceso de API Admin" que empieza con shpat_ — eso es lo que pega en el
-//    taller. Antes de guardarlo, este backend prueba ese token contra la
-//    tienda (GET /shop.json) para avisar de una vez si algo está mal
-//    escrito, en vez de que recién falle el día que intente publicar una
-//    landing.
+//  - Shopify: crea una app en el Dev Dashboard de Shopify (dev.shopify.com)
+//    para SU PROPIA tienda, le activa los alcances de Admin API read_products,
+//    write_products, read_themes, write_themes y write_publications, la
+//    instala en su tienda, y copia el "ID de Cliente" y el "Secreto" de esa
+//    app — eso es lo que pega en el taller (Shopify ya no entrega, para apps
+//    nuevas, un token de acceso fijo tipo "shpat_..." — solo da estas dos
+//    credenciales, y hay que cambiarlas por un token real llamando a
+//    Shopify; eso lo hace shopify.service.ts en cada publicación, nunca acá).
+//    Antes de guardar, este backend prueba esas credenciales contra la
+//    tienda (intercambiándolas por un token real, Client Credentials Grant)
+//    para avisar de una vez si algo está mal escrito, en vez de que recién
+//    falle el día que intente publicar una landing.
 //  - fal.ai: crea su cuenta en fal.ai, carga créditos, y copia su clave
 //    desde fal.ai/dashboard/keys — esa misma clave sirve tanto para generar
 //    imágenes como texto (ver image-edit.service.ts y
@@ -27,19 +29,22 @@
 //    compartida del taller — el texto pasa a generarse también a través de
 //    fal.ai, con un modelo de Claude, para que sea UNA sola clave y no dos).
 //
-// Los valores guardados (shopify_access_token, fal_api_key) NUNCA se
+// Los valores guardados (shopify_client_secret, fal_api_key) NUNCA se
 // devuelven completos al frontend después de guardados — solo si están
 // configurados y los últimos 4 caracteres (ver enmascarar más abajo), así
 // la persona reconoce cuál puso sin que quede expuesto en la pantalla ni en
-// las herramientas del navegador.
+// las herramientas del navegador. El "ID de Cliente" de Shopify no es
+// secreto (Shopify mismo lo muestra en texto plano en su propio dashboard),
+// así que ese sí se devuelve completo.
 
 import { ConflictException, Injectable, InternalServerErrorException, Logger, OnModuleInit } from '@nestjs/common';
 import { Pool } from 'pg';
 
 export interface IntegracionesUsuario {
   shopifyStoreDomain?: string;
+  shopifyClientId?: string;
   shopifyConectado: boolean;
-  shopifyTokenParcial?: string;
+  shopifyClientSecretParcial?: string;
   falConectado: boolean;
   falKeyParcial?: string;
 }
@@ -65,6 +70,13 @@ export class IntegracionesService implements OnModuleInit {
           actualizado_en TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // shopify_access_token queda en la tabla sin usarse (columnas viejas
+      // nunca se borran, ver nota de productos.service.ts) — Shopify dejó de
+      // entregar ese tipo de token fijo para apps nuevas; ahora se guardan
+      // estas dos en su lugar y shopify.service.ts las cambia por un token
+      // real en cada publicación (Client Credentials Grant).
+      await this.pool.query(`ALTER TABLE integraciones ADD COLUMN IF NOT EXISTS shopify_client_id TEXT;`);
+      await this.pool.query(`ALTER TABLE integraciones ADD COLUMN IF NOT EXISTS shopify_client_secret TEXT;`);
       this.logger.log('Conectado a PostgreSQL — tabla "integraciones" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de integraciones: ' + (error as Error).message);
@@ -85,13 +97,13 @@ export class IntegracionesService implements OnModuleInit {
       .toLowerCase();
   }
 
-  // Vista "segura" para el frontend — nunca incluye el token/clave completos.
+  // Vista "segura" para el frontend — nunca incluye el secreto/clave completos.
   async obtener(usuarioId: number): Promise<IntegracionesUsuario> {
     if (!this.pool) {
       return { shopifyConectado: false, falConectado: false };
     }
     const resultado = await this.pool.query(
-      `SELECT shopify_store_domain, shopify_access_token, fal_api_key FROM integraciones WHERE usuario_id = $1`,
+      `SELECT shopify_store_domain, shopify_client_id, shopify_client_secret, fal_api_key FROM integraciones WHERE usuario_id = $1`,
       [usuarioId],
     );
     const fila = resultado.rows[0];
@@ -100,8 +112,9 @@ export class IntegracionesService implements OnModuleInit {
     }
     return {
       shopifyStoreDomain: fila.shopify_store_domain || undefined,
-      shopifyConectado: !!(fila.shopify_store_domain && fila.shopify_access_token),
-      shopifyTokenParcial: this.ultimos4(fila.shopify_access_token),
+      shopifyClientId: fila.shopify_client_id || undefined,
+      shopifyConectado: !!(fila.shopify_store_domain && fila.shopify_client_id && fila.shopify_client_secret),
+      shopifyClientSecretParcial: this.ultimos4(fila.shopify_client_secret),
       falConectado: !!fila.fal_api_key,
       falKeyParcial: this.ultimos4(fila.fal_api_key),
     };
@@ -113,15 +126,15 @@ export class IntegracionesService implements OnModuleInit {
   // TextGenerationService para llamar a Shopify/fal.ai en nombre del
   // usuario. Nunca deben propagarse tal cual en una respuesta HTTP.
 
-  async obtenerCredencialesShopify(usuarioId: number): Promise<{ storeDomain: string; accessToken: string } | null> {
+  async obtenerCredencialesShopify(usuarioId: number): Promise<{ storeDomain: string; clientId: string; clientSecret: string } | null> {
     if (!this.pool) return null;
     const resultado = await this.pool.query(
-      `SELECT shopify_store_domain, shopify_access_token FROM integraciones WHERE usuario_id = $1`,
+      `SELECT shopify_store_domain, shopify_client_id, shopify_client_secret FROM integraciones WHERE usuario_id = $1`,
       [usuarioId],
     );
     const fila = resultado.rows[0];
-    if (!fila || !fila.shopify_store_domain || !fila.shopify_access_token) return null;
-    return { storeDomain: fila.shopify_store_domain, accessToken: fila.shopify_access_token };
+    if (!fila || !fila.shopify_store_domain || !fila.shopify_client_id || !fila.shopify_client_secret) return null;
+    return { storeDomain: fila.shopify_store_domain, clientId: fila.shopify_client_id, clientSecret: fila.shopify_client_secret };
   }
 
   async obtenerClaveFal(usuarioId: number): Promise<string | null> {
@@ -132,7 +145,7 @@ export class IntegracionesService implements OnModuleInit {
 
   // ---------------- Shopify ----------------
 
-  async guardarShopify(usuarioId: number, storeDomainCrudo: string, accessTokenCrudo: string): Promise<IntegracionesUsuario> {
+  async guardarShopify(usuarioId: number, storeDomainCrudo: string, clientIdCrudo: string, clientSecretCrudo: string): Promise<IntegracionesUsuario> {
     if (!this.pool) {
       throw new InternalServerErrorException('No se pudo guardar: falta configurar la base de datos en el backend.');
     }
@@ -140,35 +153,44 @@ export class IntegracionesService implements OnModuleInit {
     if (!storeDomain || !storeDomain.includes('.')) {
       throw new ConflictException('Ese dominio de tienda no parece válido. Ejemplo: mitienda.myshopify.com');
     }
-    const accessToken = String(accessTokenCrudo || '').trim();
-    if (!accessToken || accessToken.length < 10) {
-      throw new ConflictException('Ese token de Shopify no parece válido.');
+    const clientId = String(clientIdCrudo || '').trim();
+    const clientSecret = String(clientSecretCrudo || '').trim();
+    if (!clientId || clientId.length < 10) {
+      throw new ConflictException('Ese ID de Cliente no parece válido.');
+    }
+    if (!clientSecret || clientSecret.length < 10) {
+      throw new ConflictException('Ese Secreto (Client Secret) no parece válido.');
     }
 
-    // Prueba real contra la tienda ANTES de guardar — así se avisa de una
-    // vez si el dominio o el token están mal, en vez de que recién falle el
-    // día que la persona intente publicar una landing.
+    // Prueba real contra la tienda ANTES de guardar — se cambian las
+    // credenciales por un token real (Client Credentials Grant, lo mismo que
+    // hace shopify.service.ts en cada publicación) así se avisa de una vez
+    // si el dominio, el ID de Cliente o el Secreto están mal, en vez de que
+    // recién falle el día que la persona intente publicar una landing.
     let resp: Response;
     try {
-      resp = await fetch(`https://${storeDomain}/admin/api/2026-07/shop.json`, {
-        headers: { 'X-Shopify-Access-Token': accessToken },
+      resp = await fetch(`https://${storeDomain}/admin/oauth/access_token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' }),
       });
     } catch {
       throw new ConflictException('No se pudo conectar con esa tienda de Shopify — revisá el dominio (debe terminar en .myshopify.com) y probá de nuevo.');
     }
     if (!resp.ok) {
-      if (resp.status === 401 || resp.status === 403) {
-        throw new ConflictException('Shopify rechazó ese token — revisá que lo hayas copiado completo y que la app tenga permisos de productos.');
-      }
-      throw new ConflictException('No se pudo confirmar la tienda con Shopify — revisá el dominio (debe terminar en .myshopify.com).');
+      throw new ConflictException('Shopify rechazó el ID de Cliente / Secreto — revisá que los hayas copiado completos y que la app esté instalada en esa tienda.');
+    }
+    const datos: any = await resp.json().catch(() => null);
+    if (!datos?.access_token) {
+      throw new ConflictException('Shopify no devolvió un token de acceso — revisá el dominio y las credenciales, y probá de nuevo.');
     }
 
     await this.pool.query(
-      `INSERT INTO integraciones (usuario_id, shopify_store_domain, shopify_access_token, actualizado_en)
-       VALUES ($1, $2, $3, now())
+      `INSERT INTO integraciones (usuario_id, shopify_store_domain, shopify_client_id, shopify_client_secret, actualizado_en)
+       VALUES ($1, $2, $3, $4, now())
        ON CONFLICT (usuario_id)
-       DO UPDATE SET shopify_store_domain = $2, shopify_access_token = $3, actualizado_en = now()`,
-      [usuarioId, storeDomain, accessToken],
+       DO UPDATE SET shopify_store_domain = $2, shopify_client_id = $3, shopify_client_secret = $4, actualizado_en = now()`,
+      [usuarioId, storeDomain, clientId, clientSecret],
     );
     this.logger.log(`Shopify conectado para usuario id=${usuarioId} (${storeDomain}).`);
     return this.obtener(usuarioId);
@@ -179,7 +201,7 @@ export class IntegracionesService implements OnModuleInit {
       throw new InternalServerErrorException('No se pudo desconectar: falta configurar la base de datos en el backend.');
     }
     await this.pool.query(
-      `UPDATE integraciones SET shopify_store_domain = NULL, shopify_access_token = NULL, actualizado_en = now() WHERE usuario_id = $1`,
+      `UPDATE integraciones SET shopify_store_domain = NULL, shopify_client_id = NULL, shopify_client_secret = NULL, shopify_access_token = NULL, actualizado_en = now() WHERE usuario_id = $1`,
       [usuarioId],
     );
     return this.obtener(usuarioId);

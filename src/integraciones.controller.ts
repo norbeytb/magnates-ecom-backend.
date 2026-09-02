@@ -13,7 +13,8 @@ import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
 interface GuardarShopifyDto {
   storeDomain: string;
-  accessToken: string;
+  clientId: string;
+  clientSecret: string;
 }
 
 interface GuardarFalDto {
@@ -34,7 +35,7 @@ export class IntegracionesController {
 
   @Post('shopify')
   async guardarShopify(@Body() dto: GuardarShopifyDto, @UsuarioActual() usuario: UsuarioAutenticado) {
-    return this.integracionesService.guardarShopify(usuario.id, dto?.storeDomain, dto?.accessToken);
+    return this.integracionesService.guardarShopify(usuario.id, dto?.storeDomain, dto?.clientId, dto?.clientSecret);
   }
 
   @Delete('shopify')

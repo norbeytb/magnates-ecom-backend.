@@ -21,19 +21,25 @@
 //
 // CADA USUARIO CONECTA SU PROPIA TIENDA (módulo de Integraciones, ver
 // integraciones.service.ts): en vez de una sola tienda compartida configurada
-// con variables de entorno de Railway, cada estudiante crea una "app
-// personalizada" en el admin de SU PROPIA tienda de Shopify y pega acá el
-// dominio + el Token de acceso de API Admin (shpat_...) que le da esa app —
-// ese token no vence (a diferencia de un token de OAuth de corta duración),
-// así que este servicio ya NO intercambia ni cachea ningún token: cada
-// llamada recibe las credenciales de la tienda de quien está publicando
-// (storeDomain + accessToken) como parámetro, nunca desde variables de
-// entorno globales ni desde un estado guardado en el servicio (el servicio
-// es un singleton compartido por todos los usuarios a la vez).
+// con variables de entorno de Railway, cada estudiante crea su propia app en
+// el Dev Dashboard de Shopify (dev.shopify.com) para SU tienda y pega acá el
+// dominio + el ID de Cliente + el Secreto que le da esa app.
 //
-// La app personalizada de cada estudiante necesita estos permisos de Admin
-// API (Configuración → Apps y canales de venta → Desarrollar apps → su app →
-// Configuración → Alcances de API de administración):
+// IMPORTANTE (cambió respecto a versiones viejas de este archivo): Shopify
+// dejó de dar, para apps nuevas, un token de acceso fijo tipo "shpat_..." que
+// no vence — ahora el Dev Dashboard solo entrega ID de Cliente + Secreto, y
+// hay que cambiarlos por un token real llamando a Shopify (Client
+// Credentials Grant, POST a /admin/oauth/access_token), token que dura 24
+// horas y hay que renovar solo. Por eso este servicio SÍ vuelve a cachear un
+// token (ver obtenerAccessToken() más abajo) — pero, a diferencia de la
+// versión de un solo usuario de antes, el cache es un mapa POR TIENDA (nunca
+// un solo campo compartido), y las credenciales (clientId/clientSecret)
+// nunca se guardan en el servicio: viajan como parámetro en cada método,
+// desde IntegracionesService.obtenerCredencialesShopify(usuarioId).
+//
+// La app de cada estudiante necesita estos permisos de Admin API
+// (Configuración de la app en el Dev Dashboard → Alcances de API de
+// administración):
 //   read_products, write_products, read_themes, write_themes, write_publications
 // (read_themes/write_themes son para poder crearle al tema la plantilla/
 // sección automática de la landing — ver asegurarPlantillaLanding().
@@ -53,7 +59,8 @@ import { Injectable, Logger } from '@nestjs/common';
 // cada método, de punta a punta.
 export interface ShopifyCredenciales {
   storeDomain: string;
-  accessToken: string;
+  clientId: string;
+  clientSecret: string;
 }
 
 // Un paso de la secuencia editable de la landing: o una imagen (el orden en
@@ -119,13 +126,20 @@ export class ShopifyService {
   // cada estudiante tiene la suya, así que se cachea en un mapa por dominio.
   private readonly publicationIdPorTienda = new Map<string, string>();
 
+  // Token real (de corta duración, 24hs) que Shopify devuelve a cambio del
+  // ID de Cliente + Secreto de la app de cada tienda — se cachea POR TIENDA
+  // (nunca en un solo campo: este servicio es un singleton compartido por
+  // todos los usuarios a la vez) con cuándo vence, para no pedir uno nuevo
+  // en cada llamada.
+  private readonly tokenCachePorTienda = new Map<string, { token: string; expiraEn: number }>();
+
   // Confirma que llegaron credenciales antes de llamar a Shopify — si esto
   // dispara es porque algo llamó a este servicio sin pasar por
   // IntegracionesService.obtenerCredencialesShopify() primero (el controlador
   // ya hace esa validación con un mensaje más amigable antes de llegar acá;
   // esto es solo un respaldo).
   private validarCredenciales(credenciales?: ShopifyCredenciales | null): ShopifyCredenciales {
-    if (!credenciales || !credenciales.storeDomain || !credenciales.accessToken) {
+    if (!credenciales || !credenciales.storeDomain || !credenciales.clientId || !credenciales.clientSecret) {
       throw new Error('No hay una tienda de Shopify conectada. Conectala primero en "Integraciones".');
     }
     return credenciales;
@@ -142,15 +156,56 @@ export class ShopifyService {
     };
   }
 
-  // Llama a la Admin API de la tienda del usuario con su token guardado. A
-  // diferencia de la versión vieja (con OAuth de corta duración), acá el
-  // token es fijo (el que el estudiante pegó en Integraciones) — si Shopify
-  // responde 401/403 es porque ese token es inválido o fue revocado (por
-  // ejemplo, el estudiante desinstaló la app en su tienda), no algo que este
-  // backend pueda arreglar reintentando: el error sube tal cual para que el
-  // taller le avise al estudiante que revise su conexión.
+  // Cambia ID de Cliente + Secreto por un token real de Admin API (Client
+  // Credentials Grant) — con margen de 1 minuto antes de que venza para
+  // renovarlo antes de que Shopify lo rechace a mitad de una publicación.
+  // Si Shopify rechaza las credenciales (app desinstalada, secreto rotado,
+  // etc.) tira un error con mensaje claro para el estudiante.
+  private async obtenerAccessToken(credenciales: ShopifyCredenciales): Promise<string> {
+    const cacheado = this.tokenCachePorTienda.get(credenciales.storeDomain);
+    const ahora = Date.now();
+    if (cacheado && cacheado.expiraEn > ahora + 60_000) {
+      return cacheado.token;
+    }
+
+    let resp: Response;
+    try {
+      resp = await fetch(`https://${credenciales.storeDomain}/admin/oauth/access_token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: credenciales.clientId,
+          client_secret: credenciales.clientSecret,
+          grant_type: 'client_credentials',
+        }),
+      });
+    } catch {
+      throw new Error('No se pudo conectar con esa tienda de Shopify — revisá el dominio (debe terminar en .myshopify.com).');
+    }
+    if (!resp.ok) {
+      throw new Error(
+        'Shopify rechazó el ID de Cliente / Secreto de tu app — revisá que estén bien copiados y que la app siga instalada en tu tienda. Conectala de nuevo en "Integraciones" si hace falta.',
+      );
+    }
+    const datos: any = await resp.json();
+    const token = datos?.access_token;
+    if (!token) {
+      throw new Error('Shopify no devolvió un token de acceso — probá reconectar la tienda en "Integraciones".');
+    }
+    const expiresInMs = (Number(datos.expires_in) || 86399) * 1000;
+    this.tokenCachePorTienda.set(credenciales.storeDomain, { token, expiraEn: ahora + expiresInMs });
+    return token;
+  }
+
+  // Llama a la Admin API de la tienda del usuario, resolviendo primero un
+  // token real a partir de sus credenciales (ver obtenerAccessToken arriba).
+  // Si Shopify responde 401/403 con ese token recién obtenido, es porque las
+  // credenciales en sí son inválidas o la app fue desinstalada — no algo que
+  // este backend pueda arreglar reintentando: el error sube tal cual para
+  // que el taller le avise al estudiante que revise su conexión.
   private async llamarShopify(credenciales: ShopifyCredenciales, path: string, opciones: RequestInit = {}): Promise<Response> {
-    const headers = this.headers(credenciales.accessToken);
+    const accessToken = await this.obtenerAccessToken(credenciales);
+    const headers = this.headers(accessToken);
     return fetch(`${this.baseUrl(credenciales.storeDomain)}${path}`, {
       ...opciones,
       headers: { ...headers, ...(opciones.headers as Record<string, string> | undefined) },
