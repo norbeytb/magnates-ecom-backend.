@@ -161,11 +161,18 @@ export class ShopifyService {
   // renovarlo antes de que Shopify lo rechace a mitad de una publicación.
   // Si Shopify rechaza las credenciales (app desinstalada, secreto rotado,
   // etc.) tira un error con mensaje claro para el estudiante.
-  private async obtenerAccessToken(credenciales: ShopifyCredenciales): Promise<string> {
-    const cacheado = this.tokenCachePorTienda.get(credenciales.storeDomain);
+  // forzarNuevo=true salta el caché y pide un token recién hecho — lo usa
+  // llamarShopify() cuando el token cacheado fue rechazado por Shopify (ver
+  // más abajo), por si mientras tanto se reinstaló la app o se le agregaron
+  // permisos nuevos en el Dev Dashboard: así no hay que esperar a que el
+  // token viejo venza solo (hasta 24hs) para que el estudiante pueda publicar.
+  private async obtenerAccessToken(credenciales: ShopifyCredenciales, forzarNuevo = false): Promise<string> {
     const ahora = Date.now();
-    if (cacheado && cacheado.expiraEn > ahora + 60_000) {
-      return cacheado.token;
+    if (!forzarNuevo) {
+      const cacheado = this.tokenCachePorTienda.get(credenciales.storeDomain);
+      if (cacheado && cacheado.expiraEn > ahora + 60_000) {
+        return cacheado.token;
+      }
     }
 
     let resp: Response;
@@ -199,17 +206,26 @@ export class ShopifyService {
 
   // Llama a la Admin API de la tienda del usuario, resolviendo primero un
   // token real a partir de sus credenciales (ver obtenerAccessToken arriba).
-  // Si Shopify responde 401/403 con ese token recién obtenido, es porque las
-  // credenciales en sí son inválidas o la app fue desinstalada — no algo que
-  // este backend pueda arreglar reintentando: el error sube tal cual para
-  // que el taller le avise al estudiante que revise su conexión.
-  private async llamarShopify(credenciales: ShopifyCredenciales, path: string, opciones: RequestInit = {}): Promise<Response> {
-    const accessToken = await this.obtenerAccessToken(credenciales);
+  // Si Shopify responde 401/403, el token usado puede ser uno cacheado de
+  // ANTES de que el estudiante terminara de instalar la app / activar los
+  // permisos en Shopify (caso típico: probó conectar, falló, arregló algo en
+  // el Dev Dashboard, y sin este reintento se hubiera quedado pegado con el
+  // token viejo insuficiente hasta que venciera solo, hasta 24hs) — por eso
+  // se pide un token NUEVO (forzarNuevo, sin usar el caché) y se reintenta
+  // UNA sola vez antes de darse por vencido. Si después de eso sigue
+  // fallando, sí es un problema real de credenciales/permisos y el error sube tal cual
+  // para que el taller le avise al estudiante que revise su conexión.
+  private async llamarShopify(credenciales: ShopifyCredenciales, path: string, opciones: RequestInit = {}, _reintento = false): Promise<Response> {
+    const accessToken = await this.obtenerAccessToken(credenciales, _reintento);
     const headers = this.headers(accessToken);
-    return fetch(`${this.baseUrl(credenciales.storeDomain)}${path}`, {
+    const resp = await fetch(`${this.baseUrl(credenciales.storeDomain)}${path}`, {
       ...opciones,
       headers: { ...headers, ...(opciones.headers as Record<string, string> | undefined) },
     });
+    if ((resp.status === 401 || resp.status === 403) && !_reintento) {
+      return this.llamarShopify(credenciales, path, opciones, true);
+    }
+    return resp;
   }
 
   // Llama al endpoint de GraphQL de la Admin API (mismo dominio/token que
