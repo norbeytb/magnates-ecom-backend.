@@ -29,11 +29,17 @@ export interface RegistroLanding {
   num: number;
   items: ItemLanding[];
   botonFlotante?: boolean;
+  // Interruptor global "Agregar Movimiento" del Editor de Elementos — anima
+  // (shake) TODOS los botones "COMPRAR AHORA" de la landing (intercalados +
+  // flotante) cuando está en true. Ver shopify.service.ts (seccionLandingLiquid)
+  // para cómo se traduce esto a la página real.
+  movimiento?: boolean;
 }
 
 export interface CambiosLanding {
   items?: ItemLanding[];
   botonFlotante?: boolean;
+  movimiento?: boolean;
   shopifyUrl?: string;
 }
 
@@ -66,6 +72,8 @@ export class LandingsService implements OnModuleInit {
       // la misma razón que en productos.service.ts (no hay orden garantizado
       // entre los onModuleInit de los distintos *.service.ts).
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS usuario_id INTEGER;`);
+      // Tarjeta "Agregar Movimiento" del Editor de Elementos (ver taller-generador-landing.html).
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS movimiento BOOLEAN NOT NULL DEFAULT false;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -79,9 +87,9 @@ export class LandingsService implements OnModuleInit {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, usuario_id)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [registro.nombreProducto, registro.num, JSON.stringify(registro.items), !!registro.botonFlotante, usuarioId],
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [registro.nombreProducto, registro.num, JSON.stringify(registro.items), !!registro.botonFlotante, !!registro.movimiento, usuarioId],
       );
       return resultado.rows[0];
     } catch (error) {
@@ -116,6 +124,10 @@ export class LandingsService implements OnModuleInit {
     if (cambios.botonFlotante !== undefined) {
       sets.push(`boton_flotante = $${i++}`);
       values.push(!!cambios.botonFlotante);
+    }
+    if (cambios.movimiento !== undefined) {
+      sets.push(`movimiento = $${i++}`);
+      values.push(!!cambios.movimiento);
     }
     if (cambios.shopifyUrl !== undefined) {
       sets.push(`shopify_url = $${i++}`);

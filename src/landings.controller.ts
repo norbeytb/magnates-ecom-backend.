@@ -21,7 +21,7 @@ export class LandingsController {
 
   @Post()
   async guardar(
-    @Body() body: { nombreProducto: string; num: number; items: any[]; botonFlotante?: boolean },
+    @Body() body: { nombreProducto: string; num: number; items: any[]; botonFlotante?: boolean; movimiento?: boolean },
     @UsuarioActual() usuario: UsuarioAutenticado,
   ) {
     return this.landingsService.guardar(usuario.id, body);
@@ -30,7 +30,7 @@ export class LandingsController {
   @Patch(':id')
   async actualizar(
     @Param('id') id: string,
-    @Body() body: { items?: any[]; botonFlotante?: boolean; shopifyUrl?: string },
+    @Body() body: { items?: any[]; botonFlotante?: boolean; movimiento?: boolean; shopifyUrl?: string },
     @UsuarioActual() usuario: UsuarioAutenticado,
   ) {
     return this.landingsService.actualizar(usuario.id, Number(id), body);

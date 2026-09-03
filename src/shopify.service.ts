@@ -100,6 +100,11 @@ export interface PublicarLandingInput {
   botonFlotanteTexto?: string;
   botonFlotanteColor?: string;
   botonFlotanteColorTexto?: string;
+  // Tarjeta "Agregar Movimiento" del Editor de Elementos: anima (shake) TODOS
+  // los botones "COMPRAR AHORA" de la landing (intercalados + flotante) a la
+  // vez cuando viene en true — antes esta animación estaba siempre encendida
+  // a la fuerza en seccionLandingLiquid, ahora es opcional por landing.
+  movimiento?: boolean;
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -434,6 +439,16 @@ export class ShopifyService {
     await this.guardarMetafield(credenciales, productId, 'boton_flotante', 'boolean', activo ? 'true' : 'false', avisos);
   }
 
+  // Tarjeta "Agregar Movimiento" del Editor de Elementos (ver
+  // taller-generador-landing.html) — se guarda SIEMPRE (true o false), igual
+  // que boton_flotante, para que también se pueda APAGAR en un reenvío si el
+  // estudiante desactiva la tarjeta. La sección "landing-imagenes" del tema
+  // (seccionLandingLiquid más abajo) lee este metafield para decidir si le
+  // agrega la animación de "shake" a los botones o los deja quietos.
+  private async guardarMetafieldMovimiento(credenciales: ShopifyCredenciales, productId: number, activo: boolean, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'landing_movimiento', 'boolean', activo ? 'true' : 'false', avisos);
+  }
+
   // Texto/color personalizados del botón flotante (mismo mecanismo que
   // "texto"/"color"/"colorTexto" de cada paso 'boton_comprar' dentro de la
   // secuencia, pero acá es un solo botón por landing, así que van en
@@ -480,6 +495,11 @@ export class ShopifyService {
     '{%- assign boton_flotante_texto = product.metafields.ecom_magnates.boton_flotante_texto.value -%}',
     '{%- assign boton_flotante_color = product.metafields.ecom_magnates.boton_flotante_color.value -%}',
     '{%- assign boton_flotante_color_texto = product.metafields.ecom_magnates.boton_flotante_color_texto.value -%}',
+    // Tarjeta "Agregar Movimiento" del Editor de Elementos — antes esta
+    // animación estaba siempre encendida a la fuerza en los dos botones de
+    // abajo; ahora depende de este metafield (apagada por defecto si nunca
+    // se guardó, ver guardarMetafieldMovimiento más arriba).
+    '{%- assign movimiento = product.metafields.ecom_magnates.landing_movimiento.value -%}',
     // El "shake" que se mueve solo cada tanto, para llamar la atención igual
     // que hace el botón amarillo de Releasit — la animación se define UNA vez
     // acá (no se puede definir @keyframes dentro de un style="" en línea) y
@@ -518,7 +538,7 @@ export class ShopifyService {
     // selector de color por botón — colorTexto ya viene calculado por el
     // taller según el contraste del fondo elegido, para que nunca quede
     // texto negro sobre un fondo oscuro (o blanco sobre uno claro).
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;{% endif %}"',
     '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
     '        {%- endif -%}',
@@ -560,7 +580,7 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important; animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;"',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;{% endif %}"',
     '    >🚚 {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
@@ -853,6 +873,7 @@ export class ShopifyService {
         await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
       }
       await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
+      await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);
       await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
       await this.publicarEnTiendaOnline(credenciales, json.product.id);
       this.logger.log(`Producto de Shopify actualizado: ${json.product.handle} (${credenciales.storeDomain})`);
@@ -886,6 +907,7 @@ export class ShopifyService {
       await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
     }
     await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
+    await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);
     await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
     await this.publicarEnTiendaOnline(credenciales, json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle} (${credenciales.storeDomain})`);
