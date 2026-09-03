@@ -108,6 +108,12 @@ export interface PublicarLandingInput {
   // vez cuando viene en true — antes esta animación estaba siempre encendida
   // a la fuerza en seccionLandingLiquid, ahora es opcional por landing.
   movimiento?: boolean;
+  // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos: barra de
+  // texto que se desliza sola, arriba de todo el resto de la landing.
+  barra?: boolean;
+  barraTexto?: string;
+  barraColor?: string;
+  barraColorTexto?: string;
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -468,6 +474,32 @@ export class ShopifyService {
     await this.guardarMetafield(credenciales, productId, 'boton_flotante_color_texto', 'single_line_text_field', colorTexto, avisos);
   }
 
+  // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos — mismo
+  // patrón que boton_flotante: un metafield booleano que prende/apaga la
+  // barra (se guarda SIEMPRE, para poder apagarla en un reenvío), más
+  // texto/color opcionales que solo se pisan cuando el taller efectivamente
+  // mandó algo (para no borrar lo ya guardado con un reenvío viejo).
+  private async guardarMetafieldBarra(credenciales: ShopifyCredenciales, productId: number, activo: boolean, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'barra_movimiento', 'boolean', activo ? 'true' : 'false', avisos);
+  }
+
+  private async guardarPersonalizacionBarra(credenciales: ShopifyCredenciales, productId: number, input: PublicarLandingInput, avisos: string[]): Promise<void> {
+    if (typeof input.barraTexto === 'string' && input.barraTexto.trim() !== '') {
+      await this.guardarMetafield(credenciales, productId, 'barra_movimiento_texto', 'single_line_text_field', input.barraTexto, avisos);
+    }
+    if (typeof input.barraColor === 'string' && input.barraColor.trim() !== '') {
+      await this.guardarMetafield(credenciales, productId, 'barra_movimiento_color', 'single_line_text_field', input.barraColor, avisos);
+      await this.guardarMetafield(
+        credenciales,
+        productId,
+        'barra_movimiento_color_texto',
+        'single_line_text_field',
+        typeof input.barraColorTexto === 'string' && input.barraColorTexto.trim() !== '' ? input.barraColorTexto : '#111',
+        avisos,
+      );
+    }
+  }
+
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
   // (guardada en el metafield ecom_magnates.landing_secuencia — ver
   // guardarMetafieldSecuencia() más abajo) apilada a pantalla completa: cada
@@ -503,11 +535,31 @@ export class ShopifyService {
     // abajo; ahora depende de este metafield (apagada por defecto si nunca
     // se guardó, ver guardarMetafieldMovimiento más arriba).
     '{%- assign movimiento = product.metafields.ecom_magnates.landing_movimiento.value -%}',
+    // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos: una
+    // barra de texto que se desliza sola de un lado a otro, arriba de todo
+    // el resto de la landing (imágenes/botones). Independiente de
+    // "movimiento" (esa es la animación de los botones) — esta tiene su
+    // propio interruptor, texto y color, igual patrón que boton_flotante.
+    '{%- assign barra_movimiento = product.metafields.ecom_magnates.barra_movimiento.value -%}',
+    '{%- assign barra_movimiento_texto = product.metafields.ecom_magnates.barra_movimiento_texto.value -%}',
+    '{%- assign barra_movimiento_color = product.metafields.ecom_magnates.barra_movimiento_color.value -%}',
+    '{%- assign barra_movimiento_color_texto = product.metafields.ecom_magnates.barra_movimiento_color_texto.value -%}',
     // El "shake" que se mueve solo cada tanto, para llamar la atención igual
     // que hace el botón amarillo de Releasit — la animación se define UNA vez
     // acá (no se puede definir @keyframes dentro de un style="" en línea) y
-    // cada botón de abajo solo la referencia por nombre con animation:.
-    '<style>@keyframes ecomMagnatesBtnShake{0%,100%{transform:translateX(0) rotate(0deg);}92%{transform:translateX(0) rotate(0deg);}93%{transform:translateX(-3px) rotate(-2deg);}94%{transform:translateX(3px) rotate(2deg);}95%{transform:translateX(-3px) rotate(-2deg);}96%{transform:translateX(3px) rotate(2deg);}97%{transform:translateX(-2px) rotate(-1deg);}98%,99%{transform:translateX(0) rotate(0deg);}}</style>',
+    // cada botón de abajo solo la referencia por nombre con animation:. Lo
+    // mismo para el scroll infinito de la barra de movimiento (translateX de
+    // 0% a -50%): el contenido de la barra se repite DOS VECES seguidas e
+    // idénticas, así al llegar a -50% (el ancho de una sola copia) el loop
+    // vuelve a 0% sin que se note ningún salto.
+    '<style>@keyframes ecomMagnatesBtnShake{0%,100%{transform:translateX(0) rotate(0deg);}92%{transform:translateX(0) rotate(0deg);}93%{transform:translateX(-3px) rotate(-2deg);}94%{transform:translateX(3px) rotate(2deg);}95%{transform:translateX(-3px) rotate(-2deg);}96%{transform:translateX(3px) rotate(2deg);}97%{transform:translateX(-2px) rotate(-1deg);}98%,99%{transform:translateX(0) rotate(0deg);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
+    '{%- if barra_movimiento -%}',
+    '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
+    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll 14s linear infinite; padding:9px 0;">',
+    '      <span style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" | escape }}</span><span aria-hidden="true" style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" | escape }}</span>',
+    '    </div>',
+    '  </div>',
+    '{%- endif -%}',
     '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
     '  {%- if secuencia -%}',
     '    {%- for paso in secuencia -%}',
@@ -872,7 +924,9 @@ export class ShopifyService {
     }
     await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
     await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);
+    await this.guardarMetafieldBarra(credenciales, json.product.id, !!input.barra, avisos);
     await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
+    await this.guardarPersonalizacionBarra(credenciales, json.product.id, input, avisos);
     await this.publicarEnTiendaOnline(credenciales, json.product.id);
     this.logger.log(`Producto de Shopify creado: ${json.product.handle} (${credenciales.storeDomain})`);
     return {

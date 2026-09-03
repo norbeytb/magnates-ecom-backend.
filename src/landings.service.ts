@@ -34,12 +34,22 @@ export interface RegistroLanding {
   // flotante) cuando está en true. Ver shopify.service.ts (seccionLandingLiquid)
   // para cómo se traduce esto a la página real.
   movimiento?: boolean;
+  // Tarjeta "Agregar Barra de Movimiento": barra de texto que se desliza
+  // sola, arriba de todo el resto de la landing.
+  barra?: boolean;
+  barraTexto?: string;
+  barraColor?: string;
+  barraColorTexto?: string;
 }
 
 export interface CambiosLanding {
   items?: ItemLanding[];
   botonFlotante?: boolean;
   movimiento?: boolean;
+  barra?: boolean;
+  barraTexto?: string;
+  barraColor?: string;
+  barraColorTexto?: string;
   shopifyUrl?: string;
 }
 
@@ -74,6 +84,13 @@ export class LandingsService implements OnModuleInit {
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS usuario_id INTEGER;`);
       // Tarjeta "Agregar Movimiento" del Editor de Elementos (ver taller-generador-landing.html).
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS movimiento BOOLEAN NOT NULL DEFAULT false;`);
+      // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos — texto/color
+      // se guardan como TEXT (no hay valor todavía hasta que el estudiante los toque,
+      // por eso no llevan NOT NULL como "movimiento"/"boton_flotante").
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra BOOLEAN NOT NULL DEFAULT false;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_texto TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color_texto TEXT;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -87,9 +104,20 @@ export class LandingsService implements OnModuleInit {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, usuario_id)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [registro.nombreProducto, registro.num, JSON.stringify(registro.items), !!registro.botonFlotante, !!registro.movimiento, usuarioId],
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, barra, barra_texto, barra_color, barra_color_texto, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [
+          registro.nombreProducto,
+          registro.num,
+          JSON.stringify(registro.items),
+          !!registro.botonFlotante,
+          !!registro.movimiento,
+          !!registro.barra,
+          registro.barraTexto ?? null,
+          registro.barraColor ?? null,
+          registro.barraColorTexto ?? null,
+          usuarioId,
+        ],
       );
       return resultado.rows[0];
     } catch (error) {
@@ -128,6 +156,22 @@ export class LandingsService implements OnModuleInit {
     if (cambios.movimiento !== undefined) {
       sets.push(`movimiento = $${i++}`);
       values.push(!!cambios.movimiento);
+    }
+    if (cambios.barra !== undefined) {
+      sets.push(`barra = $${i++}`);
+      values.push(!!cambios.barra);
+    }
+    if (cambios.barraTexto !== undefined) {
+      sets.push(`barra_texto = $${i++}`);
+      values.push(cambios.barraTexto);
+    }
+    if (cambios.barraColor !== undefined) {
+      sets.push(`barra_color = $${i++}`);
+      values.push(cambios.barraColor);
+    }
+    if (cambios.barraColorTexto !== undefined) {
+      sets.push(`barra_color_texto = $${i++}`);
+      values.push(cambios.barraColorTexto);
     }
     if (cambios.shopifyUrl !== undefined) {
       sets.push(`shopify_url = $${i++}`);
