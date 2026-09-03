@@ -40,6 +40,9 @@ export interface RegistroLanding {
   barraTexto?: string;
   barraColor?: string;
   barraColorTexto?: string;
+  // Segundos que tarda la barra en dar una vuelta completa (menos = más
+  // rápido) — elegido con los botones Lenta/Normal/Rápida del taller.
+  barraVelocidad?: number;
 }
 
 export interface CambiosLanding {
@@ -50,6 +53,7 @@ export interface CambiosLanding {
   barraTexto?: string;
   barraColor?: string;
   barraColorTexto?: string;
+  barraVelocidad?: number;
   shopifyUrl?: string;
 }
 
@@ -91,6 +95,7 @@ export class LandingsService implements OnModuleInit {
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_texto TEXT;`);
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color TEXT;`);
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color_texto TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_velocidad INTEGER;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -104,8 +109,8 @@ export class LandingsService implements OnModuleInit {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, barra, barra_texto, barra_color, barra_color_texto, usuario_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, barra, barra_texto, barra_color, barra_color_texto, barra_velocidad, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
           registro.nombreProducto,
           registro.num,
@@ -116,6 +121,7 @@ export class LandingsService implements OnModuleInit {
           registro.barraTexto ?? null,
           registro.barraColor ?? null,
           registro.barraColorTexto ?? null,
+          registro.barraVelocidad ?? null,
           usuarioId,
         ],
       );
@@ -172,6 +178,10 @@ export class LandingsService implements OnModuleInit {
     if (cambios.barraColorTexto !== undefined) {
       sets.push(`barra_color_texto = $${i++}`);
       values.push(cambios.barraColorTexto);
+    }
+    if (cambios.barraVelocidad !== undefined) {
+      sets.push(`barra_velocidad = $${i++}`);
+      values.push(cambios.barraVelocidad);
     }
     if (cambios.shopifyUrl !== undefined) {
       sets.push(`shopify_url = $${i++}`);

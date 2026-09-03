@@ -114,6 +114,10 @@ export interface PublicarLandingInput {
   barraTexto?: string;
   barraColor?: string;
   barraColorTexto?: string;
+  // Segundos que tarda la barra en dar una vuelta completa (menos = más
+  // rápido) — botones Lenta/Normal/Rápida del taller. Si no viene, la
+  // sección usa 14 por defecto (ver seccionLandingLiquid).
+  barraVelocidad?: number;
   precio?: string | number;
   precioComparacion?: string | number;
 }
@@ -498,6 +502,16 @@ export class ShopifyService {
         avisos,
       );
     }
+    if (typeof input.barraVelocidad === 'number' && Number.isFinite(input.barraVelocidad) && input.barraVelocidad > 0) {
+      await this.guardarMetafield(
+        credenciales,
+        productId,
+        'barra_movimiento_velocidad',
+        'number_integer',
+        String(Math.round(input.barraVelocidad)),
+        avisos,
+      );
+    }
   }
 
   // Código de la sección nueva del tema: dibuja la secuencia de la landing
@@ -544,6 +558,9 @@ export class ShopifyService {
     '{%- assign barra_movimiento_texto = product.metafields.ecom_magnates.barra_movimiento_texto.value -%}',
     '{%- assign barra_movimiento_color = product.metafields.ecom_magnates.barra_movimiento_color.value -%}',
     '{%- assign barra_movimiento_color_texto = product.metafields.ecom_magnates.barra_movimiento_color_texto.value -%}',
+    // Segundos que tarda la barra en dar una vuelta completa (botones Lenta/
+    // Normal/Rápida del taller) — 14 por defecto si nunca se guardó.
+    '{%- assign barra_movimiento_velocidad = product.metafields.ecom_magnates.barra_movimiento_velocidad.value -%}',
     // El "shake" que se mueve solo cada tanto, para llamar la atención igual
     // que hace el botón amarillo de Releasit — la animación se define UNA vez
     // acá (no se puede definir @keyframes dentro de un style="" en línea) y
@@ -554,9 +571,20 @@ export class ShopifyService {
     // vuelve a 0% sin que se note ningún salto.
     '<style>@keyframes ecomMagnatesBtnShake{0%,100%{transform:translateX(0) rotate(0deg);}92%{transform:translateX(0) rotate(0deg);}93%{transform:translateX(-3px) rotate(-2deg);}94%{transform:translateX(3px) rotate(2deg);}95%{transform:translateX(-3px) rotate(-2deg);}96%{transform:translateX(3px) rotate(2deg);}97%{transform:translateX(-2px) rotate(-1deg);}98%,99%{transform:translateX(0) rotate(0deg);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
     '{%- if barra_movimiento -%}',
+    '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
-    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll 14s linear infinite; padding:9px 0;">',
-    '      <span style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" | escape }}</span><span aria-hidden="true" style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" | escape }}</span>',
+    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll {{ barra_movimiento_velocidad | default: 14 }}s linear infinite; padding:9px 0;">',
+    // El truco de loop sin salto (translateX de 0% a -50%) solo se ve bien si
+    // el contenido de UNA sola copia ya es más ancho que la pantalla — con un
+    // texto corto, esa copia queda angosta y se ve un tramo de color liso
+    // (sin letras) hasta la copia siguiente (bug reportado por un estudiante
+    // el 03/09). Por eso cada copia repite el texto 12 veces seguidas (no una
+    // sola vez): siempre hay letras de punta a punta, sea cual sea el largo
+    // del texto o el ancho de pantalla. Todo en una sola línea de este
+    // arreglo (sin saltos entre los <span>) para que no se cuele ningún
+    // espacio de más entre repeticiones.
+    '      {%- for i in (1..12) -%}<span{% unless forloop.first %} aria-hidden="true"{% endunless %} style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_texto_final | escape }}</span>{%- endfor -%}',
+    '      {%- for i in (1..12) -%}<span aria-hidden="true" style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_texto_final | escape }}</span>{%- endfor -%}',
     '    </div>',
     '  </div>',
     '{%- endif -%}',

@@ -32,6 +32,7 @@ export class LandingsController {
       barraTexto?: string;
       barraColor?: string;
       barraColorTexto?: string;
+      barraVelocidad?: number;
     },
     @UsuarioActual() usuario: UsuarioAutenticado,
   ) {
@@ -50,6 +51,7 @@ export class LandingsController {
       barraTexto?: string;
       barraColor?: string;
       barraColorTexto?: string;
+      barraVelocidad?: number;
       shopifyUrl?: string;
     },
     @UsuarioActual() usuario: UsuarioAutenticado,
