@@ -47,8 +47,11 @@
 // NUNCA se ve en la tienda pública, solo en la vista previa del admin — ver
 // publicarEnTiendaOnline() más abajo).
 //
-// Reenviar la misma landing (mismo producto + mismo número de landing) actualiza
-// el producto ya creado en vez de duplicarlo: se identifica por un "handle" fijo.
+// "Volver a publicar" SIEMPRE crea un producto nuevo en Shopify, incluso si
+// ya se había publicado antes esa misma landing — a propósito, para que la
+// página nueva nunca pueda estar cacheada de antes en Shopify (ver
+// publicarLanding() más abajo). Puede quedar un producto viejo duplicado en
+// la tienda; el estudiante lo borra a mano si no lo necesita más.
 
 import { Injectable, Logger } from '@nestjs/common';
 
@@ -836,55 +839,16 @@ export class ShopifyService {
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
-    // Busca si ya existe un producto con este handle, para actualizarlo en vez de duplicar.
-    const buscar = await this.llamarShopify(credenciales, `/products.json?handle=${encodeURIComponent(handle)}&limit=1`);
-    if (!buscar.ok) {
-      if (buscar.status === 401 || buscar.status === 403) {
-        throw new Error('Shopify rechazó tu token de acceso — puede que lo hayas desconectado o que le hayas quitado permisos a la app. Revisá tu conexión en "Integraciones".');
-      }
-      throw new Error(`No se pudo consultar Shopify (HTTP ${buscar.status}): ${await buscar.text()}`);
-    }
-    const buscarJson: any = await buscar.json();
-    const existente = buscarJson?.products?.[0];
-
-    if (existente) {
-      const varianteId = existente.variants?.[0]?.id;
-      const actualizar = await this.llamarShopify(credenciales, `/products/${existente.id}.json`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          product: {
-            id: existente.id,
-            title: titulo,
-            body_html: bodyHtml,
-            images,
-            status: 'active',
-            // Usa la plantilla alterna "landing" (creada automáticamente
-            // arriba) para que se vea a pantalla completa.
-            template_suffix: 'landing',
-            variants: varianteId ? [{ id: varianteId, price: precio, compare_at_price: precioComparacion ?? null }] : undefined,
-          },
-        }),
-      });
-      if (!actualizar.ok) {
-        throw new Error(`No se pudo actualizar el producto en Shopify (HTTP ${actualizar.status}): ${await actualizar.text()}`);
-      }
-      const json: any = await actualizar.json();
-      if (input.secuencia && input.secuencia.length > 0) {
-        await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
-      }
-      await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
-      await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);
-      await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
-      await this.publicarEnTiendaOnline(credenciales, json.product.id);
-      this.logger.log(`Producto de Shopify actualizado: ${json.product.handle} (${credenciales.storeDomain})`);
-      return {
-        url: `https://${credenciales.storeDomain}/products/${json.product.handle}`,
-        handle: json.product.handle,
-        creada: false,
-        avisos: avisos.length > 0 ? avisos : undefined,
-      };
-    }
-
+    // ANTES: se buscaba primero si ya existía un producto con este handle
+    // (misma landing reenviada) para actualizarlo en vez de crear uno nuevo.
+    // A pedido de Norbey, "Volver a publicar" ahora SIEMPRE crea un producto
+    // nuevo — sí, puede quedar duplicado en la tienda si se reenvía varias
+    // veces, pero eso resuelve de raíz el problema del caché de Shopify (una
+    // página nueva nunca puede estar cacheada de antes) y el estudiante
+    // borra a mano el/los producto(s) viejo(s) que ya no necesite. Si el
+    // "handle" ya existe (mismo producto/landing reenviado), Shopify no
+    // rechaza la creación: le agrega solo un sufijo ("-1", "-2", etc.) para
+    // que sea único, así que esto nunca falla por handle repetido.
     const crear = await this.llamarShopify(credenciales, '/products.json', {
       method: 'POST',
       body: JSON.stringify({
