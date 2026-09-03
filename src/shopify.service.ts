@@ -914,13 +914,17 @@ export class ShopifyService {
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
-    const bodyHtml = this.construirHtml(input.imagenes);
     // Todas las imágenes van a la Multimedia del producto (galería nativa) —
     // de ahí las toma también la sección automática "landing-imagenes" para
-    // dibujarlas a pantalla completa. También quedan apiladas dentro de la
-    // descripción como respaldo, por si el tema no soporta la plantilla
-    // alterna.
-    const images = input.imagenes.map((src) => ({ src }));
+    // dibujarlas a pantalla completa.
+    //
+    // "position" se manda explícito (1, 2, 3...) en vez de confiar en que
+    // Shopify devuelva las imágenes creadas en el mismo orden en que se
+    // mandaron: la documentación oficial de Shopify NO garantiza eso salvo
+    // que se fije "position" a mano. Sin esto, el cruce de más abajo (URL de
+    // fal.media -> URL ya alojada en Shopify) podría emparejar mal una
+    // imagen con el paso equivocado de la secuencia.
+    const images = input.imagenes.map((src, i) => ({ src, position: i + 1 }));
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
@@ -940,7 +944,6 @@ export class ShopifyService {
         product: {
           title: titulo,
           handle,
-          body_html: bodyHtml,
           images,
           status: 'active',
           template_suffix: 'landing',
@@ -952,8 +955,54 @@ export class ShopifyService {
       throw new Error(`No se pudo crear el producto en Shopify (HTTP ${crear.status}): ${await crear.text()}`);
     }
     const json: any = await crear.json();
+
+    // A partir de acá, "imagenesShopify[i]" es la URL DEFINITIVA de esa
+    // imagen: la copia que Shopify alojó en su propio CDN (cdn.shopify.com),
+    // no la del generador de IA (fal.media). Esto importa por dos motivos:
+    // (1) fal.media es almacenamiento temporal, no pensado para quedar
+    // alojado ahí para siempre — si en algún momento borra el archivo, una
+    // landing ya publicada se rompería sola sin que nadie haya tocado nada;
+    // (2) Shopify solo optimiza/convierte a WebP o AVIF automáticamente las
+    // imágenes que él mismo aloja, nunca las que están solo hotlinkeadas
+    // desde otro dominio. Se cruza por "position" (fijado arriba al armar
+    // "images"), nunca por el orden en que vino el array de la respuesta,
+    // porque Shopify no lo garantiza.
+    const imagenesShopify: string[] = input.imagenes.map((original, i) => {
+      const subida = (json.product.images || []).find((img: any) => img.position === i + 1);
+      return subida?.src || original; // fallback defensivo: si por lo que sea no aparece, no rompe la publicación
+    });
+
+    // La descripción nativa (respaldo por si el tema no soporta la plantilla
+    // alterna) se arma DESPUÉS de crear el producto, con las URLs ya
+    // alojadas en Shopify — no se puede mandar en el mismo POST de arriba
+    // porque esas URLs recién existen una vez que Shopify terminó de subir
+    // las imágenes.
+    const bodyHtml = this.construirHtml(imagenesShopify);
+    const actualizarBody = await this.llamarShopify(credenciales, `/products/${json.product.id}.json`, {
+      method: 'PUT',
+      body: JSON.stringify({ product: { id: json.product.id, body_html: bodyHtml } }),
+    });
+    if (!actualizarBody.ok) {
+      avisos.push(
+        'El producto se creó bien, pero no se pudo terminar de actualizar la descripción con las imágenes ya optimizadas.',
+      );
+    }
+
     if (input.secuencia && input.secuencia.length > 0) {
-      await this.guardarMetafieldSecuencia(credenciales, json.product.id, input.secuencia, avisos);
+      // Reemplaza cada URL de imagen de la secuencia por su copia ya alojada
+      // en Shopify (ver comentario arriba) antes de guardarla en el
+      // metafield — así la landing real (sections/landing-imagenes.liquid,
+      // que dibuja "paso.url" tal cual viene) también queda apuntando a
+      // Shopify, no a fal.media. Los pasos "boton_comprar" no tienen url, se
+      // dejan tal cual.
+      let idxImagen = 0;
+      const secuenciaFinal: LandingSecuenciaPaso[] = input.secuencia.map((paso) => {
+        if (paso.tipo === 'boton_comprar') return paso;
+        const nuevaUrl = imagenesShopify[idxImagen] ?? paso.url;
+        idxImagen++;
+        return { ...paso, url: nuevaUrl };
+      });
+      await this.guardarMetafieldSecuencia(credenciales, json.product.id, secuenciaFinal, avisos);
     }
     await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
     await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);

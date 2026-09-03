@@ -215,6 +215,19 @@ export class ImageEditService {
         num_images: numImagenes,
         quality: calidad,
         image_size: 'portrait_16_9',
+        // Por defecto el modelo devuelve PNG (pesado, sin necesidad — estas
+        // piezas son fotos/composiciones, no necesitan transparencia). Se pide
+        // JPEG directo acá: el precio de fal.ai depende solo de calidad y
+        // tamaño, NUNCA del formato de salida (confirmado en su
+        // documentación), así que esto no cuesta nada extra y ya entrega el
+        // archivo liviano desde el origen. Se eligió JPEG y no WebP a
+        // propósito: la imagen se vuelve a subir después a Shopify, y Shopify
+        // ya convierte automáticamente a WebP/AVIF las imágenes que aloja él
+        // mismo — mandarle un WebP ya comprimido arriesga una doble
+        // compresión si en algún momento tiene que derivar una versión de
+        // respaldo para un navegador viejo (ver shopify.service.ts,
+        // publicarLanding, para dónde termina alojada cada imagen).
+        output_format: 'jpeg',
       },
       logs: false,
     });
