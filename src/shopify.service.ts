@@ -562,17 +562,29 @@ export class ShopifyService {
     // velocidad del taller) — 14 por defecto si nunca se guardó.
     '{%- assign barra_movimiento_velocidad = product.metafields.ecom_magnates.barra_movimiento_velocidad.value -%}',
     // Animación de "pulso" del botón (crece y vuelve a su tamaño normal cada
-    // tanto, para llamar la atención) — la animación se define UNA vez acá
-    // (no se puede definir @keyframes dentro de un style="" en línea) y cada
-    // botón de abajo solo la referencia por nombre con animation:. Antes era
-    // un "shake" (temblor + rotación); se cambió a este pulso de escala a
-    // pedido de Norbey el 03/09, calibrado con un video de referencia que
-    // mandó: queda quieto la mayor parte del ciclo de 3s y crece ~6% en un
-    // pulso breve antes de volver a su tamaño normal. Lo mismo para el scroll
-    // infinito de la barra de movimiento (translateX de 0% a -50%): el
-    // contenido de la barra se repite varias veces seguidas e idénticas, así
-    // al llegar a -50% (el ancho de una sola copia) el loop vuelve a 0% sin
-    // que se note ningún salto.
+    // tanto, para llamar la atención) — el @keyframes se define UNA vez acá
+    // (no se puede definir dentro de un style="" en línea) y cada botón de
+    // abajo lo referencia por nombre con animation:. Antes era un "shake"
+    // (temblor + rotación); se cambió a este pulso de escala a pedido de
+    // Norbey el 03/09, calibrado con un video de referencia que mandó: queda
+    // quieto la mayor parte del ciclo de 3s y crece ~6% en un pulso breve
+    // antes de volver a su tamaño normal.
+    //
+    // OJO: este @keyframes es solo el RESPALDO. El 03/09 Norbey mostró con
+    // otro video que en su tienda real la propiedad animation: SÍ queda bien
+    // puesta en el botón (confirmado con su propio inspector), pero el botón
+    // igual se quedaba quieto — algo del lado de la tienda (muy probablemente
+    // el CSS de accesibilidad "reducir movimiento" que traen varios temas,
+    // Dawn incluido, que apaga TODAS las animaciones del sitio si el
+    // visitante tiene esa preferencia activada en el sistema/navegador)
+    // estaba ganándole a esta animación por CSS. Por eso ahora el pulso lo
+    // maneja además un <script> (ver más abajo, después del botón flotante)
+    // que lo recalcula a mano en cada frame — ese es el que manda de verdad.
+    //
+    // Lo mismo para el scroll infinito de la barra de movimiento (translateX
+    // de 0% a -50%): el contenido de la barra se repite varias veces
+    // seguidas e idénticas, así al llegar a -50% (el ancho de una sola
+    // copia) el loop vuelve a 0% sin que se note ningún salto.
     '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
@@ -630,6 +642,24 @@ export class ShopifyService {
     // selector de color por botón — colorTexto ya viene calculado por el
     // taller según el contraste del fondo elegido, para que nunca quede
     // texto negro sobre un fondo oscuro (o blanco sobre uno claro).
+    //
+    // "ecomMagnatesPulseBtn" (clase, no solo la animation: de acá abajo): el
+    // 03/09 Norbey mostró con video que en su tienda real el pulso por CSS
+    // (@keyframes de arriba) queda perfectamente definido en el HTML — se
+    // confirmó con su propio inspector, la propiedad animation: SÍ estaba
+    // puesta — pero visualmente el botón se quedaba quieto igual. La causa
+    // más probable: muchos temas (Dawn incluido) traen su propio CSS de
+    // accesibilidad que, si el navegador/SO tiene activado "reducir
+    // movimiento", apaga TODAS las animaciones del sitio de punta a punta
+    // (una regla @media (prefers-reduced-motion) con selector * !important).
+    // En vez de seguir peleando en CSS contra un estilo del tema que no
+    // controlamos, el pulso ahora lo mueve JavaScript directo (ver el
+    // <script> al final de esta sección): re-calcula la escala en cada
+    // frame y la aplica con .setProperty(..., "important"), así que gana
+    // pase lo que pase en el CSS de la tienda. La animation: de acá abajo
+    // se deja además como respaldo (por si algún visitante tiene JavaScript
+    // desactivado), pero el script es el que manda.
+    '              class="{% if movimiento %}ecomMagnatesPulseBtn{% endif %}"',
     '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
@@ -672,10 +702,38 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
+    '      class="{% if movimiento %}ecomMagnatesPulseBtn{% endif %}"',
     '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '    >🚚 {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
+    // El pulso lo mueve este script (ver el comentario largo junto al botón
+    // intercalado más arriba, sobre por qué se pasó de CSS puro a JS): busca
+    // TODOS los botones marcados con la clase "ecomMagnatesPulseBtn" (el
+    // intercalado y/o el flotante, los que estén agregados en esta landing
+    // puntual — si ninguno tiene movimiento activado, la lista sale vacía y
+    // el script no hace nada) y en cada frame les recalcula el "transform:
+    // scale()" a mano según el mismo ciclo de 3s ya calibrado con el video
+    // de Norbey (quieto hasta el 70%, crece hasta 90% en el ciclo, un 6% más
+    // grande en el pico a los 2.4s), aplicándolo con .setProperty(...,
+    // "important") para que le gane a cualquier otro estilo del tema o de
+    // otra app que ande tocando ese mismo botón.
+    '<script>',
+    '(function(){',
+    '  var els = document.querySelectorAll(".ecomMagnatesPulseBtn");',
+    '  if(!els.length) return;',
+    '  function tick(ts){',
+    '    var t = (ts % 3000) / 3000;',
+    '    var s = 1;',
+    '    if(t > 0.70 && t <= 0.80){ s = 1 + 0.06 * ((t - 0.70) / 0.10); }',
+    '    else if(t > 0.80 && t <= 0.90){ s = 1.06 - 0.06 * ((t - 0.80) / 0.10); }',
+    '    var v = "scale(" + s.toFixed(4) + ")";',
+    '    for(var i = 0; i < els.length; i++){ els[i].style.setProperty("transform", v, "important"); }',
+    '    requestAnimationFrame(tick);',
+    '  }',
+    '  requestAnimationFrame(tick);',
+    '})();',
+    '</script>',
     '',
     '{% schema %}',
     '{',
