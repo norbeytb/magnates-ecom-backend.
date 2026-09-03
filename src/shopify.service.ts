@@ -103,9 +103,9 @@ export interface PublicarLandingInput {
   botonFlotanteTexto?: string;
   botonFlotanteColor?: string;
   botonFlotanteColorTexto?: string;
-  // Tarjeta "Agregar Movimiento" del Editor de Elementos: anima (shake) TODOS
-  // los botones "COMPRAR AHORA" de la landing (intercalados + flotante) a la
-  // vez cuando viene en true — antes esta animación estaba siempre encendida
+  // Tarjeta "Agregar Movimiento" del Editor de Elementos: anima (pulso de
+  // escala) TODOS los botones "COMPRAR AHORA" de la landing (intercalados +
+  // flotante) a la vez cuando viene en true — antes esta animación estaba siempre encendida
   // a la fuerza en seccionLandingLiquid, ahora es opcional por landing.
   movimiento?: boolean;
   // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos: barra de
@@ -457,7 +457,7 @@ export class ShopifyService {
   // que boton_flotante, para que también se pueda APAGAR en un reenvío si el
   // estudiante desactiva la tarjeta. La sección "landing-imagenes" del tema
   // (seccionLandingLiquid más abajo) lee este metafield para decidir si le
-  // agrega la animación de "shake" a los botones o los deja quietos.
+  // agrega la animación de "pulso" a los botones o los deja quietos.
   private async guardarMetafieldMovimiento(credenciales: ShopifyCredenciales, productId: number, activo: boolean, avisos?: string[]): Promise<void> {
     await this.guardarMetafield(credenciales, productId, 'landing_movimiento', 'boolean', activo ? 'true' : 'false', avisos);
   }
@@ -558,18 +558,22 @@ export class ShopifyService {
     '{%- assign barra_movimiento_texto = product.metafields.ecom_magnates.barra_movimiento_texto.value -%}',
     '{%- assign barra_movimiento_color = product.metafields.ecom_magnates.barra_movimiento_color.value -%}',
     '{%- assign barra_movimiento_color_texto = product.metafields.ecom_magnates.barra_movimiento_color_texto.value -%}',
-    // Segundos que tarda la barra en dar una vuelta completa (botones Lenta/
-    // Normal/Rápida del taller) — 14 por defecto si nunca se guardó.
+    // Segundos que tarda la barra en dar una vuelta completa (slider de
+    // velocidad del taller) — 14 por defecto si nunca se guardó.
     '{%- assign barra_movimiento_velocidad = product.metafields.ecom_magnates.barra_movimiento_velocidad.value -%}',
-    // El "shake" que se mueve solo cada tanto, para llamar la atención igual
-    // que hace el botón amarillo de Releasit — la animación se define UNA vez
-    // acá (no se puede definir @keyframes dentro de un style="" en línea) y
-    // cada botón de abajo solo la referencia por nombre con animation:. Lo
-    // mismo para el scroll infinito de la barra de movimiento (translateX de
-    // 0% a -50%): el contenido de la barra se repite DOS VECES seguidas e
-    // idénticas, así al llegar a -50% (el ancho de una sola copia) el loop
-    // vuelve a 0% sin que se note ningún salto.
-    '<style>@keyframes ecomMagnatesBtnShake{0%,100%{transform:translateX(0) rotate(0deg);}92%{transform:translateX(0) rotate(0deg);}93%{transform:translateX(-3px) rotate(-2deg);}94%{transform:translateX(3px) rotate(2deg);}95%{transform:translateX(-3px) rotate(-2deg);}96%{transform:translateX(3px) rotate(2deg);}97%{transform:translateX(-2px) rotate(-1deg);}98%,99%{transform:translateX(0) rotate(0deg);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
+    // Animación de "pulso" del botón (crece y vuelve a su tamaño normal cada
+    // tanto, para llamar la atención) — la animación se define UNA vez acá
+    // (no se puede definir @keyframes dentro de un style="" en línea) y cada
+    // botón de abajo solo la referencia por nombre con animation:. Antes era
+    // un "shake" (temblor + rotación); se cambió a este pulso de escala a
+    // pedido de Norbey el 03/09, calibrado con un video de referencia que
+    // mandó: queda quieto la mayor parte del ciclo de 3s y crece ~6% en un
+    // pulso breve antes de volver a su tamaño normal. Lo mismo para el scroll
+    // infinito de la barra de movimiento (translateX de 0% a -50%): el
+    // contenido de la barra se repite varias veces seguidas e idénticas, así
+    // al llegar a -50% (el ancho de una sola copia) el loop vuelve a 0% sin
+    // que se note ningún salto.
+    '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
@@ -626,7 +630,7 @@ export class ShopifyService {
     // selector de color por botón — colorTexto ya viene calculado por el
     // taller según el contraste del fondo elegido, para que nunca quede
     // texto negro sobre un fondo oscuro (o blanco sobre uno claro).
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;{% endif %}"',
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
     '        {%- endif -%}',
@@ -668,7 +672,7 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnShake 4s ease-in-out infinite !important;{% endif %}"',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '    >🚚 {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
