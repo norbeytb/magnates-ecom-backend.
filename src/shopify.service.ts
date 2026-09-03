@@ -573,7 +573,12 @@ export class ShopifyService {
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
-    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll {{ barra_movimiento_velocidad | default: 14 }}s linear infinite; padding:9px 0;">',
+    // "barra_movimiento_velocidad" guarda el valor BASE (8/14/22, botones
+    // Lenta/Normal/Rápida) — como cada copia repite el texto 12 veces (ver
+    // más abajo), hay que multiplicar la duración x12 para que la velocidad
+    // en píxeles por segundo sea la misma sin importar cuántas repeticiones
+    // haya (si no, se ve mucho más rápido de lo esperado — bug del 03/09).
+    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll {{ barra_movimiento_velocidad | default: 14 | times: 12 }}s linear infinite; padding:9px 0;">',
     // El truco de loop sin salto (translateX de 0% a -50%) solo se ve bien si
     // el contenido de UNA sola copia ya es más ancho que la pantalla — con un
     // texto corto, esa copia queda angosta y se ve un tramo de color liso
