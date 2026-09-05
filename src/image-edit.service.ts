@@ -333,6 +333,11 @@ export class ImageEditService {
     const f = input.ficha;
     const partes: string[] = [];
     const etiquetaSeccion = this.ETIQUETAS_SECCION[input.seccion] || input.seccion;
+    // Se define acá afuera (no solo dentro del bloque de plantillaDescripcion
+    // más abajo) para poder repetirla en el recordatorio de cierre — el
+    // modelo pesa mucho lo último que lee, igual que ya se hace con el tipo
+    // de sección.
+    let tienePersonaEnPlantilla = false;
 
     // Directiva de apertura, deliberadamente lo primero que lee el modelo: fija
     // el TIPO de sección antes que cualquier otra instrucción (plantilla, ángulo
@@ -346,10 +351,65 @@ export class ImageEditService {
       `Se te da UNA imagen: el producto real que debes usar. Consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) e intégralo de forma natural en la composición que armes.`,
     );
 
+    // Norbey pidió (04/09) que la IA respete la plantilla de referencia con
+    // mucha más fidelidad que antes: la posición de cada parte debe quedar
+    // "casi igual" a la descrita, y si la plantilla muestra una persona, la
+    // imagen generada NUNCA puede quedar sin persona (antes el prompt decía
+    // "no es obligatorio copiarla al pixel", lo cual dejaba margen de sobra
+    // para que el modelo reacomodara todo o directamente omitiera a la
+    // persona — eso es justo lo que se reportó como fallando "uno que otro"
+    // de cada 10 generaciones). Las 281 descripciones de plantillas (arriba,
+    // PLANTILLA_DESCRIPCIONES en el frontend) ya venían con detalle de
+    // posición por elemento (arriba/abajo/izquierda/derecha/centro) y ya
+    // aclaran explícitamente cuando una plantilla NO tiene persona — el
+    // problema no era la descripción en sí, sino que el prompt le daba al
+    // modelo permiso de tomarla como sugerencia libre en vez de requisito.
     if (input.plantillaDescripcion) {
+      const desc = input.plantillaDescripcion;
+      // Si la propia descripción aclara explícitamente que esa plantilla NO
+      // tiene persona (las 281 descripciones reales usan varias frases para
+      // esto: "sin ninguna persona en esta plantilla", "No hay personas en
+      // esta plantilla", "No aparecen personas...", "No hay fotografías de
+      // personas...", "sin fotos de personas..."), eso manda por sobre
+      // cualquier otra palabra suelta que pudiera parecer una mención de
+      // persona. Verificado a mano contra las 281 descripciones reales
+      // (04/09): con esta lista de patrones, 258 quedan marcadas con
+      // persona, 20 marcadas explícitamente sin persona, y solo 3 quedan
+      // ambiguas (colages de solo un brazo/bíceps en primer plano o una
+      // tabla comparativa sin nadie) — para esas 3 no se agrega ninguna
+      // instrucción extra de más, se sigue solo la descripción base.
+      const sinPersonaExplicito =
+        /\b(sin\s+(ninguna\s+)?personas?|no\s+hay\s+(fotos?\s+de\s+|fotograf[ií]as?\s+de\s+)?personas?|no\s+aparecen\s+personas?|ni\s+fotograf[ií]as?\s+de\s+personas?|sin\s+fotos?\s+de\s+personas?|sin\s+fotograf[ií]as?\s+de\s+personas?)\b/i.test(
+          desc,
+        );
+      // Lista de palabras que indican una persona REAL fotografiada en la
+      // escena (no solo un ícono decorativo tipo "persona corriendo" dentro
+      // de un bullet de beneficio — esos son minoría y el costo de una falsa
+      // alarma ahí es bajo comparado con el costo de omitir una persona que
+      // sí debía estar). Incluye formas plurales (antes faltaban y hacían
+      // que casos reales con "dos hombres"/"tres personas" pasaran
+      // desapercibidos) y varios roles que aparecen en el catálogo además de
+      // "hombre/mujer": pareja, ciclista, mensajero/a, boxeador/a, etc.
+      const tienePersona =
+        !sinPersonaExplicito &&
+        /\b(hombres?|mujer(es)?|personas?|parejas?|modelos?|chicos?|chicas?|atletas?|entrenador(a|es|as)?|se[ñn]or(a|es|as)?|corredor(a|es|as)?|corriendo|ciclistas?|mensajer[oa]s?|boxeador(a|es|as)?|deportistas?|triatleta)\b/i.test(
+          desc,
+        );
+      tienePersonaEnPlantilla = tienePersona;
+
       partes.push(
-        `No tienes la imagen de la plantilla de referencia que el usuario eligió como inspiración de diseño, pero aquí tienes su descripción de composición/layout — úsala como guía de cómo distribuir los elementos visuales de esta pieza (no es obligatorio copiarla al pixel, es una referencia de estructura): "${input.plantillaDescripcion}". Arma la composición final inspirado en esa estructura, pero con el producto real y el contenido de texto de esta sección — nunca copies frases ni marcas mencionadas en la descripción, solo la disposición visual.`,
+        `Tienes la descripción EXACTA de la composición/layout de la plantilla de referencia que el usuario eligió (no ves su imagen, pero esta descripción la reemplaza con el mismo nivel de detalle) — es un requisito de diseño a seguir con fidelidad, no una simple inspiración libre: "${desc}". Reproduce la distribución de los elementos en las MISMAS posiciones relativas que se describen (qué va arriba, abajo, a la izquierda, a la derecha o al centro, y en qué orden de tamaño/importancia visual), casi como si estuvieras calcando la estructura. Usa el producto real que se te dio y el contenido de texto de esta sección en vez de lo que diga la descripción sobre el producto o las frases exactas — pero la UBICACIÓN de cada parte (títulos, íconos, bullets, producto, persona si la hay) debe coincidir lo más posible con la descripción. Nunca copies marcas, nombres propios ni frases textuales mencionadas ahí, solo la disposición visual.`,
       );
+
+      if (tienePersona) {
+        partes.push(
+          `IMPORTANTE: la plantilla de referencia SÍ muestra una persona en su composición (ver descripción de arriba). La imagen que generes DEBE incluir una persona — nunca generes la escena solo con el producto y el fondo, omitiendo a la persona. Ubícala en la misma posición y con una pose/actividad similar a la descrita.`,
+        );
+      } else if (sinPersonaExplicito) {
+        partes.push(
+          `La plantilla de referencia NO muestra ninguna persona, solo el producto y elementos gráficos/de texto — no agregues ninguna persona a la composición, mantenla enfocada exclusivamente en el producto.`,
+        );
+      }
     }
 
     if (input.colorHex) {
@@ -467,6 +527,12 @@ export class ImageEditService {
     partes.push(
       `Recuerda: el resultado final debe verse y sentirse como una sección de "${etiquetaSeccion}", no como una portada/Hero de venta directa, salvo que el tipo de sección pedido sea justamente ese.`,
     );
+
+    if (tienePersonaEnPlantilla) {
+      partes.push(
+        `Recuerda también: la plantilla de referencia elegida tiene una persona — la imagen final DEBE tener una persona, en la posición descrita. No la omitas.`,
+      );
+    }
 
     partes.push(
       `Estilo publicitario profesional, tipografía legible y bien contrastada, texto sin errores ortográficos ni caracteres extraños.`,
