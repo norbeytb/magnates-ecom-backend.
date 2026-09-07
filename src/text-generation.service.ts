@@ -29,6 +29,10 @@ export interface GenerarCopyInput {
   // Pedido 07/09: idioma en el que debe salir redactado todo el copy — por defecto 'Español'
   // (ver "🌐 Idioma de Salida" en el taller). Sirve para landings armadas para otro país.
   idioma?: string;
+  // Pedido 09/09: "País donde vas a vender" del taller — ya existía ese campo pero antes solo
+  // se usaba para la nacionalidad del personaje en la imagen, nunca para adaptar el TONO del
+  // copy (ver TONO_POR_PAIS más abajo). Vacío/ausente = sin adaptación de tono (como hasta ahora).
+  pais?: string;
   // La clave de fal.ai DE ESE USUARIO — el controlador la busca antes de
   // llamar acá y avisa con un error claro si el usuario todavía no la
   // conectó en "Integraciones".
@@ -48,6 +52,7 @@ export interface GenerarAngulosInput {
   nombreProducto: string;
   detallesProducto: string;
   idioma?: string; // ver nota en GenerarCopyInput
+  pais?: string; // ver nota en GenerarCopyInput
   falApiKey: string;
 }
 
@@ -67,6 +72,38 @@ const MODELO_TEXTO = 'anthropic/claude-haiku-4.5';
 // llamadas producen texto que después se usa para generar imágenes con IA.
 const REGLA_CONTENIDO = `REGLA IMPORTANTE (especialmente para productos de belleza/moda/salud/fitness): este texto se usa después para generar imágenes con IA, y cualquier mención a cirugía, procedimientos médicos/quirúrgicos, tratamientos clínicos, riesgos de salud, o comparaciones tipo "sin cirugía"/"sin necesidad de operarte" hace que la generación de imagen se bloquee por filtros de contenido. NUNCA menciones cirugía, procedimientos quirúrgicos/médicos, ni riesgos de salud, ni siquiera para decir que el producto es la alternativa segura o más rápida. Describe el producto solo por sus beneficios directos (comodidad, estilo, practicidad, apariencia, confianza), nunca comparándolo con un procedimiento médico.`;
 
+// Pedido 09/09 (punto 5 de la lista analizada del prompt de referencia "Joel"): antes solo
+// evitábamos temas médicos/quirúrgicos (ver REGLA_CONTENIDO) — esto agrega una regla de
+// honestidad más general, separada porque aplica siempre, para cualquier categoría de
+// producto (no solo belleza/salud). Además de ser más profesional, este tipo de palabras
+// también puede hacer que Meta/TikTok Ads rechace el anuncio por publicidad engañosa.
+const REGLA_ANTIEXAGERACION = `REGLA DE HONESTIDAD: nunca prometas resultados exagerados, mágicos o sin respaldo — evitá palabras como "milagroso", "mágico", "instantáneo", "cura", "garantizado al 100%" o similares. Describe el beneficio real del producto de forma directa y creíble, sin promesas imposibles de cumplir.`;
+
+// Pedido 09/09 (punto 4 de la misma lista): "País donde vas a vender" ya existía en el taller
+// pero solo se usaba para la nacionalidad del personaje en la imagen — nunca para adaptar el
+// TONO del copy. Estos 7 son los mismos países/tonos curados a mano del prompt de referencia;
+// para cualquier OTRO país de la lista del taller (son bastantes más — ver el dropdown), se le
+// pide al modelo que infiera un tono apropiado él mismo en vez de dejar una tabla enorme a
+// mano, ver notaPais más abajo.
+const TONO_POR_PAIS: Record<string, string> = {
+  Colombia: 'cálido, cercano y confiable',
+  México: 'directo, enérgico y aspiracional',
+  Perú: 'formal pero accesible, orientado a la familia',
+  Chile: 'sobrio, informativo, con datos concretos',
+  Argentina: 'seguro, inteligente, con personalidad propia',
+  Ecuador: 'neutro, claro, enfocado en el valor',
+  'Estados Unidos': 'neutro, claro, enfocado en el valor',
+};
+
+function notaTonoPorPais(pais: string | undefined): string {
+  const paisLimpio = (pais || '').trim();
+  // 'Selecciona el país' es el texto por defecto del dropdown cuando el usuario nunca lo tocó
+  // — en ese caso no hay país para adaptar, se sigue igual que hasta ahora (sin nota de tono).
+  if (!paisLimpio || paisLimpio === 'Selecciona el país') return '';
+  const tono = TONO_POR_PAIS[paisLimpio];
+  return ` Además, adaptá el tono, los modismos suaves y las referencias culturales para alguien de ${paisLimpio}${tono ? ` — un tono ${tono}` : ''}, sin caer en modismos vulgares o demasiado locales que puedan sonar raros para el resto de lectores de ese mismo país.`;
+}
+
 @Injectable()
 export class TextGenerationService {
   // Primer paso del "Completar con IA": antes de redactar toda la
@@ -85,6 +122,7 @@ export class TextGenerationService {
       idioma.toLowerCase() !== 'español'
         ? ` IMPORTANTE: el estudiante va a vender en un país donde se habla ${idioma} — redacta cada ángulo directamente en ${idioma}, no en español.`
         : '';
+    const notaPais = notaTonoPorPais(input.pais);
 
     const systemPrompt = `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, y especialista en CRO (Conversion Rate Optimization).
 
@@ -93,9 +131,11 @@ Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: 
 Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente esta clave:
 {"angulos":["...","...","..."]}
 
-Cada uno de los 3 elementos del array es el nombre corto de un ángulo de venta (una frase concreta y específica al producto, en ${idioma}, de no más de 12 palabras — el mismo estilo que "Alivio del dolor de espalda sin cirugía ni medicamentos" o "Pérdida de peso natural, sin dietas extremas ni rutinas complicadas", traducido al espíritu de ${idioma}), nunca genérico ni aplicable a cualquier producto.${notaIdioma}
+Cada uno de los 3 elementos del array es el nombre corto de un ángulo de venta (una frase concreta y específica al producto, en ${idioma}, de no más de 12 palabras — el mismo estilo que "Alivio del dolor de espalda sin cirugía ni medicamentos" o "Pérdida de peso natural, sin dietas extremas ni rutinas complicadas", traducido al espíritu de ${idioma}), nunca genérico ni aplicable a cualquier producto.${notaIdioma}${notaPais}
 
-${REGLA_CONTENIDO}`;
+${REGLA_CONTENIDO}
+
+${REGLA_ANTIEXAGERACION}`;
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 
@@ -119,6 +159,7 @@ ${REGLA_CONTENIDO}`;
       idioma.toLowerCase() !== 'español'
         ? ` IMPORTANTE: el estudiante va a vender en un país donde se habla ${idioma} — redacta TODO directamente en ${idioma}, no en español.`
         : '';
+    const notaPais = notaTonoPorPais(input.pais);
 
     const systemPrompt = anguloElegido
       ? `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
@@ -136,9 +177,11 @@ Significado de cada clave:
 - resultado: el resultado final y transformación que el cliente busca con ese ángulo.
 - solucion: por qué este producto es la solución ideal frente a otras alternativas (alternativas de PRODUCTO, ej. otras marcas o métodos caseros — nunca alternativas médicas, ver regla abajo).
 - mecanismo: el mecanismo único o diferenciador frente a la competencia, coherente con ese ángulo.
-${notaIdioma}
+${notaIdioma}${notaPais}
 
-${REGLA_CONTENIDO}`
+${REGLA_CONTENIDO}
+
+${REGLA_ANTIEXAGERACION}`
       : `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
 
 Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: hogar, belleza, salud, fitness, mascotas, tecnología, moda, etc.) y construir una estrategia de marketing completa, específica para ese producto y nunca genérica.
@@ -153,9 +196,11 @@ Significado de cada clave:
 - resultado: el resultado final y transformación que el cliente busca.
 - solucion: por qué este producto es la solución ideal frente a otras alternativas (alternativas de PRODUCTO, ej. otras marcas o métodos caseros — nunca alternativas médicas, ver regla abajo).
 - mecanismo: el mecanismo único o diferenciador frente a la competencia.
-${notaIdioma}
+${notaIdioma}${notaPais}
 
-${REGLA_CONTENIDO}`;
+${REGLA_CONTENIDO}
+
+${REGLA_ANTIEXAGERACION}`;
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 

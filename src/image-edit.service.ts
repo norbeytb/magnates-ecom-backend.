@@ -344,8 +344,17 @@ export class ImageEditService {
     // de sección.
     let tienePersonaEnPlantilla = false;
 
-    // Directiva de apertura, deliberadamente lo primero que lee el modelo: fija
-    // el TIPO de sección antes que cualquier otra instrucción (plantilla, ángulo
+    // Pedido 09/09: el modelo de texto (text-generation.service.ts) ya se le presenta a la IA
+    // como "experta en creación de landings de alta conversión para ecommerce" — al modelo de
+    // IMAGEN nunca se le había dicho nada equivalente (gpt-image-2/edit no tiene un campo aparte
+    // de system_prompt, así que esta frase va como la primera línea del prompt normal). Aplica a
+    // TODAS las secciones/plantillas por igual.
+    partes.push(
+      `Eres un experto en diseño de imágenes publicitarias de alta conversión para landing pages de ecommerce.`,
+    );
+
+    // Directiva de apertura, deliberadamente lo primero que lee el modelo (después de la frase de
+    // arriba): fija el TIPO de sección antes que cualquier otra instrucción (plantilla, ángulo
     // de venta, etc.) para evitar que el modelo "por defecto" arme un Hero/pieza
     // de venta genérica cuando en realidad se pidió otra sección (ej. Logística).
     partes.push(
@@ -486,7 +495,7 @@ export class ImageEditService {
             o.precio3Venta ? `3 unidades: ${o.precio3Venta}${o.precio3Comparacion ? ` (antes ${o.precio3Comparacion})` : ''}` : null,
           ].filter(Boolean);
           partes.push(
-            `Genera una sección de Oferta con estos precios exactos (divisa ${o.divisa || 'USD'}): ${filas.join(' · ')}. Incluye un botón de llamado a la acción tipo "Cómpralo ahora".`,
+            `Genera una sección de Oferta con estos precios exactos (divisa ${o.divisa || 'USD'}): ${filas.join(' · ')}.`,
           );
         }
         break;

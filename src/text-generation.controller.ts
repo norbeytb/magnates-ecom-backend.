@@ -21,12 +21,17 @@ interface GenerarCopyDto {
   // país/idioma, este copy (problema/avatar/resultado/solución/mecanismo) debe redactarse
   // en ESE idioma, no siempre en español. Ver GenerarCopyInput en el service.
   idioma?: string;
+  // Pedido 09/09: "🌍 País donde vas a vender" del taller — adapta el tono/modismos del
+  // copy generado para ese país (ver TONO_POR_PAIS en el service). No reemplaza a idioma:
+  // un mismo idioma (ej. español) puede venderse en varios países distintos.
+  pais?: string;
 }
 
 interface GenerarAngulosDto {
   nombreProducto: string;
   detallesProducto: string;
   idioma?: string;
+  pais?: string;
 }
 
 @Controller('ia/texto')
@@ -57,6 +62,7 @@ export class TextGenerationController {
       nombreProducto: dto.nombreProducto,
       detallesProducto: dto.detallesProducto,
       idioma: dto.idioma,
+      pais: dto.pais,
       falApiKey,
     });
   }
@@ -71,6 +77,7 @@ export class TextGenerationController {
       detallesProducto: dto.detallesProducto,
       anguloElegido: dto.anguloElegido,
       idioma: dto.idioma,
+      pais: dto.pais,
       falApiKey,
     });
   }
