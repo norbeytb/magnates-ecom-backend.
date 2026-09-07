@@ -358,7 +358,7 @@ export class ImageEditService {
     // de venta, etc.) para evitar que el modelo "por defecto" arme un Hero/pieza
     // de venta genérica cuando en realidad se pidió otra sección (ej. Logística).
     partes.push(
-      `Vas a generar EXCLUSIVAMENTE la sección "${etiquetaSeccion}" de una landing page. Todo el contenido, mensaje y composición deben corresponder a ESE tipo de sección — por ejemplo, si es Logística/Envío no generes un titular de venta tipo Hero, y si es Testimonios no generes una tabla de precios. Las instrucciones específicas de esta sección están más abajo.`,
+      `Vas a generar EXCLUSIVAMENTE la sección "${etiquetaSeccion}" de una landing page. Todo el contenido, mensaje y composición deben corresponder a ESE tipo de sección — por ejemplo, si es Logística/Envío no generes un titular de venta tipo Hero, y si es Testimonios no generes una tabla de precios. No inventes la estructura de OTRA sección (ej. no agregues una grilla de tarjetas de beneficios si esto no es la sección de Beneficios). Las instrucciones específicas de esta sección, y la disposición exacta a seguir, están más abajo — seguilas a esas, no un formato genérico distinto.`,
     );
 
     // Pedido 07/09: el selector "🌐 Idioma de Salida" del taller le permite al estudiante armar
@@ -472,8 +472,19 @@ export class ImageEditService {
       }
     }
 
+    // Pedido 09/09: Norbey reportó que en algunas generaciones el fondo salía oscuro (el color
+    // de la plantilla de ejemplo) en vez del color real del producto — mientras que en otras de
+    // la MISMA tanda sí se respetaba el color del producto. Causa probable: las descripciones de
+    // plantilla (arriba) describen su propio color de fondo en palabras (ej. "Fondo azul oscuro
+    // degradado...", "Fondo negro con rayos eléctricos...") — eso es texto estructural que SÍ se
+    // conserva (no es el texto literal de marketing que neutralizarTextoLiteral() borra), así que
+    // compite directamente contra esta instrucción de color y la IA no siempre resuelve ese
+    // conflicto a favor de la correcta. Se aclara ahora explícitamente que este color tiene
+    // prioridad sobre cualquier color de fondo mencionado en la plantilla de referencia.
     if (input.colorHex) {
-      partes.push(`Usa ${input.colorHex} como color predominante del fondo y los acentos visuales.`);
+      partes.push(
+        `Usa ${input.colorHex} como color predominante del fondo y los acentos visuales de TODA la composición — esto tiene PRIORIDAD sobre cualquier color de fondo que se mencione en la descripción de la plantilla de referencia (si esa descripción dice, por ejemplo, "fondo azul oscuro" o "fondo negro", ignora ese color puntual: la plantilla se sigue solo para la POSICIÓN y distribución de los elementos, nunca para su color).`,
+      );
     }
 
     // El ángulo de venta se define UNA vez al crear el producto/ficha (no por sección) y debe
@@ -585,23 +596,25 @@ export class ImageEditService {
     // seguir (no solo como texto de referencia), para que cualquier pedido puntual que el usuario
     // haya escrito ahí (un precio, un personaje, un color exacto, un prompt propio, etc.) no se
     // pierda por quedar recortado en las otras menciones.
+    // Pedido 09/09: Norbey reportó una generación donde el modelo terminó armando una grilla de
+    // tarjetas de beneficios completa (título + 4 íconos con texto) en vez de la sección Hero con
+    // persona que se le pidió, aparentemente "inspirado" en el párrafo largo de detallesProducto
+    // de abajo. Se agrega una aclaración explícita de que estos detalles son solo CONTENIDO/datos
+    // a incorporar — nunca deben pisar el tipo de sección ni la disposición ya definidos arriba.
     if (f.detallesProducto) {
       partes.push(
-        `Detalles adicionales del producto, escritos por el usuario (puede incluir pedidos puntuales para la imagen — un precio, un personaje, un color específico, el nombre exacto del producto, etc. — trátalo como una instrucción a seguir, no solo como texto de referencia): ${this.recortar(f.detallesProducto, 1200)}`,
+        `Detalles adicionales del producto, escritos por el usuario (puede incluir pedidos puntuales para la imagen — un precio, un personaje, un color específico, el nombre exacto del producto, etc. — trátalo como una instrucción a seguir para el CONTENIDO): ${this.recortar(f.detallesProducto, 1200)}. Importante: estos detalles aportan información/contenido para usar DENTRO de la sección y la disposición ya indicadas arriba — nunca cambian el tipo de sección pedido, ni la disposición de sus elementos, ni si debe o no aparecer una persona.`,
       );
     }
 
-    // Recordatorio de cierre (el modelo también pesa mucho lo último que lee): refuerza
-    // una vez más el tipo de sección para que no "derive" hacia un Hero genérico.
+    // Recordatorio de cierre en formato checklist (el modelo pesa mucho lo último que lee):
+    // en vez de dos frases sueltas, se agrupan los puntos no negociables en una sola lista
+    // corta y directa — más fácil de verificar por el modelo que dos párrafos separados. El
+    // punto 4 (color) se agrega solo si hay colorHex — ver nota de la 09/09 más arriba, donde
+    // se explica por qué el color de la plantilla puede llegar a competir con este.
     partes.push(
-      `Recuerda: el resultado final debe verse y sentirse como una sección de "${etiquetaSeccion}", no como una portada/Hero de venta directa, salvo que el tipo de sección pedido sea justamente ese.`,
+      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}${input.colorHex ? `; 4) el color de fondo y acentos usado es ${input.colorHex} — NO el color de fondo que haya descrito la plantilla de referencia` : ''}.`,
     );
-
-    if (tienePersonaEnPlantilla) {
-      partes.push(
-        `Recuerda también: la plantilla de referencia elegida tiene una persona — la imagen final DEBE tener una persona, en la posición descrita. No la omitas.`,
-      );
-    }
 
     partes.push(
       `Estilo publicitario profesional, tipografía legible y bien contrastada, texto sin errores ortográficos ni caracteres extraños.`,
