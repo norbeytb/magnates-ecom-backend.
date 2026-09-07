@@ -351,6 +351,17 @@ export class ImageEditService {
       `Se te da UNA imagen: el producto real que debes usar. Consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) e intégralo de forma natural en la composición que armes.`,
     );
 
+    // Pedido 07/09: Norbey reportó que en algunas piezas el producto salía con un tamaño poco
+    // realista dentro de la escena (demasiado grande o demasiado chico en relación a lo que lo
+    // rodea — una mano, una mesa, una persona, etc.), aunque la forma/color/proporciones DEL
+    // PRODUCTO EN SÍ (la instrucción de arriba) sí se respetaban. Son dos cosas distintas: una
+    // es "no cambies cómo se ve el producto" (ya cubierto arriba) y otra es "no cambies qué tan
+    // grande se ve el producto EN LA ESCENA respecto a todo lo demás" — esta última no estaba
+    // explícita, así que se agrega aparte.
+    partes.push(
+      `Además, mantén una escala realista y creíble del producto dentro de la escena: no lo agrandes ni lo achiques para que se vea más grande, más pequeño, más imponente o más humilde de lo que es en la vida real. Si en la composición aparece una mano, una persona, una mesa u otro objeto de referencia, el tamaño relativo del producto frente a ellos debe ser el mismo que tendría en la realidad.`,
+    );
+
     // Norbey pidió (04/09) que la IA respete la plantilla de referencia con
     // mucha más fidelidad que antes: la posición de cada parte debe quedar
     // "casi igual" a la descrita, y si la plantilla muestra una persona, la

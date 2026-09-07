@@ -752,6 +752,25 @@ export class ShopifyService {
   // estudiante tiene un tema distinto.
   private readonly TIPOS_SECCION_PRODUCTO = ['product-information', 'main-product'];
 
+  // Nombre de archivo de la plantilla alterna (bug encontrado el 04/09, con
+  // una landing real de un estudiante que mostraba contenido completamente
+  // ajeno — testimonio de "Cristiano Ronaldo", "resultados clínicos" en un
+  // producto de cocina, etc.): antes este archivo se llamaba
+  // "templates/product.landing.json" — un nombre genérico que CUALQUIER otra
+  // app de landings/page-builder, o incluso el propio estudiante armando una
+  // plantilla alterna a mano, puede haber creado antes en esa misma tienda
+  // con el mismo nombre exacto. asegurarPlantillaLanding() solo "repara" una
+  // plantilla que ya existe (nunca la reconstruye de cero, para no borrar
+  // configuración ajena) — así que si esa tienda ya tenía un
+  // "product.landing.json" de otra cosa, este backend lo daba por nuestro y
+  // jamás le agregaba la sección real de la landing, dejando visible el
+  // contenido viejo/genérico de lo que sea que lo haya creado antes. Fix:
+  // usar un nombre único de nuestra marca, que ninguna otra app ni ningún
+  // estudiante va a usar por casualidad — así la primera vez que se publica
+  // en una tienda SIEMPRE se crea de cero, nunca se "hereda" contenido ajeno.
+  private readonly ARCHIVO_PLANTILLA_LANDING = 'templates/product.ecom-magnates-landing.json';
+  private readonly SUFIJO_PLANTILLA_LANDING = 'ecom-magnates-landing';
+
   // Recorre TODOS los bloques de una sección, incluidos los anidados dentro
   // de otros bloques (en Horizon los bloques pueden venir varios niveles
   // adentro, ej. "product-details" > grupo > "price") — llama a "cb" con
@@ -853,7 +872,7 @@ export class ShopifyService {
         this.logger.log(seccionExistente === null ? 'Sección "landing-imagenes" creada en el tema.' : 'Sección "landing-imagenes" actualizada en el tema.');
       }
 
-      const plantillaExistente = await this.obtenerAsset(credenciales, temaId, 'templates/product.landing.json');
+      const plantillaExistente = await this.obtenerAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING);
       if (plantillaExistente === null) {
         const baseTexto = await this.obtenerAsset(credenciales, temaId, 'templates/product.json');
         const base = baseTexto ? JSON.parse(baseTexto) : { sections: {}, order: [] };
@@ -862,16 +881,31 @@ export class ShopifyService {
         this.simplificarSeccionProducto(base);
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
-        await this.guardarAsset(credenciales, temaId, 'templates/product.landing.json', JSON.stringify(base, null, 2));
-        this.logger.log('Plantilla "product.landing.json" creada en el tema.');
+        await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(base, null, 2));
+        this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" creada en el tema.`);
       } else {
         try {
           const plantilla = JSON.parse(plantillaExistente);
           const antes = JSON.stringify(plantilla);
           this.simplificarSeccionProducto(plantilla);
+          // Defensivo: como esta plantilla ahora vive en un archivo con
+          // nombre único de nuestra marca (ver comentario grande arriba de
+          // ARCHIVO_PLANTILLA_LANDING), en teoría SIEMPRE es una que nosotros
+          // mismos creamos antes — pero por si quedó guardada sin la sección
+          // "landing_imagenes_auto" (por ejemplo, un estudiante la borró sin
+          // querer editando el tema a mano), se vuelve a agregar acá también,
+          // no solo en la rama de creación de arriba.
+          plantilla.sections = plantilla.sections || {};
+          plantilla.order = Array.isArray(plantilla.order) ? plantilla.order : [];
+          if (plantilla.sections['landing_imagenes_auto']?.type !== 'landing-imagenes') {
+            plantilla.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
+          }
+          if (!plantilla.order.includes('landing_imagenes_auto')) {
+            plantilla.order = ['landing_imagenes_auto', ...plantilla.order];
+          }
           if (JSON.stringify(plantilla) !== antes) {
-            await this.guardarAsset(credenciales, temaId, 'templates/product.landing.json', JSON.stringify(plantilla, null, 2));
-            this.logger.log('Plantilla "product.landing.json" existente reparada: galería/descripción nativas apagadas.');
+            await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(plantilla, null, 2));
+            this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" existente reparada.`);
           }
         } catch (err) {
           this.logger.warn(`No se pudo revisar/reparar la plantilla "landing" existente: ${(err as Error).message}`);
@@ -1008,7 +1042,7 @@ export class ShopifyService {
           handle,
           images,
           status: 'active',
-          template_suffix: 'landing',
+          template_suffix: this.SUFIJO_PLANTILLA_LANDING,
           variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
         },
       }),
