@@ -434,8 +434,31 @@ export class ImageEditService {
         );
       tienePersonaEnPlantilla = tienePersona;
 
+      // Pedido 09/09: Norbey reportó que en varias generaciones aparecía dentro de la imagen una
+      // palabra que no tenía nada que ver con el producto real (ej. "RENDIMIENTO" en un producto
+      // que no es de rendimiento físico/deportivo). Causa raíz confirmada: las 281 descripciones
+      // de plantillas (PLANTILLA_DESCRIPCIONES en el frontend) se redactaron describiendo casos
+      // reales de ejemplo (varias usan de ejemplo un suplemento deportivo tipo "Creatina
+      // Monohidratada"), y para poder describir la posición de cada elemento con precisión
+      // incluyen, entre comillas, el texto EXACTO que aparecía ahí (titulares, bullets, nombres
+      // de producto, sellos). La frase de abajo ya le pedía a la IA "no copiar frases textuales",
+      // pero el modelo de imagen no sigue esa instrucción con el 100% de fidelidad (ver nota de
+      // confiabilidad más abajo en este archivo) y a veces terminaba copiando alguna de esas
+      // palabras de ejemplo tal cual — en un caso hasta apareció el nombre de un producto de
+      // ejemplo casi idéntico al de otro cliente, pura coincidencia de rubro.
+      //
+      // En vez de confiar en que la IA "ignore" esas palabras, se las borra del prompt ANTES de
+      // mandarlo — así físicamente no puede copiar lo que ya no está. neutralizarTextoLiteral()
+      // reemplaza cada fragmento de texto literal (entre comillas simples, hasta 350 caracteres
+      // para no arrastrar de más si alguna descripción tiene una comilla suelta) por un marcador
+      // neutro "[texto]". Toda la información de POSICIÓN, TAMAÑO y JERARQUÍA —que va en el texto
+      // alrededor de las comillas, no dentro de ellas— se conserva intacta. La detección de
+      // persona de arriba sigue usando la descripción ORIGINAL (esas palabras nunca están dentro
+      // de las comillas), así que no se ve afectada por este reemplazo.
+      const descSinTextoLiteral = this.neutralizarTextoLiteral(desc);
+
       partes.push(
-        `Tienes la descripción EXACTA de la composición/layout de la plantilla de referencia que el usuario eligió (no ves su imagen, pero esta descripción la reemplaza con el mismo nivel de detalle) — es un requisito de diseño a seguir con fidelidad, no una simple inspiración libre: "${desc}". Reproduce la distribución de los elementos en las MISMAS posiciones relativas que se describen (qué va arriba, abajo, a la izquierda, a la derecha o al centro, y en qué orden de tamaño/importancia visual), casi como si estuvieras calcando la estructura. Usa el producto real que se te dio y el contenido de texto de esta sección en vez de lo que diga la descripción sobre el producto o las frases exactas — pero la UBICACIÓN de cada parte (títulos, íconos, bullets, producto, persona si la hay) debe coincidir lo más posible con la descripción. Nunca copies marcas, nombres propios ni frases textuales mencionadas ahí, solo la disposición visual.`,
+        `Tienes la descripción EXACTA de la composición/layout de la plantilla de referencia que el usuario eligió (no ves su imagen, pero esta descripción la reemplaza con el mismo nivel de detalle) — es un requisito de diseño a seguir con fidelidad, no una simple inspiración libre: "${descSinTextoLiteral}". Reproduce la distribución de los elementos en las MISMAS posiciones relativas que se describen (qué va arriba, abajo, a la izquierda, a la derecha o al centro, y en qué orden de tamaño/importancia visual), casi como si estuvieras calcando la estructura. Donde la descripción dice [texto] entre comillas, ahí NO hay ninguna palabra fija que debas reproducir — ese texto se quitó a propósito porque pertenecía a un producto de ejemplo distinto al de este pedido. En su lugar, generá ahí tu propio copy usando EXCLUSIVAMENTE el producto, el ángulo y los detalles reales de esta ficha (ver más abajo), manteniendo el mismo tipo de elemento (título, viñeta, sello, dato técnico, etc.) y la misma posición/tamaño relativo indicados. Usa el producto real que se te dio en vez de lo que diga la descripción sobre el producto — pero la UBICACIÓN de cada parte (títulos, íconos, bullets, producto, persona si la hay) debe coincidir lo más posible con la descripción. Nunca copies marcas ni nombres propios que hayan quedado mencionados fuera de las comillas, solo la disposición visual.`,
       );
 
       if (tienePersona) {
@@ -590,5 +613,23 @@ export class ImageEditService {
   private recortar(texto: string | undefined, max: number): string {
     if (!texto) return '';
     return texto.length > max ? texto.slice(0, max - 1) + '…' : texto;
+  }
+
+  // Pedido 09/09 — ver el comentario grande en construirPrompt(), justo donde se usa esta
+  // función, para el porqué completo. En corto: quita el texto literal (entre comillas simples)
+  // que viene escrito dentro de las descripciones de plantilla, para que la IA de imagen no
+  // pueda copiar palabras de un producto de ejemplo ajeno al pedido real.
+  //
+  // El límite de 350 caracteres por fragmento es a propósito: casi todo texto legítimo entre
+  // comillas en estas descripciones (un titular, un bullet, un sello, un dato técnico) es corto.
+  // Un puñado de las 281 descripciones (menos de 10) tiene una comilla suelta por un apóstrofe
+  // suelto dentro del texto (ej. un número escrito "100'000", o una cita larga de testimonio que
+  // termina con el nombre pegado fuera de la comilla) — sin este límite, esa comilla suelta haría
+  // que la expresión regular agarre por error todo el texto ESTRUCTURAL (posiciones, tamaños,
+  // jerarquía) hasta la siguiente comilla real, y ese texto sí es importante para mantener la
+  // fidelidad de la plantilla. Con el límite, esos casos puntuales simplemente no se tocan (se
+  // deja pasar ese fragmento sin filtrar) en vez de arriesgar borrar información real de layout.
+  private neutralizarTextoLiteral(descripcion: string): string {
+    return descripcion.replace(/'([^']{0,350})'/g, `'[texto]'`);
   }
 }
