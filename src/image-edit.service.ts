@@ -33,7 +33,12 @@ export interface FichaTecnica {
   resultado: string;                   // ◎ Resultado deseado
   solucion: string;                    // 💡 Cómo el producto se vuelve la solución ideal
   mecanismo: string;                   // ≡ Mecanismo único de la solución
-  instrucciones?: string;              // 💬 Instrucciones adicionales (aplican a todas las secciones)
+  // Pedido 07/09: se quitó el campo separado "Instrucciones adicionales" del taller —
+  // cualquier instrucción puntual del usuario (precio, personaje, color, nombre exacto,
+  // un prompt propio, etc.) ahora se escribe directamente en detallesProducto de arriba,
+  // y construirPrompt() la manda completa a la IA como instrucción a seguir (ver abajo),
+  // no solo como texto de referencia recortado. Un solo cuadro de texto en vez de dos.
+  idioma?: string;                     // 🌐 Idioma de Salida — en qué idioma debe salir el texto de la imagen generada (por defecto 'Español')
   personajes?: {
     nacionalidad?: string;
     sexo?: string;
@@ -347,6 +352,18 @@ export class ImageEditService {
       `Vas a generar EXCLUSIVAMENTE la sección "${etiquetaSeccion}" de una landing page. Todo el contenido, mensaje y composición deben corresponder a ESE tipo de sección — por ejemplo, si es Logística/Envío no generes un titular de venta tipo Hero, y si es Testimonios no generes una tabla de precios. Las instrucciones específicas de esta sección están más abajo.`,
     );
 
+    // Pedido 07/09: el selector "🌐 Idioma de Salida" del taller le permite al estudiante armar
+    // la landing para otro país/idioma (ej. Estados Unidos → English) — antes esto no llegaba a
+    // la IA para nada, así que TODO el texto generado salía siempre en español sin importar lo
+    // que el estudiante eligiera ahí. Se pone temprano en el prompt porque afecta a TODO el
+    // texto que se genere en la imagen, no solo a una parte puntual.
+    const idioma = (f.idioma || 'Español').trim() || 'Español';
+    if (idioma.toLowerCase() !== 'español') {
+      partes.push(
+        `IMPORTANTE — Idioma: todo el texto que aparezca DENTRO de la imagen (titulares, subtítulos, botones, bullets, cualquier palabra) debe estar escrito en ${idioma}, no en español — el estudiante está armando esta landing para vender en un país donde se habla ${idioma}.`,
+      );
+    }
+
     partes.push(
       `Se te da UNA imagen: el producto real que debes usar. Consérvalo exactamente igual (misma forma, color, materiales y proporciones, sin alterarlo ni reemplazarlo) e intégralo de forma natural en la composición que armes.`,
     );
@@ -529,8 +546,17 @@ export class ImageEditService {
         break;
     }
 
-    if (f.instrucciones) {
-      partes.push(`Instrucción adicional del usuario (aplica a esta y todas las secciones): ${f.instrucciones}`);
+    // Pedido 07/09: reemplaza al viejo campo separado "Instrucciones adicionales" (f.instrucciones,
+    // ya eliminado del taller). Ahora detallesProducto ya se usa arriba en varias secciones, pero
+    // SIEMPRE recortado a un fragmento corto (ver los "this.recortar(f.detallesProducto, ...)" de
+    // cada case de arriba) — acá se manda una vez más, pero COMPLETO y como instrucción explícita a
+    // seguir (no solo como texto de referencia), para que cualquier pedido puntual que el usuario
+    // haya escrito ahí (un precio, un personaje, un color exacto, un prompt propio, etc.) no se
+    // pierda por quedar recortado en las otras menciones.
+    if (f.detallesProducto) {
+      partes.push(
+        `Detalles adicionales del producto, escritos por el usuario (puede incluir pedidos puntuales para la imagen — un precio, un personaje, un color específico, el nombre exacto del producto, etc. — trátalo como una instrucción a seguir, no solo como texto de referencia): ${this.recortar(f.detallesProducto, 1200)}`,
+      );
     }
 
     // Recordatorio de cierre (el modelo también pesa mucho lo último que lee): refuerza

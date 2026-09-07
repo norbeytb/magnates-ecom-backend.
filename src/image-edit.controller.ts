@@ -49,7 +49,7 @@ interface GenerarSeccionDto {
   resultado: string;
   solucion: string;
   mecanismo: string;
-  instrucciones?: string;
+  idioma?: string; // 🌐 Idioma de Salida — reemplaza al viejo campo "instrucciones" (ver image-edit.service.ts)
 
   // --- bloques de configuración condicionales ---
   personajes?: PersonajesDto;
@@ -103,7 +103,7 @@ export class ImageEditController {
         resultado: dto.resultado,
         solucion: dto.solucion,
         mecanismo: dto.mecanismo,
-        instrucciones: dto.instrucciones,
+        idioma: dto.idioma,
         personajes: dto.personajes,
         oferta: dto.oferta,
         logistica: dto.logistica,

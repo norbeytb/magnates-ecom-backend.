@@ -26,6 +26,9 @@ export interface GenerarCopyInput {
   // viene vacío/ausente, se mantiene el comportamiento viejo: el modelo
   // elige él mismo un único ángulo y lo devuelve también.
   anguloElegido?: string;
+  // Pedido 07/09: idioma en el que debe salir redactado todo el copy — por defecto 'Español'
+  // (ver "🌐 Idioma de Salida" en el taller). Sirve para landings armadas para otro país.
+  idioma?: string;
   // La clave de fal.ai DE ESE USUARIO — el controlador la busca antes de
   // llamar acá y avisa con un error claro si el usuario todavía no la
   // conectó en "Integraciones".
@@ -44,6 +47,7 @@ export interface GenerarCopyResultado {
 export interface GenerarAngulosInput {
   nombreProducto: string;
   detallesProducto: string;
+  idioma?: string; // ver nota en GenerarCopyInput
   falApiKey: string;
 }
 
@@ -76,6 +80,12 @@ export class TextGenerationService {
       throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
     }
 
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const notaIdioma =
+      idioma.toLowerCase() !== 'español'
+        ? ` IMPORTANTE: el estudiante va a vender en un país donde se habla ${idioma} — redacta cada ángulo directamente en ${idioma}, no en español.`
+        : '';
+
     const systemPrompt = `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, y especialista en CRO (Conversion Rate Optimization).
 
 Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: hogar, belleza, salud, fitness, mascotas, tecnología, moda, etc.) y proponer 3 ángulos de venta distintos y con buen potencial de conversión, cada uno con un enfoque de marketing realmente diferente entre sí (por ejemplo: uno centrado en el dolor/problema a evitar, otro en la aspiración/transformación deseada, otro en un diferenciador o mecanismo único) — nunca 3 variaciones de la misma idea con otras palabras.
@@ -83,7 +93,7 @@ Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: 
 Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente esta clave:
 {"angulos":["...","...","..."]}
 
-Cada uno de los 3 elementos del array es el nombre corto de un ángulo de venta (una frase concreta y específica al producto, en español, de no más de 12 palabras — el mismo estilo que "Alivio del dolor de espalda sin cirugía ni medicamentos" o "Pérdida de peso natural, sin dietas extremas ni rutinas complicadas"), nunca genérico ni aplicable a cualquier producto.
+Cada uno de los 3 elementos del array es el nombre corto de un ángulo de venta (una frase concreta y específica al producto, en ${idioma}, de no más de 12 palabras — el mismo estilo que "Alivio del dolor de espalda sin cirugía ni medicamentos" o "Pérdida de peso natural, sin dietas extremas ni rutinas complicadas", traducido al espíritu de ${idioma}), nunca genérico ni aplicable a cualquier producto.${notaIdioma}
 
 ${REGLA_CONTENIDO}`;
 
@@ -104,6 +114,11 @@ ${REGLA_CONTENIDO}`;
     }
 
     const anguloElegido = input.anguloElegido?.trim();
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const notaIdioma =
+      idioma.toLowerCase() !== 'español'
+        ? ` IMPORTANTE: el estudiante va a vender en un país donde se habla ${idioma} — redacta TODO directamente en ${idioma}, no en español.`
+        : '';
 
     const systemPrompt = anguloElegido
       ? `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
@@ -112,7 +127,7 @@ El usuario ya eligió el ángulo de venta con el que quiere seguir — no lo cam
 
 Ángulo de venta elegido: "${anguloElegido}"
 
-Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves (todos los valores en español, redactados con enfoque de copywriting persuasivo y de conversión, cada uno de 1 a 3 frases concretas):
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves (todos los valores en ${idioma}, redactados con enfoque de copywriting persuasivo y de conversión, cada uno de 1 a 3 frases concretas):
 {"problema":"...","avatar":"...","resultado":"...","solucion":"...","mecanismo":"..."}
 
 Significado de cada clave:
@@ -121,13 +136,14 @@ Significado de cada clave:
 - resultado: el resultado final y transformación que el cliente busca con ese ángulo.
 - solucion: por qué este producto es la solución ideal frente a otras alternativas (alternativas de PRODUCTO, ej. otras marcas o métodos caseros — nunca alternativas médicas, ver regla abajo).
 - mecanismo: el mecanismo único o diferenciador frente a la competencia, coherente con ese ángulo.
+${notaIdioma}
 
 ${REGLA_CONTENIDO}`
       : `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
 
 Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: hogar, belleza, salud, fitness, mascotas, tecnología, moda, etc.) y construir una estrategia de marketing completa, específica para ese producto y nunca genérica.
 
-Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves (todos los valores en español, redactados con enfoque de copywriting persuasivo y de conversión, cada uno de 1 a 3 frases concretas):
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves (todos los valores en ${idioma}, redactados con enfoque de copywriting persuasivo y de conversión, cada uno de 1 a 3 frases concretas):
 {"angulo":"...","problema":"...","avatar":"...","resultado":"...","solucion":"...","mecanismo":"..."}
 
 Significado de cada clave:
@@ -137,6 +153,7 @@ Significado de cada clave:
 - resultado: el resultado final y transformación que el cliente busca.
 - solucion: por qué este producto es la solución ideal frente a otras alternativas (alternativas de PRODUCTO, ej. otras marcas o métodos caseros — nunca alternativas médicas, ver regla abajo).
 - mecanismo: el mecanismo único o diferenciador frente a la competencia.
+${notaIdioma}
 
 ${REGLA_CONTENIDO}`;
 

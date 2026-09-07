@@ -20,9 +20,11 @@ import { JwtAuthGuard } from './auth.guard';
 import { AdminController } from './admin.controller';
 import { IntegracionesController } from './integraciones.controller';
 import { IntegracionesService } from './integraciones.service';
+import { PlantillasGuardadasController } from './plantillas-guardadas.controller';
+import { PlantillasGuardadasService } from './plantillas-guardadas.service';
 
 @Module({
-  controllers: [AuthController, AdminController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController, IntegracionesController],
-  providers: [AuthService, JwtAuthGuard, ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService, IntegracionesService],
+  controllers: [AuthController, AdminController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController, IntegracionesController, PlantillasGuardadasController],
+  providers: [AuthService, JwtAuthGuard, ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService, IntegracionesService, PlantillasGuardadasService],
 })
 export class AppModule {}

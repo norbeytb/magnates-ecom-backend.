@@ -17,11 +17,16 @@ interface GenerarCopyDto {
   // Ángulo que el usuario ya eligió entre los 3 que le propuso
   // /generar-angulos — ver GenerarCopyInput en el service.
   anguloElegido?: string;
+  // Pedido 07/09: "🌐 Idioma de Salida" del taller — si el estudiante va a vender en otro
+  // país/idioma, este copy (problema/avatar/resultado/solución/mecanismo) debe redactarse
+  // en ESE idioma, no siempre en español. Ver GenerarCopyInput en el service.
+  idioma?: string;
 }
 
 interface GenerarAngulosDto {
   nombreProducto: string;
   detallesProducto: string;
+  idioma?: string;
 }
 
 @Controller('ia/texto')
@@ -51,6 +56,7 @@ export class TextGenerationController {
     return this.textGenerationService.generarAngulos({
       nombreProducto: dto.nombreProducto,
       detallesProducto: dto.detallesProducto,
+      idioma: dto.idioma,
       falApiKey,
     });
   }
@@ -64,6 +70,7 @@ export class TextGenerationController {
       nombreProducto: dto.nombreProducto,
       detallesProducto: dto.detallesProducto,
       anguloElegido: dto.anguloElegido,
+      idioma: dto.idioma,
       falApiKey,
     });
   }
