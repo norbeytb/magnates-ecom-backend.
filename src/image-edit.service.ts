@@ -481,11 +481,19 @@ export class ImageEditService {
     // compite directamente contra esta instrucción de color y la IA no siempre resuelve ese
     // conflicto a favor de la correcta. Se aclara ahora explícitamente que este color tiene
     // prioridad sobre cualquier color de fondo mencionado en la plantilla de referencia.
-    if (input.colorHex) {
-      partes.push(
-        `Usa ${input.colorHex} como color predominante del fondo y los acentos visuales de TODA la composición — esto tiene PRIORIDAD sobre cualquier color de fondo que se mencione en la descripción de la plantilla de referencia (si esa descripción dice, por ejemplo, "fondo azul oscuro" o "fondo negro", ignora ese color puntual: la plantilla se sigue solo para la POSICIÓN y distribución de los elementos, nunca para su color).`,
-      );
-    }
+    // Pedido 09/09 (segunda vuelta): el colorHex se calcula en el navegador mirando los píxeles
+    // de la foto del producto — pero en fotos "de la vida real" (no de estudio) esa cuenta de
+    // píxeles a veces sigue agarrando el color de la pared/piso/mesa detrás del producto en vez
+    // del color del producto en sí, por más ajustes que se le hagan al algoritmo (ver el intento
+    // anterior, arriba en el historial de cambios de este mismo archivo). Norbey pidió una
+    // solución más directa: que sea la IA de imagen la que mire la FOTO REAL del producto (que ya
+    // se le manda como imagen de referencia) y elija ella misma el color, ignorando el fondo de
+    // esa foto — un modelo de imagen distingue producto de fondo mucho mejor que un conteo de
+    // píxeles. El colorHex calculado se sigue mandando, pero ahora como un dato de apoyo, no como
+    // la fuente principal de verdad.
+    partes.push(
+      `Para el color predominante del fondo y los acentos visuales de TODA la composición: mirá la imagen de referencia del producto que se te dio y fijate cuál es el color real del PRODUCTO en sí (su envase, etiqueta o empaque) — NUNCA el color del fondo/entorno de esa foto (pared, piso, mesa, tela, sombra, etc. detrás o debajo del producto). Ese es el color que tenés que usar de fondo y en los acentos, y tiene PRIORIDAD sobre cualquier color de fondo que mencione la descripción de la plantilla de referencia (si esa descripción dice, por ejemplo, "fondo azul oscuro" o "fondo negro", ignora ese color puntual: la plantilla se sigue solo para la POSICIÓN y distribución de los elementos, nunca para su color).${input.colorHex ? ` Como dato de apoyo (no necesariamente exacto), un cálculo automático estimó el color del producto como ${input.colorHex} — usalo solo si coincide con lo que ves en la foto real del producto; si no coincide, priorizá lo que ves vos en la imagen del producto por sobre este dato.` : ''}`,
+    );
 
     // El ángulo de venta se define UNA vez al crear el producto/ficha (no por sección) y debe
     // guiar el TONO y mensaje de fondo de TODAS las secciones — pero es secundario al tipo de
@@ -610,10 +618,10 @@ export class ImageEditService {
     // Recordatorio de cierre en formato checklist (el modelo pesa mucho lo último que lee):
     // en vez de dos frases sueltas, se agrupan los puntos no negociables en una sola lista
     // corta y directa — más fácil de verificar por el modelo que dos párrafos separados. El
-    // punto 4 (color) se agrega solo si hay colorHex — ver nota de la 09/09 más arriba, donde
-    // se explica por qué el color de la plantilla puede llegar a competir con este.
+    // punto 4 (color) ahora es incondicional (antes solo aparecía si había colorHex) porque la
+    // instrucción de color de arriba también es incondicional desde el pedido del 09/09.
     partes.push(
-      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}${input.colorHex ? `; 4) el color de fondo y acentos usado es ${input.colorHex} — NO el color de fondo que haya descrito la plantilla de referencia` : ''}.`,
+      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia — NO el color del fondo/entorno de esa foto, ni el que haya descrito la plantilla de referencia.`,
     );
 
     partes.push(
