@@ -107,7 +107,24 @@ export interface PublicarLandingInput {
   // escala) TODOS los botones "COMPRAR AHORA" de la landing (intercalados +
   // flotante) a la vez cuando viene en true — antes esta animación estaba siempre encendida
   // a la fuerza en seccionLandingLiquid, ahora es opcional por landing.
+  // OJO: reemplazado por "animacionBoton" (09/09) — se deja el campo viejo
+  // sin usar para no romper compatibilidad con un frontend viejo que todavía
+  // lo mande; publicarLanding() lo usa solo como respaldo si animacionBoton
+  // no vino (ver ahí mismo).
   movimiento?: boolean;
+  // Pedido 09/09: reemplaza a "movimiento" (booleano) por un selector de 4
+  // animaciones para los botones "COMPRAR AHORA" (intercalados + flotante),
+  // calcado del panel "Animación de botón" de una herramienta de referencia
+  // que mostró Norbey. Valores válidos: 'ninguna' | 'sacudida' | 'rebote' |
+  // 'pulsacion' (cualquier otro valor, o ausente, cae a 'ninguna' salvo que
+  // "movimiento" venga en true, ver más abajo).
+  animacionBoton?: string;
+  // Pedido 09/09: ícono que se dibuja en TODOS los botones "COMPRAR AHORA"
+  // de la landing, en vez del camión fijo de antes. Claves válidas (ver el
+  // "{% case %}" de seccionLandingLiquid más abajo): 'ninguno' | 'carrito' |
+  // 'bolsa' | 'tarjeta' | 'etiqueta' | 'camion' | 'flecha' | 'caja'. Una
+  // clave desconocida o ausente cae a 'camion' (el ícono de antes).
+  iconoBoton?: string;
   // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos: barra de
   // texto que se desliza sola, arriba de todo el resto de la landing.
   barra?: boolean;
@@ -458,8 +475,48 @@ export class ShopifyService {
   // estudiante desactiva la tarjeta. La sección "landing-imagenes" del tema
   // (seccionLandingLiquid más abajo) lee este metafield para decidir si le
   // agrega la animación de "pulso" a los botones o los deja quietos.
+  // OJO: reemplazado por guardarMetafieldAnimacionBoton (09/09) — se deja
+  // este método y su metafield ("landing_movimiento") sin usar en el nuevo
+  // flujo, solo como respaldo de lectura para landings viejas ya publicadas
+  // (ver "{%- unless animacion_boton -%}" en seccionLandingLiquid), nunca se
+  // vuelve a ESCRIBIR desde acá.
   private async guardarMetafieldMovimiento(credenciales: ShopifyCredenciales, productId: number, activo: boolean, avisos?: string[]): Promise<void> {
     await this.guardarMetafield(credenciales, productId, 'landing_movimiento', 'boolean', activo ? 'true' : 'false', avisos);
+  }
+
+  // Pedido 09/09: reemplaza a guardarMetafieldMovimiento — guarda SIEMPRE
+  // (nunca condicional) para poder cambiarla o apagarla ("ninguna") en un
+  // reenvío. La sección lee este metafield como fuente de verdad; solo si
+  // nunca se guardó (landing vieja, nunca resubida con este código) cae de
+  // respaldo al booleano viejo "landing_movimiento".
+  private async guardarMetafieldAnimacionBoton(credenciales: ShopifyCredenciales, productId: number, animacion: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'landing_animacion_boton', 'single_line_text_field', animacion, avisos);
+  }
+
+  // Pedido 09/09: ícono del botón "COMPRAR AHORA" — mismo criterio, se
+  // guarda SIEMPRE para poder cambiarlo en un reenvío.
+  private async guardarMetafieldIconoBoton(credenciales: ShopifyCredenciales, productId: number, icono: string, avisos?: string[]): Promise<void> {
+    await this.guardarMetafield(credenciales, productId, 'landing_icono_boton', 'single_line_text_field', icono, avisos);
+  }
+
+  // Valores válidos del selector "Animación de botón" del taller — cualquier
+  // otro valor (typo, versión vieja del frontend, etc.) cae a "ninguna" salvo
+  // que venga el booleano viejo "movimiento" en true, para no desactivar sin
+  // querer el pulso de landings armadas con una versión del taller que todavía
+  // no manda animacionBoton.
+  private readonly ANIMACIONES_BOTON_VALIDAS = ['ninguna', 'sacudida', 'rebote', 'pulsacion'];
+  private normalizarAnimacionBoton(valor: string | undefined, legacyMovimiento: boolean | undefined): string {
+    if (valor && this.ANIMACIONES_BOTON_VALIDAS.includes(valor)) return valor;
+    return legacyMovimiento ? 'pulsacion' : 'ninguna';
+  }
+
+  // Mismo criterio para el ícono — una clave desconocida o ausente cae al
+  // camión (el único ícono que existía antes de este cambio), así una
+  // landing vieja o un frontend desactualizado siguen viendo lo mismo que ya
+  // tenían.
+  private readonly ICONOS_BOTON_VALIDOS = ['ninguno', 'carrito', 'bolsa', 'tarjeta', 'etiqueta', 'camion', 'flecha', 'caja'];
+  private normalizarIconoBoton(valor: string | undefined): string {
+    return valor && this.ICONOS_BOTON_VALIDOS.includes(valor) ? valor : 'camion';
   }
 
   // Texto/color personalizados del botón flotante (mismo mecanismo que
@@ -544,11 +601,51 @@ export class ShopifyService {
     '{%- assign boton_flotante_texto = product.metafields.ecom_magnates.boton_flotante_texto.value -%}',
     '{%- assign boton_flotante_color = product.metafields.ecom_magnates.boton_flotante_color.value -%}',
     '{%- assign boton_flotante_color_texto = product.metafields.ecom_magnates.boton_flotante_color_texto.value -%}',
-    // Tarjeta "Agregar Movimiento" del Editor de Elementos — antes esta
-    // animación estaba siempre encendida a la fuerza en los dos botones de
-    // abajo; ahora depende de este metafield (apagada por defecto si nunca
-    // se guardó, ver guardarMetafieldMovimiento más arriba).
-    '{%- assign movimiento = product.metafields.ecom_magnates.landing_movimiento.value -%}',
+    // Pedido 09/09: reemplaza al viejo booleano "movimiento" (pulso sí/no)
+    // por un selector de 4 animaciones — ver guardarMetafieldAnimacionBoton
+    // más arriba. Si el metafield nuevo nunca se guardó (landing publicada
+    // con una versión del taller anterior a este cambio, todavía sin
+    // resubir), cae de respaldo al booleano viejo "landing_movimiento" para
+    // no apagar sin querer un pulso que ya estaba activado.
+    '{%- assign animacion_boton = product.metafields.ecom_magnates.landing_animacion_boton.value -%}',
+    '{%- unless animacion_boton -%}',
+    '  {%- if product.metafields.ecom_magnates.landing_movimiento.value -%}',
+    '    {%- assign animacion_boton = "pulsacion" -%}',
+    '  {%- else -%}',
+    '    {%- assign animacion_boton = "ninguna" -%}',
+    '  {%- endif -%}',
+    '{%- endunless -%}',
+    // Pedido 09/09: ícono del botón "COMPRAR AHORA", en vez del camión fijo
+    // de antes — "camion" de respaldo para landings publicadas antes de este
+    // cambio (nunca guardaron este metafield).
+    '{%- assign icono_boton = product.metafields.ecom_magnates.landing_icono_boton.value | default: "camion" -%}',
+    // Pedido 09/09: arma UNA vez el SVG del ícono elegido (según icono_boton)
+    // para no repetir este "{% case %}" en el botón intercalado Y en el
+    // flotante — los dos solo hacen "{{ icono_boton_svg }}". Los íconos son
+    // el mismo set de trazos simples (estilo Feather Icons, "sin color": usan
+    // stroke="currentColor" así heredan el color de texto que el estudiante
+    // ya eligió para ESE botón, en vez de traer un color propio fijo — mismo
+    // set que ICONOS_BOTON en el frontend, mantenerlos sincronizados si se
+    // agrega/cambia alguno). "ninguno" deja el botón sin ícono, solo texto.
+    '{%- capture icono_boton_svg -%}',
+    '{%- case icono_boton -%}',
+    '  {%- when "ninguno" -%}',
+    '  {%- when "carrito" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>',
+    '  {%- when "bolsa" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>',
+    '  {%- when "tarjeta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>',
+    '  {%- when "etiqueta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>',
+    '  {%- when "flecha" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>',
+    '  {%- when "caja" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>',
+    '  {%- else -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>',
+    '{%- endcase -%}',
+    '{%- endcapture -%}',
     // Tarjeta "Agregar Barra de Movimiento" del Editor de Elementos: una
     // barra de texto que se desliza sola de un lado a otro, arriba de todo
     // el resto de la landing (imágenes/botones). Independiente de
@@ -585,7 +682,7 @@ export class ShopifyService {
     // de 0% a -50%): el contenido de la barra se repite varias veces
     // seguidas e idénticas, así al llegar a -50% (el ancho de una sola
     // copia) el loop vuelve a 0% sin que se note ningún salto.
-    '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
+    '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBtnShake{0%,80%{transform:translateX(0);}84%{transform:translateX(-5px);}88%{transform:translateX(4px);}92%{transform:translateX(-3px);}96%{transform:translateX(2px);}100%{transform:translateX(0);}}@keyframes ecomMagnatesBtnBounce{0%,68%,100%{transform:translateY(0);}75%{transform:translateY(-8px);}82%{transform:translateY(0);}88%{transform:translateY(-4px);}94%{transform:translateY(0);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
@@ -659,9 +756,9 @@ export class ShopifyService {
     // pase lo que pase en el CSS de la tienda. La animation: de acá abajo
     // se deja además como respaldo (por si algún visitante tiene JavaScript
     // desactivado), pero el script es el que manda.
-    '              class="{% if movimiento %}ecomMagnatesPulseBtn{% endif %}"',
-    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
-    '            >🚚 {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '              class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '              style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    '            >{{ icono_boton_svg }} {{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
@@ -702,9 +799,9 @@ export class ShopifyService {
     '    <button',
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    '      class="{% if movimiento %}ecomMagnatesPulseBtn{% endif %}"',
-    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if movimiento %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
-    '    >🚚 {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '      class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '      style="all:revert !important; box-sizing:border-box !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    '    >{{ icono_boton_svg }} {{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
     // El pulso lo mueve este script (ver el comentario largo junto al botón
@@ -718,17 +815,46 @@ export class ShopifyService {
     // grande en el pico a los 2.4s), aplicándolo con .setProperty(...,
     // "important") para que le gane a cualquier otro estilo del tema o de
     // otra app que ande tocando ese mismo botón.
+    // Mismo mecanismo de arriba (JS en vez de CSS puro), ahora generalizado a
+    // las 3 animaciones del selector "Animación de botón" del taller
+    // (Sacudida y Rebote agregadas el 08/09, además del Pulsación original).
+    // Cada animación tiene su propia lista de botones (según la clase que le
+    // haya tocado más arriba) y su propia fórmula de transform por cuadro,
+    // calcada punto por punto de los mismos porcentajes que sus @keyframes
+    // de respaldo (arriba en el <style>) para que JS y CSS coincidan si por
+    // algún motivo ambos llegan a aplicarse a la vez.
     '<script>',
     '(function(){',
-    '  var els = document.querySelectorAll(".ecomMagnatesPulseBtn");',
-    '  if(!els.length) return;',
+    '  var pulseEls = document.querySelectorAll(".ecomMagnatesPulseBtn");',
+    '  var shakeEls = document.querySelectorAll(".ecomMagnatesShakeBtn");',
+    '  var bounceEls = document.querySelectorAll(".ecomMagnatesBounceBtn");',
+    '  if(!pulseEls.length && !shakeEls.length && !bounceEls.length) return;',
+    '  function aplicar(list, v){ for(var i = 0; i < list.length; i++){ list[i].style.setProperty("transform", v, "important"); } }',
     '  function tick(ts){',
     '    var t = (ts % 3000) / 3000;',
-    '    var s = 1;',
-    '    if(t > 0.70 && t <= 0.80){ s = 1 + 0.06 * ((t - 0.70) / 0.10); }',
-    '    else if(t > 0.80 && t <= 0.90){ s = 1.06 - 0.06 * ((t - 0.80) / 0.10); }',
-    '    var v = "scale(" + s.toFixed(4) + ")";',
-    '    for(var i = 0; i < els.length; i++){ els[i].style.setProperty("transform", v, "important"); }',
+    '    if(pulseEls.length){',
+    '      var s = 1;',
+    '      if(t > 0.70 && t <= 0.80){ s = 1 + 0.06 * ((t - 0.70) / 0.10); }',
+    '      else if(t > 0.80 && t <= 0.90){ s = 1.06 - 0.06 * ((t - 0.80) / 0.10); }',
+    '      aplicar(pulseEls, "scale(" + s.toFixed(4) + ")");',
+    '    }',
+    '    if(shakeEls.length){',
+    '      var x = 0;',
+    '      if(t > 0.80 && t <= 0.84){ x = -5 * ((t - 0.80) / 0.04); }',
+    '      else if(t > 0.84 && t <= 0.88){ x = -5 + 9 * ((t - 0.84) / 0.04); }',
+    '      else if(t > 0.88 && t <= 0.92){ x = 4 - 7 * ((t - 0.88) / 0.04); }',
+    '      else if(t > 0.92 && t <= 0.96){ x = -3 + 5 * ((t - 0.92) / 0.04); }',
+    '      else if(t > 0.96){ x = 2 - 2 * ((t - 0.96) / 0.04); }',
+    '      aplicar(shakeEls, "translateX(" + x.toFixed(2) + "px)");',
+    '    }',
+    '    if(bounceEls.length){',
+    '      var y = 0;',
+    '      if(t > 0.68 && t <= 0.75){ y = -8 * ((t - 0.68) / 0.07); }',
+    '      else if(t > 0.75 && t <= 0.82){ y = -8 + 8 * ((t - 0.75) / 0.07); }',
+    '      else if(t > 0.82 && t <= 0.88){ y = -4 * ((t - 0.82) / 0.06); }',
+    '      else if(t > 0.88 && t <= 0.94){ y = -4 + 4 * ((t - 0.88) / 0.06); }',
+    '      aplicar(bounceEls, "translateY(" + y.toFixed(2) + "px)");',
+    '    }',
     '    requestAnimationFrame(tick);',
     '  }',
     '  requestAnimationFrame(tick);',
@@ -1101,7 +1227,8 @@ export class ShopifyService {
       await this.guardarMetafieldSecuencia(credenciales, json.product.id, secuenciaFinal, avisos);
     }
     await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
-    await this.guardarMetafieldMovimiento(credenciales, json.product.id, !!input.movimiento, avisos);
+    await this.guardarMetafieldAnimacionBoton(credenciales, json.product.id, this.normalizarAnimacionBoton(input.animacionBoton, input.movimiento), avisos);
+    await this.guardarMetafieldIconoBoton(credenciales, json.product.id, this.normalizarIconoBoton(input.iconoBoton), avisos);
     await this.guardarMetafieldBarra(credenciales, json.product.id, !!input.barra, avisos);
     await this.guardarPersonalizacionBotonFlotante(credenciales, json.product.id, input, avisos);
     await this.guardarPersonalizacionBarra(credenciales, json.product.id, input, avisos);

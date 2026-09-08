@@ -33,7 +33,22 @@ export interface RegistroLanding {
   // (shake) TODOS los botones "COMPRAR AHORA" de la landing (intercalados +
   // flotante) cuando está en true. Ver shopify.service.ts (seccionLandingLiquid)
   // para cómo se traduce esto a la página real.
+  // OJO: reemplazado por "animacionBoton" (09/09, pedido de agregar más
+  // opciones que solo pulso) — se deja esta columna/campo viejo sin usar en
+  // vez de borrarlo (mismo criterio que el resto del proyecto con columnas
+  // viejas, ver nota grande en productos.service.ts) para no romper landings
+  // guardadas con versiones anteriores del taller.
   movimiento?: boolean;
+  // Pedido 09/09: reemplaza a "movimiento" (booleano) por un selector con 4
+  // opciones, calcado del panel "Animación de botón" de una herramienta de
+  // referencia que mostró Norbey. 'ninguna' | 'sacudida' | 'rebote' | 'pulsacion'.
+  animacionBoton?: string;
+  // Pedido 09/09: ícono que se muestra en TODOS los botones "COMPRAR AHORA"
+  // de la landing (intercalados + flotante), en vez del camión fijo de
+  // antes — ver ICONOS_BOTON en el frontend y el "{% case %}" de
+  // seccionLandingLiquid en shopify.service.ts para las claves válidas
+  // ('carrito'|'bolsa'|'tarjeta'|'etiqueta'|'camion'|'flecha'|'caja'|'ninguno').
+  iconoBoton?: string;
   // Tarjeta "Agregar Barra de Movimiento": barra de texto que se desliza
   // sola, arriba de todo el resto de la landing.
   barra?: boolean;
@@ -49,6 +64,8 @@ export interface CambiosLanding {
   items?: ItemLanding[];
   botonFlotante?: boolean;
   movimiento?: boolean;
+  animacionBoton?: string;
+  iconoBoton?: string;
   barra?: boolean;
   barraTexto?: string;
   barraColor?: string;
@@ -96,6 +113,15 @@ export class LandingsService implements OnModuleInit {
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color TEXT;`);
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_color_texto TEXT;`);
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS barra_velocidad INTEGER;`);
+      // Pedido 09/09: reemplaza a "movimiento" (booleano) por un selector de 4
+      // animaciones, más un selector de ícono — ver la nota grande en
+      // RegistroLanding de arriba. Sin NOT NULL/DEFAULT propio: el valor
+      // "efectivo" para landings viejas (creadas antes de este cambio, con
+      // animacion_boton NULL) lo resuelve el propio frontend/Liquid mirando la
+      // columna "movimiento" vieja como respaldo — ver animacionEfectiva() en
+      // el taller y el "{%- unless animacion_boton -%}" en seccionLandingLiquid.
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS animacion_boton TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS icono_boton TEXT;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -109,14 +135,16 @@ export class LandingsService implements OnModuleInit {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, barra, barra_texto, barra_color, barra_color_texto, barra_velocidad, usuario_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, animacion_boton, icono_boton, barra, barra_texto, barra_color, barra_color_texto, barra_velocidad, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
         [
           registro.nombreProducto,
           registro.num,
           JSON.stringify(registro.items),
           !!registro.botonFlotante,
           !!registro.movimiento,
+          registro.animacionBoton ?? null,
+          registro.iconoBoton ?? null,
           !!registro.barra,
           registro.barraTexto ?? null,
           registro.barraColor ?? null,
@@ -162,6 +190,14 @@ export class LandingsService implements OnModuleInit {
     if (cambios.movimiento !== undefined) {
       sets.push(`movimiento = $${i++}`);
       values.push(!!cambios.movimiento);
+    }
+    if (cambios.animacionBoton !== undefined) {
+      sets.push(`animacion_boton = $${i++}`);
+      values.push(cambios.animacionBoton);
+    }
+    if (cambios.iconoBoton !== undefined) {
+      sets.push(`icono_boton = $${i++}`);
+      values.push(cambios.iconoBoton);
     }
     if (cambios.barra !== undefined) {
       sets.push(`barra = $${i++}`);

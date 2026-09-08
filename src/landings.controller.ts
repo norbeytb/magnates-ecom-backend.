@@ -28,6 +28,8 @@ export class LandingsController {
       items: any[];
       botonFlotante?: boolean;
       movimiento?: boolean;
+      animacionBoton?: string;
+      iconoBoton?: string;
       barra?: boolean;
       barraTexto?: string;
       barraColor?: string;
@@ -47,6 +49,8 @@ export class LandingsController {
       items?: any[];
       botonFlotante?: boolean;
       movimiento?: boolean;
+      animacionBoton?: string;
+      iconoBoton?: string;
       barra?: boolean;
       barraTexto?: string;
       barraColor?: string;
