@@ -146,7 +146,7 @@ export class ImageEditService {
       const calidad = input.calidad ?? 'low';
 
       try {
-        const imagenesUrl = await this.llamarFal(falClient, imageUrls, prompt, numImagenes, calidad);
+        const imagenesUrl = await this.llamarFalConReintentos(falClient, imageUrls, prompt, numImagenes, calidad);
         return this.exito(imagenesUrl, prompt, calidad, numImagenes, input, imagenUrl);
       } catch (error) {
         // El filtro de contenido de OpenAI revisa TANTO el texto como la foto del
@@ -237,6 +237,58 @@ export class ImageEditService {
       logs: false,
     });
     return (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+  }
+
+  // Pedido 09/09 (bug reportado con captura: la sección Oferta falló con "Downstream service
+  // error" y el usuario tuvo que enterarse por el modal de errores del taller). A diferencia del
+  // filtro de contenido o una clave de fal.ai inválida — errores "de verdad", que van a fallar
+  // siempre que se reintenten — un "downstream service error" es un tropiezo transitorio de
+  // infraestructura del lado de OpenAI/fal.ai (nada que ver con nuestro prompt ni con la foto del
+  // producto): normalmente, la misma llamada repetida unos segundos después funciona bien. Se
+  // agrega un reintento automático (hasta 2 veces más, 3 intentos en total, con una pausa corta
+  // entre cada uno) SOLO para este tipo de error transitorio — el filtro de contenido y la clave
+  // inválida se siguen manejando aparte (arriba, en generarSeccion) y NUNCA se reintentan, porque
+  // reintentar eso no cambia nada y solo demoraría más en avisarle al usuario.
+  private esErrorTransitorioDeProveedor(error: unknown): boolean {
+    const detalle = this.extraerDetalleError(error).toLowerCase();
+    return (
+      detalle.includes('downstream service error') ||
+      detalle.includes('internal server error') ||
+      detalle.includes('bad gateway') ||
+      detalle.includes('service unavailable') ||
+      detalle.includes('timeout') ||
+      detalle.includes('timed out')
+    );
+  }
+
+  private esperar(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async llamarFalConReintentos(
+    falClient: FalClient,
+    imageUrls: string[],
+    prompt: string,
+    numImagenes: number,
+    calidad: 'low' | 'medium' | 'high',
+  ): Promise<string[]> {
+    const intentosMax = 3;
+    let ultimoError: unknown;
+    for (let intento = 1; intento <= intentosMax; intento++) {
+      try {
+        return await this.llamarFal(falClient, imageUrls, prompt, numImagenes, calidad);
+      } catch (error) {
+        ultimoError = error;
+        const esUltimoIntento = intento === intentosMax;
+        if (esUltimoIntento || !this.esErrorTransitorioDeProveedor(error)) {
+          throw error;
+        }
+        // Pausa corta y creciente (1.5s, luego 3s) antes de reintentar — le da tiempo al
+        // proveedor de recuperarse de un tropiezo puntual sin hacer esperar demasiado al usuario.
+        await this.esperar(intento * 1500);
+      }
+    }
+    throw ultimoError;
   }
 
   // Sacar el detalle real del error de validación/moderación de fal.ai (no solo
@@ -477,7 +529,18 @@ export class ImageEditService {
         // POSICIÓN/COMPOSICIÓN general de la persona, pero la ACCIÓN concreta con el producto
         // tiene que ser una que tenga sentido real para el producto que se le dio.
         partes.push(
-          `Si la descripción de la plantilla menciona una acción puntual de la persona con el producto (por ejemplo "bebiendo", "tomando un trago", "aplicándose", "rociando"), esa acción pertenece al producto de EJEMPLO de la plantilla, no necesariamente al producto real de este pedido — adaptala. La persona debe interactuar con el producto real de la forma en que ESE producto se usa de verdad (sostenerlo, mostrarlo, aplicarlo, usarlo según corresponda a lo que es) — nunca fuerces una acción sin sentido para el producto real solo por copiar la plantilla al pie de la letra (ej. no muestres a alguien "bebiendo" o llevándose a la boca un producto que no es una bebida ni algo que se ingiera). Conservá sí la posición y composición general que describe la plantilla (dónde está la persona, hacia dónde mira, qué tan cerca sostiene el producto), pero la acción específica tiene que ser coherente con el producto real que se te dio.`,
+          `Si la descripción de la plantilla menciona una acción puntual de la persona con el producto (por ejemplo "bebiendo", "tomando un trago", "aplicándose", "rociando", "lavando", "sumergiendo", "mojando"), esa acción pertenece al producto de EJEMPLO de la plantilla, no necesariamente al producto real de este pedido — adaptala. La persona debe interactuar con el producto real de la forma en que ESE producto se usa de verdad (sostenerlo, mostrarlo, aplicarlo, usarlo según corresponda a lo que es) — nunca fuerces una acción sin sentido para el producto real solo por copiar la plantilla al pie de la letra (ej. no muestres a alguien "bebiendo" o llevándose a la boca un producto que no es una bebida ni algo que se ingiera). Conservá sí la posición y composición general que describe la plantilla (dónde está la persona, hacia dónde mira, qué tan cerca sostiene el producto), pero la acción específica tiene que ser coherente con el producto real que se te dio.`,
+        );
+        // Pedido 09/09 (segundo caso real del mismo tipo de bug, reportado con captura: un
+        // producto ELÉCTRICO apareció siendo lavado bajo el chorro de un grifo — ninguna de las
+        // 281 descripciones dice literalmente "lavando", así que esta vez no vino de copiar una
+        // palabra puntual de la plantilla, sino de que el modelo generalizó mal una escena de
+        // baño/lavamanos de la plantilla de ejemplo hacia "lavar el producto"). Se agrega una
+        // regla de seguridad aparte, específica para productos eléctricos/electrónicos y agua,
+        // porque el riesgo ahí no es solo "queda raro" sino que sugiere activamente un uso
+        // peligroso o dañino del producto real (la mayoría de los electrónicos NO son lavables).
+        partes.push(
+          `Regla de seguridad: si el producto real es eléctrico o electrónico (tiene batería, cable, pantalla, botones, motor, etc.) y en la "ficha técnica" o "detalles del producto" de más abajo el usuario NO aclaró explícitamente que es resistente al agua/lavable/sumergible, nunca lo muestres siendo mojado, lavado bajo un grifo/chorro de agua, sumergido, ni con líquido cayéndole encima — ni aunque la plantilla de referencia muestre una escena de baño, lavamanos o con agua de fondo. En ese caso, ambientá la escena en un lugar similar (ej. un baño) pero mostrando al producto seco, siendo sostenido o usado normalmente, nunca en contacto con agua.`,
         );
       } else if (sinPersonaExplicito) {
         partes.push(
