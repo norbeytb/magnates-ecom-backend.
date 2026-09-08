@@ -481,26 +481,29 @@ export class ImageEditService {
     // compite directamente contra esta instrucción de color y la IA no siempre resuelve ese
     // conflicto a favor de la correcta. Se aclara ahora explícitamente que este color tiene
     // prioridad sobre cualquier color de fondo mencionado en la plantilla de referencia.
-    // Pedido 09/09 (tercera vuelta): la vuelta anterior le pedía a la IA que "razone" cuál es el
-    // color del producto mirando la foto e ignorando el fondo — eso sigue siendo una tarea de
-    // interpretación visual, y encima la frase dejaba una puerta abierta ("usalo solo si
-    // coincide con lo que ves... si no, priorizá lo que ves vos") que le daba a la IA margen para
-    // decidir no seguirlo. Norbey pidió sacar esa ambigüedad: ahora, si hay colorHex (ya calculado
-    // del lado del producto — ver extraerColoresDeImagen en el frontend, que desde el 09/09
-    // excluye el color que domina el BORDE de la foto para no agarrar la pared/piso/mesa de
-    // fondo), se lo mandamos como una ORDEN de color fija y sin condicionales, igual que se hace
-    // con los precios exactos de la sección Oferta más abajo — nada de "fijate vos", un valor
-    // concreto a aplicar tal cual. Solo si no hay colorHex (cálculo falló) se le pide que lo
-    // determine ella misma mirando el producto de la foto.
-    if (input.colorHex) {
-      partes.push(
-        `Color obligatorio de esta pieza: usa EXACTAMENTE ${input.colorHex} como color predominante del fondo y de los acentos visuales de TODA la composición. No es una sugerencia ni un punto de partida — es una orden de color fija, igual que los precios exactos de más abajo son cifras fijas. Este color ya fue calculado a partir del color real del PRODUCTO en su foto (su envase/etiqueta), nunca del fondo/entorno de esa foto (pared, piso, mesa, etc.) — no lo cambies ni te bases en el color de fondo que pueda mencionar la descripción de la plantilla de referencia (esa plantilla se sigue solo para la POSICIÓN de los elementos, nunca para su color).`,
-      );
-    } else {
-      partes.push(
-        `Para el color predominante del fondo y los acentos visuales de TODA la composición: mirá la imagen de referencia del producto que se te dio y fijate cuál es el color real del PRODUCTO en sí (su envase, etiqueta o empaque) — NUNCA el color del fondo/entorno de esa foto (pared, piso, mesa, tela, sombra, etc. detrás o debajo del producto). Ese color tiene PRIORIDAD sobre cualquier color de fondo que mencione la descripción de la plantilla de referencia.`,
-      );
-    }
+    // Pedido 09/09 (cuarta vuelta): se probaron 3 versiones de esto y se testeó cada una contra
+    // una foto REAL de producto (un bote sobre un escritorio de madera, con pared y una planta de
+    // fondo — no es una foto de estudio con fondo blanco). Resultado del análisis pixel por pixel
+    // contra esa foto real: el cálculo automático (extraerColoresDeImagen en el frontend), aunque
+    // ya excluye el color del borde y agrupa tonos parecidos entre sí, TODAVÍA elige el color de
+    // la madera del escritorio en vez del rojo del producto — porque en fotos "de la vida real"
+    // el fondo casi siempre ocupa MÁS área total de la imagen que el producto, incluso la parte
+    // del fondo que no toca el borde de la foto (la que se ve alrededor/detrás del producto). Es
+    // una limitación real de "contar píxeles" contra "reconocer qué es el producto", no algo que
+    // se arregle con otro ajuste al algoritmo.
+    //
+    // La vuelta anterior (tercera) le mandaba ese cálculo como una ORDEN de color fija — pero al
+    // sacarle a la IA el margen para corregirlo con su propio criterio visual, cuando el cálculo
+    // está mal (como en este caso) el resultado sale mal SIEMPRE, sin excepción. La vuelta de acá
+    // atrás (segunda: pedirle a la IA que mire la foto y reconozca ella misma el producto) daba
+    // mejor resultado en la práctica (la mayoría de las piezas salían con el color correcto). Se
+    // vuelve a esa versión — y esta vez NO se le manda el colorHex calculado como referencia,
+    // porque ya se demostró que puede estar mal para fotos con fondo real, y mencionárselo corría
+    // el riesgo de desviar su propio criterio visual (que es más confiable que nuestro cálculo de
+    // píxeles en estos casos).
+    partes.push(
+      `Para el color predominante del fondo y los acentos visuales de TODA la composición: mirá la imagen de referencia del producto que se te dio y fijate cuál es el color real del PRODUCTO en sí (su envase, etiqueta o empaque) — NUNCA el color de lo que lo rodea en esa foto (mesa, escritorio, pared, piso, planta, sombra, o cualquier otro elemento del entorno). Ese color del PRODUCTO tiene PRIORIDAD sobre cualquier color de fondo que mencione la descripción de la plantilla de referencia (si esa descripción dice, por ejemplo, "fondo azul oscuro" o "fondo negro", ignora ese color puntual: la plantilla se sigue solo para la POSICIÓN de los elementos, nunca para su color).`,
+    );
 
     // El ángulo de venta se define UNA vez al crear el producto/ficha (no por sección) y debe
     // guiar el TONO y mensaje de fondo de TODAS las secciones — pero es secundario al tipo de
@@ -626,12 +629,11 @@ export class ImageEditService {
     // en vez de dos frases sueltas, se agrupan los puntos no negociables en una sola lista
     // corta y directa — más fácil de verificar por el modelo que dos párrafos separados. El
     // punto 4 (color) ahora es incondicional (antes solo aparecía si había colorHex) porque la
-    // instrucción de color de arriba también es incondicional desde el pedido del 09/09. El
-    // texto del punto 4 cambió de "es el color real del producto" (dejaba lugar a interpretar)
-    // a "es exactamente ${colorHex}" cuando lo hay — coincide con el cambio de arriba, de pedirle
-    // que razone a darle una orden de color fija y verificable.
+    // instrucción de color de arriba también es incondicional desde el pedido del 09/09. Vuelve a
+    // decir "es el color real del producto" (no un hex fijo) porque volvimos a la cuarta vuelta:
+    // que la IA lo reconozca ella misma en la foto, sin un cálculo nuestro de por medio.
     partes.push(
-      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es ${input.colorHex ? `EXACTAMENTE ${input.colorHex}` : 'el color real del PRODUCTO de la foto de referencia'} — NO el color del fondo/entorno de esa foto, ni el que haya descrito la plantilla de referencia.`,
+      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia (su envase/etiqueta) — NO el color de lo que lo rodea en esa foto, ni el que haya descrito la plantilla de referencia.`,
     );
 
     partes.push(
