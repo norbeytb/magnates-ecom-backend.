@@ -987,18 +987,56 @@ export class ShopifyService {
     }
   }
 
+  // Saca de la plantilla "landing" cualquier sección que NO sea la nuestra
+  // (landing_imagenes_auto) ni la de producto (main-product/product-information
+  // — ver TIPOS_SECCION_PRODUCTO, la que trae precio/variantes/botón de
+  // comprar nativo). Bug reportado el 08/09 por un estudiante de Norbey: al
+  // crear la plantilla "landing" por primera vez en la tienda de ESE
+  // estudiante, este backend parte de su "templates/product.json" (la
+  // plantilla NORMAL de esa tienda) como base — y esa plantilla normal ya
+  // traía un montón de secciones propias del tema para vender el producto en
+  // la ficha de siempre (resultados clínicos, antes y después, testimonios,
+  // preguntas frecuentes, etc.). Como antes solo se apagaban los bloques de
+  // galería/descripción DENTRO de la sección de producto, todas esas OTRAS
+  // secciones quedaban intactas y se veían apiladas debajo de la landing —
+  // el "enredo" que reportó Norbey, mezclando la landing limpia con todo el
+  // contenido de venta genérico que ya tenía esa tienda. Fix: además de
+  // simplificar la sección de producto, se borran del "order" (y de
+  // "sections") todas las secciones que no sean ni la nuestra ni la de
+  // producto — así la plantilla "landing" muestra ÚNICAMENTE la landing
+  // (imágenes + botones) y el bloque de comprar/precio/variantes de siempre,
+  // nada más, sea cual sea el tema o las secciones extra que tenga esa
+  // tienda puntual en su plantilla normal.
+  private limpiarSeccionesAjenas(plantilla: any): void {
+    const secciones = plantilla?.sections;
+    if (!secciones || typeof secciones !== 'object' || !Array.isArray(plantilla.order)) return;
+    const conservar = (key: string): boolean => {
+      if (key === 'landing_imagenes_auto') return true;
+      return this.TIPOS_SECCION_PRODUCTO.includes(secciones[key]?.type);
+    };
+    plantilla.order = plantilla.order.filter(conservar);
+    for (const key of Object.keys(secciones)) {
+      if (!conservar(key)) delete secciones[key];
+    }
+  }
+
   // Se asegura de que el tema activo tenga la sección y la plantilla alterna
   // "landing" necesarias — las crea solo si todavía no existen (no toca nada
   // más si ya estaban, y nunca modifica la plantilla NORMAL de producto, así
   // que el resto del catálogo del estudiante no se ve afectado). Si la
   // plantilla "landing" ya existía (por ejemplo de antes de que existiera
-  // simplificarSeccionProducto), se revisa y se repara en el momento si su
-  // sección de producto todavía trae de más (galería, título, descripción,
-  // etc.) — así las tiendas que ya tenían la plantilla creada también quedan
-  // corregidas, sin necesidad de borrarla a mano. Si algo falla acá (por
-  // ejemplo, el permiso de temas todavía no está activo), no debe tumbar la
-  // publicación del producto — solo queda sin la plantilla especial (o sin
-  // la reparación) por esta vez.
+  // simplificarSeccionProducto o limpiarSeccionesAjenas), se revisa y se
+  // repara en el momento si su sección de producto todavía trae de más
+  // (galería, título, descripción, etc.) o si tiene secciones ajenas
+  // colgando (ver limpiarSeccionesAjenas) — así las tiendas que ya tenían la
+  // plantilla creada (aunque sea con el bug del 08/09 ya publicado) también
+  // quedan corregidas solas en la próxima publicación, sin necesidad de
+  // borrar nada a mano: como todas las landings de una misma tienda
+  // comparten este mismo archivo de plantilla, con reparar el archivo una
+  // vez alcanza para que TODAS esas landings (viejas y nuevas) se vean
+  // limpias. Si algo falla acá (por ejemplo, el permiso de temas todavía no
+  // está activo), no debe tumbar la publicación del producto — solo queda
+  // sin la plantilla especial (o sin la reparación) por esta vez.
   private async asegurarPlantillaLanding(credenciales: ShopifyCredenciales, avisos?: string[]): Promise<void> {
     try {
       const temaId = await this.obtenerTemaActivoId(credenciales);
@@ -1031,6 +1069,7 @@ export class ShopifyService {
         this.simplificarSeccionProducto(base);
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
+        this.limpiarSeccionesAjenas(base);
         await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(base, null, 2));
         this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" creada en el tema.`);
       } else {
@@ -1053,6 +1092,7 @@ export class ShopifyService {
           if (!plantilla.order.includes('landing_imagenes_auto')) {
             plantilla.order = ['landing_imagenes_auto', ...plantilla.order];
           }
+          this.limpiarSeccionesAjenas(plantilla);
           if (JSON.stringify(plantilla) !== antes) {
             await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(plantilla, null, 2));
             this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" existente reparada.`);
