@@ -546,8 +546,21 @@ export class ImageEditService {
             o.precio2Venta ? `2 unidades: ${o.precio2Venta}${o.precio2Comparacion ? ` (antes ${o.precio2Comparacion})` : ''}` : null,
             o.precio3Venta ? `3 unidades: ${o.precio3Venta}${o.precio3Comparacion ? ` (antes ${o.precio3Comparacion})` : ''}` : null,
           ].filter(Boolean);
+          // Pedido 09/09 (reportado como "delicado"/"no puede pasar"): en una generación real
+          // apareció un 3er nivel de precio inventado ("3 unidades + bolso deportivo") que el
+          // usuario nunca configuró — f.oferta acá solo tenía 1 o 2 niveles reales (filas.length
+          // < 3). Causa raíz: igual que con los colores, la descripción de la plantilla de
+          // referencia (PLANTILLA_DESCRIPCIONES) describe su propio layout de ejemplo en prosa
+          // estructural (ej. "3 tarjetas de precio, la tercera con un bolso de regalo") — ese
+          // texto NO está entre comillas, así que neutralizarTextoLiteral() no lo toca, y la
+          // instrucción de arriba de "seguir la disposición de la plantilla con fidelidad" hace
+          // que el modelo complete esa 3ra tarjeta/bono inventando un precio y un producto de
+          // regalo de la nada para poder "calcar" la estructura. Fix: igual que con el color, acá
+          // los datos REALES (filas) tienen prioridad total sobre la plantilla — se le prohíbe
+          // explícitamente inventar niveles de precio o regalos/bonos que no estén en esta lista,
+          // aunque la plantilla muestre más cantidad.
           partes.push(
-            `Genera una sección de Oferta con estos precios exactos (divisa ${o.divisa || 'USD'}): ${filas.join(' · ')}.`,
+            `Genera una sección de Oferta con estos precios exactos (divisa ${o.divisa || 'USD'}) y SOLO estos: ${filas.join(' · ')}. Estos son los ÚNICOS ${filas.length} nivel(es)/paquete(s) de precio que existen para este producto — no importa cuántas tarjetas o niveles de precio muestre la plantilla de referencia (ver descripción de layout más abajo): la CANTIDAD de niveles a generar es siempre ${filas.length}, ni uno más. Si la plantilla de referencia muestra más tarjetas/niveles de los que hay acá (por ejemplo, muestra 3 pero acá solo hay ${filas.length}), generá solo ${filas.length} y usá el espacio sobrante para distribuir mejor esas mismas, agrandarlas o dejar más aire en la composición — nunca completando el espacio con un paquete, precio o "antes/ahora" inventado. Tampoco agregues ningún producto de regalo, bono u obsequio (bolso, botella, cartuchera, remera, accesorio, etc.) que no esté mencionado en estos precios — ni siquiera si la plantilla de referencia describe uno como parte de su propio diseño de ejemplo: eso pertenece a OTRO producto ajeno a este pedido. Todo precio, cantidad y comparación "antes/ahora" que aparezca escrito en la imagen debe ser exactamente uno de los de esta lista, sin inventar ni un número ni un ítem extra.`,
           );
         }
         break;
@@ -632,8 +645,15 @@ export class ImageEditService {
     // instrucción de color de arriba también es incondicional desde el pedido del 09/09. Vuelve a
     // decir "es el color real del producto" (no un hex fijo) porque volvimos a la cuarta vuelta:
     // que la IA lo reconozca ella misma en la foto, sin un cálculo nuestro de por medio.
+    // Pedido 09/09: se agrega un 5to punto SOLO para la sección Oferta — mismo caso del 3er
+    // nivel de precio + bolso inventados. Va condicional (no aplica a otras secciones) porque
+    // solo la Oferta tiene niveles de precio cuya cantidad puede no coincidir con la plantilla.
+    const puntoOferta =
+      input.seccion === 'oferta'
+        ? ` 5) la cantidad de niveles/paquetes de precio que se ven en la imagen es EXACTAMENTE la que se dio arriba, ni uno más aunque la plantilla muestre más tarjetas — y no agregaste ningún regalo/bono/producto extra (bolso, botella, etc.) que no esté en esos precios.`
+        : '';
     partes.push(
-      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia (su envase/etiqueta) — NO el color de lo que lo rodea en esa foto, ni el que haya descrito la plantilla de referencia.`,
+      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia (su envase/etiqueta) — NO el color de lo que lo rodea en esa foto, ni el que haya descrito la plantilla de referencia.${puntoOferta}`,
     );
 
     partes.push(
