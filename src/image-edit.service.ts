@@ -465,6 +465,20 @@ export class ImageEditService {
         partes.push(
           `IMPORTANTE: la plantilla de referencia SÍ muestra una persona en su composición (ver descripción de arriba). La imagen que generes DEBE incluir una persona — nunca generes la escena solo con el producto y el fondo, omitiendo a la persona. Ubícala en la misma posición y con una pose/actividad similar a la descrita.`,
         );
+        // Pedido 09/09 (bug reportado con captura real: un producto electrónico —no una
+        // bebida— terminó dibujado pegado a la boca de la persona, cabeza inclinada hacia
+        // atrás, como si se lo estuviera bebiendo). Causa raíz: la mayoría de las 281
+        // descripciones de plantilla se redactaron sobre un suplemento en polvo tipo shaker
+        // (36 de ellas literalmente dicen "bebiendo" — ver conteo hecho a mano sobre el
+        // archivo), y la instrucción de arriba de seguir la pose "con fidelidad" hacía que el
+        // modelo copiara esa ACCIÓN puntual tal cual, sin importar si tiene sentido para el
+        // producto real de este pedido. Igual que ya se hizo con el color (la plantilla manda
+        // en POSICIÓN, pero el producto real manda en color), acá la plantilla debe mandar en
+        // POSICIÓN/COMPOSICIÓN general de la persona, pero la ACCIÓN concreta con el producto
+        // tiene que ser una que tenga sentido real para el producto que se le dio.
+        partes.push(
+          `Si la descripción de la plantilla menciona una acción puntual de la persona con el producto (por ejemplo "bebiendo", "tomando un trago", "aplicándose", "rociando"), esa acción pertenece al producto de EJEMPLO de la plantilla, no necesariamente al producto real de este pedido — adaptala. La persona debe interactuar con el producto real de la forma en que ESE producto se usa de verdad (sostenerlo, mostrarlo, aplicarlo, usarlo según corresponda a lo que es) — nunca fuerces una acción sin sentido para el producto real solo por copiar la plantilla al pie de la letra (ej. no muestres a alguien "bebiendo" o llevándose a la boca un producto que no es una bebida ni algo que se ingiera). Conservá sí la posición y composición general que describe la plantilla (dónde está la persona, hacia dónde mira, qué tan cerca sostiene el producto), pero la acción específica tiene que ser coherente con el producto real que se te dio.`,
+        );
       } else if (sinPersonaExplicito) {
         partes.push(
           `La plantilla de referencia NO muestra ninguna persona, solo el producto y elementos gráficos/de texto — no agregues ninguna persona a la composición, mantenla enfocada exclusivamente en el producto.`,
@@ -653,7 +667,7 @@ export class ImageEditService {
         ? ` 5) la cantidad de niveles/paquetes de precio que se ven en la imagen es EXACTAMENTE la que se dio arriba, ni uno más aunque la plantilla muestre más tarjetas — y no agregaste ningún regalo/bono/producto extra (bolso, botella, etc.) que no esté en esos precios.`
         : '';
     partes.push(
-      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia (su envase/etiqueta) — NO el color de lo que lo rodea en esa foto, ni el que haya descrito la plantilla de referencia.${puntoOferta}`,
+      `Antes de terminar, revisa estos puntos no negociables: 1) el resultado es una sección de "${etiquetaSeccion}" y de ningún otro tipo (no una portada/Hero de venta directa ni una grilla de Beneficios, salvo que el tipo pedido sea justamente ese); 2) la disposición de los elementos coincide con la plantilla de referencia descrita arriba, no es una composición libre; 3) ${tienePersonaEnPlantilla ? 'la imagen SÍ incluye una persona, en la posición descrita — nunca la omitas — y la acción/interacción de esa persona con el producto tiene sentido real para ESTE producto (nunca "bebiéndolo" ni llevándolo a la boca si no es algo que se beba o se ingiera, aunque la plantilla de ejemplo muestre esa acción)' : 'no agregaste ningún elemento que pertenezca a otro tipo de sección'}; 4) el color de fondo y acentos es el color real del PRODUCTO de la foto de referencia (su envase/etiqueta) — NO el color de lo que lo rodea en esa foto, ni el que haya descrito la plantilla de referencia.${puntoOferta}`,
     );
 
     partes.push(
