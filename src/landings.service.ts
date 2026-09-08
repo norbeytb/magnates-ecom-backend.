@@ -29,6 +29,15 @@ export interface RegistroLanding {
   num: number;
   items: ItemLanding[];
   botonFlotante?: boolean;
+  // Texto/color propios del botón flotante (uno solo por landing, no un item
+  // de la secuencia — ver realBotonFlotanteHtml en el frontend). Agregados
+  // 10/09 junto con "aplicar a todos" (Texto del botón / color con confirm):
+  // ya se mandaban desde el frontend hacía tiempo pero nunca se guardaban acá
+  // (faltaban las columnas), así que se perdían al recargar el taller —
+  // ahora si quedan.
+  botonFlotanteTexto?: string;
+  botonFlotanteColor?: string;
+  botonFlotanteColorTexto?: string;
   // Interruptor global "Agregar Movimiento" del Editor de Elementos — anima
   // (shake) TODOS los botones "COMPRAR AHORA" de la landing (intercalados +
   // flotante) cuando está en true. Ver shopify.service.ts (seccionLandingLiquid)
@@ -63,6 +72,9 @@ export interface RegistroLanding {
 export interface CambiosLanding {
   items?: ItemLanding[];
   botonFlotante?: boolean;
+  botonFlotanteTexto?: string;
+  botonFlotanteColor?: string;
+  botonFlotanteColorTexto?: string;
   movimiento?: boolean;
   animacionBoton?: string;
   iconoBoton?: string;
@@ -122,6 +134,11 @@ export class LandingsService implements OnModuleInit {
       // el taller y el "{%- unless animacion_boton -%}" en seccionLandingLiquid.
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS animacion_boton TEXT;`);
       await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS icono_boton TEXT;`);
+      // Texto/color del botón flotante — pedido 10/09 (ver nota grande en
+      // RegistroLanding de arriba sobre por qué faltaban).
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS boton_flotante_texto TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS boton_flotante_color TEXT;`);
+      await this.pool.query(`ALTER TABLE landings_ensambladas ADD COLUMN IF NOT EXISTS boton_flotante_color_texto TEXT;`);
       this.logger.log('Conectado a PostgreSQL — tabla "landings_ensambladas" lista.');
     } catch (error) {
       this.logger.error('No se pudo conectar/crear la tabla de landings ensambladas: ' + (error as Error).message);
@@ -135,13 +152,16 @@ export class LandingsService implements OnModuleInit {
     if (!this.pool) return null;
     try {
       const resultado = await this.pool.query(
-        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, movimiento, animacion_boton, icono_boton, barra, barra_texto, barra_color, barra_color_texto, barra_velocidad, usuario_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+        `INSERT INTO landings_ensambladas (nombre_producto, num, items_json, boton_flotante, boton_flotante_texto, boton_flotante_color, boton_flotante_color_texto, movimiento, animacion_boton, icono_boton, barra, barra_texto, barra_color, barra_color_texto, barra_velocidad, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
         [
           registro.nombreProducto,
           registro.num,
           JSON.stringify(registro.items),
           !!registro.botonFlotante,
+          registro.botonFlotanteTexto ?? null,
+          registro.botonFlotanteColor ?? null,
+          registro.botonFlotanteColorTexto ?? null,
           !!registro.movimiento,
           registro.animacionBoton ?? null,
           registro.iconoBoton ?? null,
@@ -186,6 +206,18 @@ export class LandingsService implements OnModuleInit {
     if (cambios.botonFlotante !== undefined) {
       sets.push(`boton_flotante = $${i++}`);
       values.push(!!cambios.botonFlotante);
+    }
+    if (cambios.botonFlotanteTexto !== undefined) {
+      sets.push(`boton_flotante_texto = $${i++}`);
+      values.push(cambios.botonFlotanteTexto);
+    }
+    if (cambios.botonFlotanteColor !== undefined) {
+      sets.push(`boton_flotante_color = $${i++}`);
+      values.push(cambios.botonFlotanteColor);
+    }
+    if (cambios.botonFlotanteColorTexto !== undefined) {
+      sets.push(`boton_flotante_color_texto = $${i++}`);
+      values.push(cambios.botonFlotanteColorTexto);
     }
     if (cambios.movimiento !== undefined) {
       sets.push(`movimiento = $${i++}`);

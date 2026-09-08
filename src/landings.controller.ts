@@ -27,6 +27,9 @@ export class LandingsController {
       num: number;
       items: any[];
       botonFlotante?: boolean;
+      botonFlotanteTexto?: string;
+      botonFlotanteColor?: string;
+      botonFlotanteColorTexto?: string;
       movimiento?: boolean;
       animacionBoton?: string;
       iconoBoton?: string;
@@ -48,6 +51,9 @@ export class LandingsController {
     body: {
       items?: any[];
       botonFlotante?: boolean;
+      botonFlotanteTexto?: string;
+      botonFlotanteColor?: string;
+      botonFlotanteColorTexto?: string;
       movimiento?: boolean;
       animacionBoton?: string;
       iconoBoton?: string;
