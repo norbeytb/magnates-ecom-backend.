@@ -764,16 +764,21 @@ export class ShopifyService {
     // se deja además como respaldo (por si algún visitante tiene JavaScript
     // desactivado), pero el script es el que manda.
     '              class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
-    // Pedido 10/09: el ícono ya NO va en línea junto al texto — Norbey mandó
-    // una captura del botón REAL de Releasit ("Pídela y Paga en Casa", el
-    // mismo al que este botón le hace clic — ver el comentario grande de
-    // arriba) mostrando su ícono como una placa oscura chiquita, superpuesta
-    // en la esquina superior izquierda del botón, no al lado del texto. Para
-    // calcarlo hace falta "position:relative" en el botón (agregado abajo) y
-    // envolver el ícono en un <span> con "position:absolute" — el texto
-    // sigue centrado solo, como antes.
+    // Pedido 10/09, corregido el 08/09 con la captura real del botón de
+    // Releasit: el ícono va SIN ningún fondo relleno (color plano, igual que
+    // el texto) y fijo a la izquierda del botón — no una placa oscura ni
+    // pegado al texto en el centro. Se probaron dos diseños antes de este:
+    // (1) superpuesto en la esquina con top negativo — mordía la imagen de
+    // arriba porque este botón no tiene colchón de padding antes (el div que
+    // lo envuelve tiene padding:0 !important); (2) placa oscura en línea
+    // junto al texto — Norbey aclaró que el ícono real no lleva fondo. Ahora:
+    // position:absolute con top:50% + translateY(-50%), SIN ningún offset
+    // negativo, así el ícono siempre queda contenido adentro del botón
+    // (nunca se sale ni tapa nada de arriba) pero pegado a la izquierda como
+    // en la foto real. El texto sigue centrado solo vía text-align:center —
+    // al ser el ícono position:absolute, no lo empuja ni lo descentra.
     '              style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
-    '            >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; top:-9px !important; left:14px !important; width:26px !important; height:26px !important; border-radius:7px !important; background:#1c2733 !important; color:#fff !important; display:flex !important; align-items:center !important; justify-content:center !important; box-shadow:0 2px 6px rgba(0,0,0,0.35) !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '            >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ paso.colorTexto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
@@ -815,11 +820,12 @@ export class ShopifyService {
     '      type="button"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
     '      class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
-    // Mismo cambio de ícono (placa superpuesta en la esquina, no en línea con
-    // el texto) que el botón intercalado de arriba — ver el comentario grande
-    // ahí sobre por qué (captura del botón real de Releasit que mandó Norbey).
+    // Mismo cambio que el botón intercalado de arriba — ícono sin fondo
+    // relleno, fijo a la izquierda del botón con position:absolute pero sin
+    // ningún offset negativo (siempre contenido adentro). Ver el comentario
+    // grande ahí.
     '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
-    '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; top:-9px !important; left:14px !important; width:26px !important; height:26px !important; border-radius:7px !important; background:#1c2733 !important; color:#fff !important; display:flex !important; align-items:center !important; justify-content:center !important; box-shadow:0 2px 6px rgba(0,0,0,0.35) !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '  </div>',
     '{%- endif -%}',
     // El pulso lo mueve este script (ver el comentario largo junto al botón
