@@ -16,7 +16,7 @@
 // contraseña?" en la pantalla de inicio de sesión del taller) y el
 // administrador entra acá a cambiarle la contraseña directamente.
 
-import { Body, Controller, ForbiddenException, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
@@ -71,5 +71,14 @@ export class AdminController {
   ) {
     this.exigirAdmin(usuario);
     return this.authService.bloquearUsuario(Number(id), !!dto?.bloqueado);
+  }
+
+  // Elimina una cuenta para siempre (no es lo mismo que bloquear — ver la
+  // nota grande en auth.service.ts, eliminarUsuario). El frontend ya pide
+  // confirmación explícita antes de llamar acá.
+  @Delete('usuarios/:id')
+  async eliminar(@Param('id') id: string, @UsuarioActual() usuario: UsuarioAutenticado) {
+    this.exigirAdmin(usuario);
+    return this.authService.eliminarUsuario(Number(id));
   }
 }

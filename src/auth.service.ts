@@ -310,6 +310,47 @@ export class AuthService implements OnModuleInit {
     return { ok: true, bloqueado };
   }
 
+  // Pedido 09/09: agrega el botón "Eliminar" al panel de administración —
+  // a diferencia de bloquearUsuario() (que solo corta el acceso pero deja
+  // todo intacto por si hay que revertirlo), esto borra la cuenta para
+  // siempre. Es IRREVERSIBLE: no hay una tabla de "usuarios eliminados" ni
+  // manera de deshacerlo — el frontend ya pide confirmación explícita antes
+  // de llamar a este método, pero igual queda documentado acá.
+  //
+  // Qué se borra y qué NO: se borra la fila de "usuarios" y su fila en
+  // "integraciones" (ahí vive su clave de fal.ai y sus credenciales de
+  // Shopify — no tiene sentido dejarlas guardadas para una cuenta que ya no
+  // existe). El resto de sus datos (historial de piezas generadas, landings
+  // ensambladas, productos, plantillas guardadas) NO se borra — quedan en la
+  // base de datos con su usuario_id apuntando a una cuenta que ya no existe,
+  // exactamente el mismo caso que ya maneja el sistema para datos viejos de
+  // ANTES de que existieran las cuentas (usuario_id NULL, ver nota arriba de
+  // historial.service.ts/landings.service.ts/productos.service.ts): esas
+  // filas no le aparecen a nadie más (cada consulta ya filtra por
+  // usuario_id), así que quedan simplemente huérfanas e invisibles, sin
+  // riesgo de que otra persona las vea ni de romper ninguna otra tabla (ninguna
+  // de esas tablas tiene una restricción de llave foránea hacia "usuarios").
+  // No se borran de una para no complicar esto con años de tablas distintas
+  // por un caso que además no expone nada sensible (a diferencia de las
+  // claves de integraciones, que sí se borran arriba).
+  async eliminarUsuario(usuarioId: number): Promise<{ ok: true }> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('No se pudo eliminar la cuenta: falta configurar la base de datos en el backend.');
+    }
+    const resultado = await this.pool.query(`SELECT id, email FROM usuarios WHERE id = $1`, [usuarioId]);
+    const fila = resultado.rows[0];
+    if (!fila) {
+      throw new NotFoundException('No existe ningún usuario con ese id.');
+    }
+    if (this.esAdminEmail(fila.email)) {
+      throw new ConflictException('No podés eliminar una cuenta de administrador.');
+    }
+    await this.pool.query(`DELETE FROM integraciones WHERE usuario_id = $1`, [usuarioId]);
+    await this.pool.query(`DELETE FROM usuarios WHERE id = $1`, [usuarioId]);
+    this.logger.log(`Un administrador eliminó la cuenta ${fila.email} (id=${fila.id}).`);
+    return { ok: true };
+  }
+
   async restablecerPasswordAdmin(usuarioId: number, password: string): Promise<{ ok: true }> {
     if (!this.pool) {
       throw new InternalServerErrorException('No se pudo restablecer la contraseña: falta configurar la base de datos en el backend.');
