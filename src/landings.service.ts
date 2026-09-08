@@ -56,7 +56,7 @@ export interface RegistroLanding {
   // de la landing (intercalados + flotante), en vez del camión fijo de
   // antes — ver ICONOS_BOTON en el frontend y el "{% case %}" de
   // seccionLandingLiquid en shopify.service.ts para las claves válidas
-  // ('carrito'|'bolsa'|'tarjeta'|'etiqueta'|'camion'|'flecha'|'caja'|'ninguno').
+  // ('carrito'|'bolsa'|'canasta'|'tarjeta'|'etiqueta'|'camion'|'flecha'|'caja'|'bolso'|'ninguno').
   iconoBoton?: string;
   // Tarjeta "Agregar Barra de Movimiento": barra de texto que se desliza
   // sola, arriba de todo el resto de la landing.
