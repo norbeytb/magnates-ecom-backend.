@@ -941,15 +941,73 @@ export class ShopifyService {
     // adentro de mi contenedor?" para siempre, y si en algún momento deja
     // de estarlo (porque Releasit lo recreó o lo movió a otro lado), lo trae
     // de vuelta al instante — sin límite de tiempo, sin desconectarse nunca.
+    //
+    // Pedido 09/09 (4): Norbey pidió que, si el estudiante agrega VARIOS
+    // botones "comprar" en la misma landing (2, 3, 4...), TODOS se vean y
+    // funcionen como el botón real de Releasit — no solo uno con el resto
+    // mostrando nuestro diseño genérico. Como Releasit solo crea UN único
+    // elemento real por página (no existen "varios originales"), el real
+    // solo puede vivir físicamente en UNO de los huecos (el primero que
+    // aparece en la página, ver "principal" abajo). A los demás huecos NO
+    // se les deja el botón genérico nuestro: se les pone un botón nuevo que
+    // COPIA el aspecto visual actual del botón real (mismo texto/ícono,
+    // mismo color, misma tipografía, mismo tamaño de letra, mismo radio de
+    // bordes, mismo relleno) leyendo su estilo ya calculado en pantalla, y
+    // que al tocarlo dispara el clic del botón real de Releasit por
+    // detrás — así la compra sí pasa por Releasit igual que si el cliente
+    // hubiera tocado el original, y visualmente no se nota cuál es "la
+    // copia". Esta copia se vuelve a generar sola cada vez que cambia el
+    // contenido del botón real (por ejemplo si Releasit lo actualiza), para
+    // no quedar con una copia vieja/desactualizada.
     '<script>',
     '(function(){',
+    '  function copiarEstiloBotonReal(real){',
+    '    var estilo = window.getComputedStyle(real);',
+    '    return (',
+    '      "all:revert !important; box-sizing:border-box !important; display:block !important; " +',
+    '      "width:100% !important; margin:0 !important; cursor:pointer !important; border:0 !important; " +',
+    '      "appearance:none !important; -webkit-appearance:none !important; " +',
+    '      "font-family:" + estilo.fontFamily + " !important; font-size:" + estilo.fontSize + " !important; " +',
+    '      "font-weight:" + estilo.fontWeight + " !important; letter-spacing:" + estilo.letterSpacing + " !important; " +',
+    '      "line-height:" + estilo.lineHeight + " !important; text-align:" + estilo.textAlign + " !important; " +',
+    '      "text-transform:" + estilo.textTransform + " !important; color:" + estilo.color + " !important; " +',
+    '      "background:" + estilo.backgroundColor + " !important; box-shadow:" + estilo.boxShadow + " !important; " +',
+    '      "border-radius:" + estilo.borderTopLeftRadius + " !important; " +',
+    '      "padding:" + estilo.paddingTop + " " + estilo.paddingRight + " " + estilo.paddingBottom + " " + estilo.paddingLeft + " !important;"',
+    '    );',
+    '  }',
+    '  function firmaBotonReal(real){',
+    '    return real.innerHTML + "|" + copiarEstiloBotonReal(real);',
+    '  }',
+    '  function clonarBotonReal(hueco, real, firma){',
+    '    var clon = document.createElement("button");',
+    '    clon.type = "button";',
+    '    clon.innerHTML = real.innerHTML;',
+    '    clon.setAttribute("style", copiarEstiloBotonReal(real));',
+    '    clon.addEventListener("click", function(){',
+    '      var actual = document.getElementById("rsi_buy_now_button");',
+    '      if(actual){ actual.click(); }',
+    '    });',
+    '    hueco.innerHTML = "";',
+    '    hueco.appendChild(clon);',
+    '    hueco.setAttribute("data-ecom-rsi-firma", firma);',
+    '  }',
     '  function asegurarBotonReal(){',
     '    var real = document.getElementById("rsi_buy_now_button");',
-    '    var slot = document.querySelector(".ecomMagnatesRsiSlot");',
-    '    if(!real || !slot) return;',
-    '    if(real.parentNode !== slot){',
-    '      slot.innerHTML = "";',
-    '      slot.appendChild(real);',
+    '    var huecos = document.querySelectorAll(".ecomMagnatesRsiSlot");',
+    '    if(!real || !huecos.length) return;',
+    '    var principal = huecos[0];',
+    '    if(real.parentNode !== principal){',
+    '      principal.innerHTML = "";',
+    '      principal.appendChild(real);',
+    '      principal.removeAttribute("data-ecom-rsi-firma");',
+    '    }',
+    '    var firma = firmaBotonReal(real);',
+    '    for(var i = 1; i < huecos.length; i++){',
+    '      var hueco = huecos[i];',
+    '      if(hueco.getAttribute("data-ecom-rsi-firma") !== firma){',
+    '        clonarBotonReal(hueco, real, firma);',
+    '      }',
     '    }',
     '  }',
     '  asegurarBotonReal();',
