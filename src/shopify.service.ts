@@ -1055,11 +1055,13 @@ export class ShopifyService {
   private readonly seccionControladorLiquid = [
     '{%- comment -%}',
     '  Sección creada automáticamente por Ecom Magnates: controla toda la',
-    '  landing (animaciones, barra de movimiento, botón flotante y el',
-    '  mecanismo que decide si mostrar el botón real de Releasit/EasySell o',
-    '  el de respaldo en cada posición). Va SIEMPRE, una sola vez, primera en',
-    '  el orden de la plantilla. No editar a mano, se sobrescribe si el',
-    '  backend la vuelve a necesitar.',
+    '  landing (animaciones, barra de movimiento y el botón flotante). Va',
+    '  SIEMPRE, una sola vez, primera en el orden de la plantilla. El botón',
+    '  de respaldo de cada posición (ver landing-respaldo-boton) NUNCA se le',
+    '  muestra al cliente — solo existe como referencia visual en el listado',
+    '  de secciones del editor del tema; lo que el cliente ve siempre es el',
+    '  bloque real de Releasit/EasySell, en su propia sección "apps_...".',
+    '  No editar a mano, se sobrescribe si el backend la vuelve a necesitar.',
     '{%- endcomment -%}',
     '{%- assign animacion_boton = product.metafields.ecom_magnates.landing_animacion_boton.value -%}',
     '{%- unless animacion_boton -%}',
@@ -1105,15 +1107,24 @@ export class ShopifyService {
     '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBtnShake{0%,80%{transform:translateX(0);}84%{transform:translateX(-5px);}88%{transform:translateX(4px);}92%{transform:translateX(-3px);}96%{transform:translateX(2px);}100%{transform:translateX(0);}}@keyframes ecomMagnatesBtnBounce{0%,68%,100%{transform:translateY(0);}75%{transform:translateY(-8px);}82%{transform:translateY(0);}88%{transform:translateY(-4px);}94%{transform:translateY(0);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
     '<style>#shopify-section-announcement-bar,.section-announcement-bar,.announcement-bar,[class*="announcement-bar"],[id*="announcement-bar"],.horizontal-ticker{display:none!important;}</style>',
     '<style>footer,#shopify-section-footer,.footer,.site-footer{display:none!important;}</style>',
-    // Cada sección "apps_..." (una por posición de botón, más "apps_flotante"
-    // si aplica) arranca ESCONDIDA por CSS — así nunca se ve un hueco en
-    // blanco mientras se espera a que cargue la página. El script de más
-    // abajo (una vez que TODO el HTML ya existe) la muestra si de verdad
-    // dibujó el botón real, o si no, muestra el respaldo de esa misma
-    // posición en su lugar. Este <style> no depende de dónde esté esta
-    // sección en el orden de la plantilla — un <style> aplica a toda la
-    // página sin importar en qué parte del HTML esté escrito.
-    '<style>[id^="shopify-section-apps_"]{display:none;}{% if boton_flotante %}body{padding-bottom:66px;}{% endif %}</style>',
+    // Pedido 09/09 (7): Norbey aclaró que el botón de respaldo NUNCA se le
+    // debe mostrar al cliente — solo sirve como referencia visual en el
+    // editor del tema para ubicar dónde va cada botón de Releasit/EasySell,
+    // nunca como reemplazo real. Antes acá se escondían por CSS las
+    // secciones "apps_..." hasta que un script (más abajo, ya eliminado)
+    // confirmaba que sí habían dibujado el botón real, y si no, mostraba el
+    // respaldo en su lugar — pero como esas apps suelen tardar un instante
+    // en cargar su propio botón, el script a veces decidía "todavía no hay
+    // nada" antes de tiempo, dejaba visible el respaldo, y cuando la app
+    // terminaba de cargar el suyo quedaban los dos pegados (bug reportado el
+    // 09/09 con captura, dos botones de "comprar" apilados). Ahora las
+    // secciones "apps_..." se muestran DIRECTO, sin ningún script de por
+    // medio decidiendo nada — igual que en la plantilla armada a mano que
+    // Norbey mandó de referencia, donde nunca hizo falta esto. Lo único que
+    // sigue necesitando CSS es la posición fija del botón flotante (ver
+    // abajo), porque "apps" por sí sola no sabe que tiene que ir pegada
+    // abajo de la pantalla.
+    '<style>{% if boton_flotante %}body{padding-bottom:66px;}#shopify-section-apps_flotante{position:fixed !important; left:0 !important; right:0 !important; bottom:0 !important; z-index:999 !important; background:#fff !important; box-shadow:0 -2px 12px rgba(0,0,0,0.18) !important; padding:10px 14px !important;}{% endif %}</style>',
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
@@ -1124,8 +1135,9 @@ export class ShopifyService {
     '  </div>',
     '{%- endif -%}',
     // Botón flotante: el bloque REAL vive en su propia sección "apps_flotante"
-    // (ver construirPlantillaLandingProducto) — acá solo va el de respaldo,
-    // que el script de abajo muestra si esa sección vecina no dibujó nada.
+    // (ver construirPlantillaLandingProducto, más abajo) — acá solo queda,
+    // permanentemente oculto, el de respaldo (ver la nota grande de más
+    // arriba sobre por qué el respaldo ya no se muestra nunca).
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
     '  <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
     '    <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
@@ -1184,46 +1196,15 @@ export class ShopifyService {
     '  requestAnimationFrame(tick);',
     '});',
     '</script>',
-    // Pedido 09/09 (6): reemplaza el mecanismo de ".ecomMagnatesRsiHueco" (que
-    // necesitaba que el bloque real y el respaldo estuvieran en la MISMA
-    // sección) — ahora cada posición de botón es una sección "apps_<grupo>"
-    // (el bloque real) y una sección "landing-respaldo-boton" separada (el
-    // respaldo, con "data-ecom-grupo" marcando a qué posición pertenece). El
-    // script recorre cada respaldo, busca su sección "apps" vecina por el id
-    // que Shopify le pone automáticamente a toda sección
-    // ("shopify-section-<clave>") y muestra una u otra según si la sección
-    // de la app realmente dibujó algo.
-    '<script>',
-    'document.addEventListener("DOMContentLoaded", function(){',
-    '  function tieneContenidoReal(nodo){',
-    '    if(!nodo) return false;',
-    '    if(nodo.querySelector("button, a, input, iframe")) return true;',
-    '    return nodo.textContent.replace(/\\s+/g, "") !== "";',
-    '  }',
-    '  var respaldos = document.querySelectorAll("[data-ecom-grupo]");',
-    '  for(var i = 0; i < respaldos.length; i++){',
-    '    var el = respaldos[i];',
-    '    var grupo = el.getAttribute("data-ecom-grupo");',
-    '    var appsWrap = document.getElementById("shopify-section-apps_" + grupo);',
-    '    if(tieneContenidoReal(appsWrap)){',
-    '      appsWrap.style.display = "block";',
-    '      if(grupo === "flotante"){',
-    '        appsWrap.style.position = "fixed";',
-    '        appsWrap.style.left = "0";',
-    '        appsWrap.style.right = "0";',
-    '        appsWrap.style.bottom = "0";',
-    '        appsWrap.style.zIndex = "999";',
-    '        appsWrap.style.background = "#fff";',
-    '        appsWrap.style.boxShadow = "0 -2px 12px rgba(0,0,0,0.18)";',
-    '        appsWrap.style.padding = "10px 14px";',
-    '      }',
-    '    } else if(el){',
-    '      el.style.display = "block";',
-    '    }',
-    '  }',
-    '});',
-    '</script>',
     '',
+    // Pedido 09/09 (7): acá antes había un segundo script que recorría cada
+    // "landing-respaldo-boton", buscaba su sección "apps_<grupo>" vecina por
+    // el id que Shopify le pone automáticamente a toda sección
+    // ("shopify-section-<clave>") y mostraba una u otra según si la app ya
+    // había dibujado algo. Se eliminó por completo: ya no hace falta ningún
+    // script decidiendo entre las dos — el respaldo queda fijo, oculto para
+    // siempre, y la sección "apps_..." se muestra directo (ver el <style>
+    // grande más arriba, con la explicación completa del bug que causaba).
     '{% schema %}',
     '{',
     '  "name": "Landing controlador",',
@@ -1260,17 +1241,19 @@ export class ShopifyService {
   ].join('\n');
 
   // Una instancia de esta sección por cada POSICIÓN de botón (intercalado o
-  // flotante) — dibuja el botón de RESPALDO (arranca oculto). El bloque
-  // real de Releasit/EasySell para esa misma posición vive en su propia
-  // sección "apps_<grupo>" vecina (ver construirPlantillaLandingProducto);
-  // el script de "landing-controlador" decide cuál de las dos mostrar.
+  // flotante) — dibuja el botón de RESPALDO, que queda SIEMPRE oculto (ver
+  // el comentario grande en "seccionControladorLiquid" sobre por qué). El
+  // bloque real de Releasit/EasySell para esa misma posición vive en su
+  // propia sección "apps_<grupo>" vecina (ver construirPlantillaLandingProducto),
+  // y esa es la única que el cliente llega a ver.
   private readonly seccionRespaldoBotonLiquid = [
     '{%- comment -%}',
     '  Sección creada automáticamente por Ecom Magnates: botón de comprar de',
-    '  RESPALDO para una posición puntual — arranca oculto, "landing-',
-    '  controlador" lo muestra solo si la sección "apps" real de esa misma',
-    '  posición no logró dibujar nada (tienda sin Releasit/EasySell',
-    '  instalado). No editar a mano.',
+    '  RESPALDO para una posición puntual — queda SIEMPRE oculto, nunca se le',
+    '  muestra al cliente. Solo existe como referencia: en el listado de',
+    '  secciones del editor del tema marca exactamente dónde va el bloque',
+    '  real de Releasit/EasySell (la sección "apps_..." vecina). No editar a',
+    '  mano.',
     '{%- endcomment -%}',
     '{%- assign animacion_boton = product.metafields.ecom_magnates.landing_animacion_boton.value -%}',
     '{%- unless animacion_boton -%}',
