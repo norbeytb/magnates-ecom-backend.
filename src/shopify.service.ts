@@ -728,8 +728,9 @@ export class ShopifyService {
     // versión vieja de la app (se llamaba "Releasit") y otro para la
     // versión nueva (se renombró a "EasySell"), cada estudiante tiene
     // instalada una sola de las dos según cuándo se dio de alta. Con
-    // "{% content_for 'block' %}" (función de Shopify agregada en 2024) se
-    // le puede pedir a Shopify que dibuje ACÁ ese bloque real de la app,
+    // Con "{% render <bloque> %}" (la forma documentada por Shopify para
+    // dibujar un bloque de app, ver "App blocks for themes" en shopify.dev)
+    // se le puede pedir a Shopify que dibuje ACÁ ese bloque real de la app,
     // nativo, sin ningún truco de JavaScript — es Shopify mismo quien lo
     // arma, exactamente igual que si el estudiante lo hubiera puesto a mano
     // en el editor. Como cada estudiante solo tiene UNA de las dos
@@ -737,11 +738,23 @@ export class ShopifyService {
     // app instalada en esa tienda no dibuja nada (Shopify no rompe la
     // página por una referencia a una app que no está instalada, solo la
     // deja vacía) y la que sí corresponde se ve normal.
+    // OJO (11/09, tras varias vueltas fallidas): se probó primero con
+    // "{% content_for 'block', id: ..., type: ... %}" para poder elegir el
+    // bloque exacto por su id — Shopify lo rechazó siempre con "Liquid syntax
+    // error... Error in tag 'content_for 'block'", tanto con id/type sacados
+    // de una propiedad (bloque.id) como con el tipo escrito fijo. Investigando
+    // (docs oficiales + foros), "content_for 'block', type:, id:" resultó ser
+    // una función DISTINTA ("bloques estáticos": declarar un bloque nuevo con
+    // un id/tipo fijo, escrito literal en el código, que Shopify autocompleta
+    // solo) — no sirve para elegir, en tiempo real, uno ya existente entre
+    // varios posibles. Para ESO (nuestro caso: ya sabemos qué bloque
+    // encontramos con "where" y solo queremos dibujar ESE) la forma correcta y
+    // documentada es "render" pasándole directo el bloque encontrado.
     // "asegurarBloquesRealesReleasit" (ver más abajo en el archivo) es quien
     // se encarga de que la plantilla realmente tenga estos dos bloques
     // declarados para esta posición puntual antes de que esta sección
     // intente usarlos — por eso acá se verifica con "section.blocks | where"
-    // que el bloque exista de verdad antes de pedirlo con content_for: si
+    // que el bloque exista de verdad antes de dibujarlo con render: si
     // todavía no se sincronizó (por ejemplo, la primera vez que se sube este
     // cambio, antes de que alguna landing de esa tienda se vuelva a
     // publicar), no se intenta nada raro y se cae directo al botón de
@@ -757,8 +770,8 @@ export class ShopifyService {
     '            {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
     '            {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
     '            <span class="ecomMagnatesRsiHueco">',
-    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- content_for \'block\', id: ecom_clave_old, type: \'shopify://apps/releasit-cod-form/blocks/button-app-block/72faf214-4174-4fec-886b-0d0e8d3af9a2\' -%}{%- endif -%}</span>',
-    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- content_for \'block\', id: ecom_clave_new, type: \'shopify://apps/easysell-cod-form/blocks/app-block/7bfd0a95-6839-4f02-b2ee-896832dbe67e\' -%}{%- endif -%}</span>',
+    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- render ecom_bloque_old -%}{%- endif -%}</span>',
+    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- render ecom_bloque_new -%}{%- endif -%}</span>',
     '            <button',
     '              type="button"',
     '              class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
@@ -813,8 +826,8 @@ export class ShopifyService {
     '    {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
     '    {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
     '    <span class="ecomMagnatesRsiHueco">',
-    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- content_for \'block\', id: ecom_clave_old, type: \'shopify://apps/releasit-cod-form/blocks/button-app-block/72faf214-4174-4fec-886b-0d0e8d3af9a2\' -%}{%- endif -%}</span>',
-    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- content_for \'block\', id: ecom_clave_new, type: \'shopify://apps/easysell-cod-form/blocks/app-block/7bfd0a95-6839-4f02-b2ee-896832dbe67e\' -%}{%- endif -%}</span>',
+    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- render ecom_bloque_old -%}{%- endif -%}</span>',
+    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- render ecom_bloque_new -%}{%- endif -%}</span>',
     '    <button',
     '      type="button"',
     '      class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
