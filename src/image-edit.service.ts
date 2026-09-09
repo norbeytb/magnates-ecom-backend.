@@ -531,6 +531,21 @@ export class ImageEditService {
         partes.push(
           `Si la descripción de la plantilla menciona una acción puntual de la persona con el producto (por ejemplo "bebiendo", "tomando un trago", "aplicándose", "rociando", "lavando", "sumergiendo", "mojando"), esa acción pertenece al producto de EJEMPLO de la plantilla, no necesariamente al producto real de este pedido — adaptala. La persona debe interactuar con el producto real de la forma en que ESE producto se usa de verdad (sostenerlo, mostrarlo, aplicarlo, usarlo según corresponda a lo que es) — nunca fuerces una acción sin sentido para el producto real solo por copiar la plantilla al pie de la letra (ej. no muestres a alguien "bebiendo" o llevándose a la boca un producto que no es una bebida ni algo que se ingiera). Conservá sí la posición y composición general que describe la plantilla (dónde está la persona, hacia dónde mira, qué tan cerca sostiene el producto), pero la acción específica tiene que ser coherente con el producto real que se te dio.`,
         );
+        // Pedido 09/09 (tercer caso real, reportado con captura: una silla gamer/de oficina —
+        // ficha de "Tabla Comparativa"— salió con un hombre sin camisa, en un gimnasio, CARGANDO
+        // la silla, en vez de mostrar la silla siendo usada como lo que es). Causa raíz: es la
+        // misma familia de bug que las dos correcciones de arriba (acción puntual copiada de la
+        // plantilla de ejemplo fitness), pero ahí solo se corrigió la ACCIÓN CON EL PRODUCTO en
+        // sí (agarrarlo/beberlo/aplicarlo) — nunca se le dijo a la IA que el ENTORNO, la
+        // VESTIMENTA y la actividad GENERAL de la persona (más allá del contacto puntual con el
+        // producto) también vienen copiados del ejemplo fitness y hay que adaptarlos. Como la
+        // mayoría de las 281 descripciones de plantilla son de un suplemento deportivo, sin esta
+        // regla la IA sigue poniendo gimnasio/ropa deportiva/cuerpo marcado sin importar qué
+        // producto sea. Se agrega una regla aparte, más amplia, que cubre el entorno completo (no
+        // solo la interacción puntual) y aplica a TODAS las secciones/plantillas por igual.
+        partes.push(
+          `Además del punto anterior, la escena COMPLETA alrededor de la persona —el lugar/entorno donde está, la ropa que lleva puesta y la actividad general que está haciendo (más allá del contacto puntual con el producto)— debe corresponder a cómo se usa este producto real en la vida cotidiana, NUNCA al entorno/ropa/actividad de ejemplo de la plantilla de referencia (que puede ser de un producto de rubro totalmente distinto, ej. un suplemento deportivo). Ejemplos de cómo adaptar esto: si el producto real es un mueble o silla (de oficina, gamer, etc.), mostrá a la persona SENTADA usándolo en un escritorio/oficina/casa con ropa cotidiana — nunca cargándolo, ni en un gimnasio, ni sin camisa mostrando el físico; si es un producto de cocina, ambientá en una cocina con ropa cotidiana; si es un producto de limpieza, en el lugar de la casa que corresponda; y si el producto real SÍ es deportivo/fitness (ropa deportiva, suplementos, equipo de entrenamiento), ahí sí corresponde un gimnasio o entorno de entrenamiento con ropa deportiva. De la plantilla de referencia copiá ÚNICAMENTE la posición/encuadre de la persona (dónde está ubicada en la composición), nunca su entorno, vestimenta ni tipo de actividad de ejemplo si no tienen sentido para este producto puntual.`,
+        );
         // Pedido 09/09 (segundo caso real del mismo tipo de bug, reportado con captura: un
         // producto ELÉCTRICO apareció siendo lavado bajo el chorro de un grifo — ninguna de las
         // 281 descripciones dice literalmente "lavando", así que esta vez no vino de copiar una
