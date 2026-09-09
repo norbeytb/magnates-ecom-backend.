@@ -690,6 +690,42 @@ export class ShopifyService {
     // seguidas e idénticas, así al llegar a -50% (el ancho de una sola
     // copia) el loop vuelve a 0% sin que se note ningún salto.
     '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBtnShake{0%,80%{transform:translateX(0);}84%{transform:translateX(-5px);}88%{transform:translateX(4px);}92%{transform:translateX(-3px);}96%{transform:translateX(2px);}100%{transform:translateX(0);}}@keyframes ecomMagnatesBtnBounce{0%,68%,100%{transform:translateY(0);}75%{transform:translateY(-8px);}82%{transform:translateY(0);}88%{transform:translateY(-4px);}94%{transform:translateY(0);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
+    // Pedido de Norbey (09/09, con captura real de esenciaselecta): la barra
+    // de anuncios del tema (el texto que se desliza arriba de todo, tipo
+    // "LA MEJOR CALIDAD DEL MERCADO / HOY 50% DE DESCUENTO / ENVÍOS
+    // GRATIS...") se sigue viendo arriba de la landing — quiere que
+    // desaparezca SOLO en las landings, sin tocarla en el resto de la
+    // tienda (inicio, colecciones, productos normales). Esa barra NO es
+    // parte de esta sección ni de la plantilla "landing": vive en el
+    // "header group" del tema (compartido por TODA la tienda), así que no
+    // se puede "no incluirla" desde acá — la única forma de no tocar el
+    // resto de la tienda es dejarla existir en el HTML pero esconderla por
+    // CSS, y solo en las páginas que tienen esta sección (como esta sección
+    // solo se agrega a la plantilla "landing", este <style> nunca llega a
+    // las demás páginas). Se apunta al id que Shopify arma automáticamente
+    // para la sección "announcement-bar" del tema (shopify-section-<clave
+    // de la sección>) — "announcement-bar" es el nombre de sección que usa
+    // el tema de referencia de Shopify (Dawn) para esto, y la enorme
+    // mayoría de los temas 2.0 (incluido Shrine) lo heredan tal cual sin
+    // cambiarle el nombre — más un par de selectores de respaldo por clase
+    // para no depender de un único nombre exacto. Si algún tema puntual le
+    // puso un nombre distinto, esto simplemente no encuentra nada y no
+    // rompe nada (no es obligatorio que exista).
+    '<style>#shopify-section-announcement-bar,.section-announcement-bar,.announcement-bar,[class*="announcement-bar"],[id*="announcement-bar"]{display:none!important;}</style>',
+    // Pedido de Norbey (09/09, corrigiendo lo anterior): la franja de abajo
+    // con el botón de PayPal que seguía apareciendo NO era el bloque
+    // "sticky_atc" de la sección "main" (que ya se saca de la plantilla
+    // "landing" completa) — es el PIE DE PÁGINA del tema (footer), que al
+    // igual que la barra de anuncios de arriba vive fuera de esta sección
+    // (footer group, compartido por TODA la tienda) y solo debe ocultarse
+    // en las landings, no en el resto de la tienda. Mismo mecanismo que la
+    // barra de anuncios: se esconde por CSS desde acá (nunca se toca el
+    // pie de página real, sigue intacto en inicio/colecciones/productos
+    // normales) — "footer" es la etiqueta HTML semántica que usan
+    // prácticamente todos los temas 2.0 para esto (más confiable que
+    // adivinar un nombre de clase), con "shopify-section-footer" (nombre de
+    // sección estándar) y ".footer"/".site-footer" de respaldo.
+    '<style>footer,#shopify-section-footer,.footer,.site-footer{display:none!important;}</style>',
     '{%- if barra_movimiento -%}',
     '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
     '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
