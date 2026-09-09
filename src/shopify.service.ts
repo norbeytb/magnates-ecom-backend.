@@ -706,12 +706,23 @@ export class ShopifyService {
     // para la sección "announcement-bar" del tema (shopify-section-<clave
     // de la sección>) — "announcement-bar" es el nombre de sección que usa
     // el tema de referencia de Shopify (Dawn) para esto, y la enorme
-    // mayoría de los temas 2.0 (incluido Shrine) lo heredan tal cual sin
-    // cambiarle el nombre — más un par de selectores de respaldo por clase
-    // para no depender de un único nombre exacto. Si algún tema puntual le
-    // puso un nombre distinto, esto simplemente no encuentra nada y no
-    // rompe nada (no es obligatorio que exista).
-    '<style>#shopify-section-announcement-bar,.section-announcement-bar,.announcement-bar,[class*="announcement-bar"],[id*="announcement-bar"]{display:none!important;}</style>',
+    // mayoría de los temas 2.0 lo heredan tal cual sin cambiarle el nombre
+    // — más un par de selectores de respaldo por clase para no depender de
+    // un único nombre exacto.
+    //
+    // 09/09 (segunda vuelta): en la tienda real de Norbey esto NO alcanzó —
+    // mandó capturas del editor de temas mostrando que ahí la barra de
+    // arriba no es la sección estándar "announcement-bar" de Dawn, sino una
+    // sección hecha a medida (de un tema tipo Shrine) llamada "Horizontal
+    // Ticker", cuyo Liquid real envuelve todo en
+    // class="horizontal-ticker horizontal-ticker-{{ section.id }} ...". Se
+    // agrega ".horizontal-ticker" a la lista de selectores (además de los
+    // de "announcement-bar", que se dejan por si otra tienda sí usa Dawn/
+    // Horizon estándar) — como es un selector de CLASE (no depende del id
+    // de sección, que cambia por tienda), esconde esta barra en cualquier
+    // tienda con este mismo tema, sin importar cómo se llame su sección
+    // dentro del header group.
+    '<style>#shopify-section-announcement-bar,.section-announcement-bar,.announcement-bar,[class*="announcement-bar"],[id*="announcement-bar"],.horizontal-ticker{display:none!important;}</style>',
     // Pedido de Norbey (09/09, corrigiendo lo anterior): la franja de abajo
     // con el botón de PayPal que seguía apareciendo NO era el bloque
     // "sticky_atc" de la sección "main" (que ya se saca de la plantilla
