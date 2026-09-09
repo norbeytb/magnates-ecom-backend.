@@ -1079,11 +1079,11 @@ export class ShopifyService {
     }
   }
 
-  // Saca de la plantilla "landing" cualquier sección que NO sea la nuestra
-  // (landing_imagenes_auto) ni la de producto (main-product/product-information
-  // — ver TIPOS_SECCION_PRODUCTO, la que trae precio/variantes/botón de
-  // comprar nativo). Bug reportado el 08/09 por un estudiante de Norbey: al
-  // crear la plantilla "landing" por primera vez en la tienda de ESE
+  // Saca de la plantilla "landing" CUALQUIER sección que no sea la nuestra
+  // (landing_imagenes_auto) — incluida la sección nativa de producto
+  // (main-product/product-information, la de precio/variantes/botón de
+  // comprar de siempre). Bug reportado el 08/09 por un estudiante de Norbey:
+  // al crear la plantilla "landing" por primera vez en la tienda de ESE
   // estudiante, este backend parte de su "templates/product.json" (la
   // plantilla NORMAL de esa tienda) como base — y esa plantilla normal ya
   // traía un montón de secciones propias del tema para vender el producto en
@@ -1092,13 +1092,30 @@ export class ShopifyService {
   // galería/descripción DENTRO de la sección de producto, todas esas OTRAS
   // secciones quedaban intactas y se veían apiladas debajo de la landing —
   // el "enredo" que reportó Norbey, mezclando la landing limpia con todo el
-  // contenido de venta genérico que ya tenía esa tienda. Fix: además de
-  // simplificar la sección de producto, se borran del "order" (y de
-  // "sections") todas las secciones que no sean ni la nuestra ni la de
-  // producto — así la plantilla "landing" muestra ÚNICAMENTE la landing
-  // (imágenes + botones) y el bloque de comprar/precio/variantes de siempre,
-  // nada más, sea cual sea el tema o las secciones extra que tenga esa
-  // tienda puntual en su plantilla normal.
+  // contenido de venta genérico que ya tenía esa tienda.
+  //
+  // Pedido de Norbey (09/09, con captura real de una landing de Neuroestres):
+  // incluso después de simplificarSeccionProducto() (que solo apaga galería/
+  // Descripción/reseñas DENTRO de la sección de producto, dejándola en pie),
+  // esa sección seguía mostrándose completa debajo de la landing — título,
+  // "0 Reseñas", precio y el botón nativo de comprar, más los desplegables
+  // de info — pura duplicación visual, porque la sección landing_imagenes_auto
+  // YA trae sus propios botones reales de comprar (los bloques de Releasit/
+  // EasySell intercalados entre las fotos, ver BLOQUE_RELEASIT_VIEJO/NUEVO)
+  // que arman el pedido real por contra entrega. Norbey confirmó que TODA
+  // landing armada con el taller siempre incluye al menos uno de esos
+  // botones en su secuencia — o sea, la sección nativa de producto ya no
+  // hace falta para nada, ni para poder comprar. Fix: ahora esta función ya
+  // no conserva esa sección — se borra del "order" (y de "sections") junto
+  // con cualquier otra sección ajena, dejando la plantilla "landing" con
+  // ÚNICAMENTE la sección landing_imagenes_auto (imágenes + botones reales
+  // de comprar intercalados), sea cual sea el tema que tenga esa tienda.
+  // TIPOS_SECCION_PRODUCTO, BLOQUES_SENAL_SECCION_PRODUCTO y
+  // esSeccionProductoNativa() se dejan tal cual (los sigue usando
+  // simplificarSeccionProducto, que ya no cambia nada de cara al resultado
+  // final ya que esa sección se borra igual después, pero no molesta
+  // dejarlo por si en el futuro hiciera falta volver a mostrar esa sección
+  // para algún caso puntual).
   // Identificadores fijos que Shopify le asigna al bloque nativo del botón
   // de contra entrega de Releasit/EasySell cuando se agrega a mano desde
   // "Agregar bloque → Apps" en el editor de temas — confirmados el 09/09
@@ -1205,10 +1222,13 @@ export class ShopifyService {
   private limpiarSeccionesAjenas(plantilla: any): void {
     const secciones = plantilla?.sections;
     if (!secciones || typeof secciones !== 'object' || !Array.isArray(plantilla.order)) return;
-    const conservar = (key: string): boolean => {
-      if (key === 'landing_imagenes_auto') return true;
-      return this.esSeccionProductoNativa(secciones[key]);
-    };
+    // Antes esta función también conservaba la sección nativa de producto
+    // (esSeccionProductoNativa) además de la nuestra — ahora solo se
+    // conserva "landing_imagenes_auto" (ver comentario grande arriba, pedido
+    // del 09/09): la sección de producto ya no aporta nada que la landing no
+    // tenga por sí sola, así que se borra siempre junto con cualquier otra
+    // sección ajena.
+    const conservar = (key: string): boolean => key === 'landing_imagenes_auto';
     plantilla.order = plantilla.order.filter(conservar);
     for (const key of Object.keys(secciones)) {
       if (!conservar(key)) delete secciones[key];
