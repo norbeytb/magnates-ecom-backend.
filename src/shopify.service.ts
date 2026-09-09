@@ -795,18 +795,31 @@ export class ShopifyService {
     // un id/tipo fijo, escrito literal en el código, que Shopify autocompleta
     // solo) — no sirve para elegir, en tiempo real, uno ya existente entre
     // varios posibles. Para ESO (nuestro caso: ya sabemos qué bloque
-    // encontramos con "where" y solo queremos dibujar ESE) la forma correcta y
-    // documentada es "render" pasándole directo el bloque encontrado.
-    // "asegurarBloquesRealesReleasit" (ver más abajo en el archivo) es quien
-    // se encarga de que la plantilla realmente tenga estos dos bloques
-    // declarados para esta posición puntual antes de que esta sección
-    // intente usarlos — por eso acá se verifica con "section.blocks | where"
-    // que el bloque exista de verdad antes de dibujarlo con render: si
-    // todavía no se sincronizó (por ejemplo, la primera vez que se sube este
-    // cambio, antes de que alguna landing de esa tienda se vuelva a
-    // publicar), no se intenta nada raro y se cae directo al botón de
-    // respaldo de siempre, sin arriesgarse a un error de Liquid por pedir un
-    // bloque que no existe.
+    // buscamos y solo queremos dibujar ESE) la forma correcta y documentada
+    // es "render" pasándole directo el bloque encontrado.
+    //
+    // OJO 2 (09/09, otra vuelta fallida): acá se probó buscar el bloque con
+    // "section.blocks | where: "id", ecom_clave | first" — sintácticamente
+    // válido y sin error de Liquid, pero Norbey confirmó con una prueba real
+    // (agregando el bloque de EasySell a mano, comparando "por fuera", como
+    // su propia sección, contra "por dentro" de esta sección con el mismo
+    // mecanismo) que ese bloque encontrado con "where" NUNCA dibuja el
+    // contenido real de la app — siempre queda vacío, aunque Shopify lo
+    // reconozca bien en el editor de temas (se ve con su nombre correcto,
+    // "EasySell Form / Button"). Los filtros de Liquid como "where"/"first"
+    // arman una lista NUEVA a partir de la original — el bloque que devuelven
+    // ya no es el mismo objeto especial que Shopify entrega al recorrer
+    // "section.blocks" directo con "for", y ese objeto especial es
+    // justamente el que necesita "render" para poder dibujar una app de
+    // verdad (para bloques comunes, sin apps, no se nota la diferencia — por
+    // eso no habíamos detectado este problema en pruebas anteriores). Fix:
+    // en vez de "where" + "first", se recorre "section.blocks" con un "for"
+    // real (sin ningún filtro en el medio) y se compara el id adentro del
+    // loop — así "block" sigue siendo el objeto legítimo que "render"
+    // necesita. "asegurarBloquesRealesReleasit" (ver más abajo en el
+    // archivo) sigue siendo quien se encarga de que la plantilla realmente
+    // tenga estos dos bloques declarados para esta posición puntual antes de
+    // que esta sección intente usarlos.
     '          <div style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
     '            <form id="rsi-fallback-form-{{ forloop.index }}" method="post" action="/cart/add" style="display:none !important;">',
     '              <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
@@ -814,11 +827,9 @@ export class ShopifyService {
     '            </form>',
     '            {%- assign ecom_clave_old = "releasit_btn_" | append: forloop.index | append: "_old" -%}',
     '            {%- assign ecom_clave_new = "releasit_btn_" | append: forloop.index | append: "_new" -%}',
-    '            {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
-    '            {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
     '            <span class="ecomMagnatesRsiHueco">',
-    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- render ecom_bloque_old -%}{%- endif -%}</span>',
-    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- render ecom_bloque_new -%}{%- endif -%}</span>',
+    '              <span class="ecomMagnatesRsiBloque">{%- for ecom_block in section.blocks -%}{%- if ecom_block.id == ecom_clave_old -%}{%- render ecom_block -%}{%- endif -%}{%- endfor -%}</span>',
+    '              <span class="ecomMagnatesRsiBloque">{%- for ecom_block in section.blocks -%}{%- if ecom_block.id == ecom_clave_new -%}{%- render ecom_block -%}{%- endif -%}{%- endfor -%}</span>',
     '            <button',
     '              type="button"',
     '              class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
@@ -860,21 +871,20 @@ export class ShopifyService {
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
     '  <div style="position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
     // Mismo mecanismo que el botón intercalado de arriba (bloque nativo real
-    // vía content_for "block", ver el comentario grande ahí sobre
-    // "ecomMagnatesRsiHueco") — clave fija "releasit_btn_flotante_old" /
-    // "_new" en vez de un número, porque solo hay UN botón flotante por
-    // landing (no está adentro del "for paso in secuencia").
+    // vía "render", ver el comentario grande ahí sobre "ecomMagnatesRsiHueco"
+    // y sobre por qué "where"/"first" no sirven para esto) — clave fija
+    // "releasit_btn_flotante_old" / "_new" en vez de un número, porque solo
+    // hay UN botón flotante por landing (no está adentro del "for paso in
+    // secuencia").
     '    <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
     '    </form>',
     '    {%- assign ecom_clave_old = "releasit_btn_flotante_old" -%}',
     '    {%- assign ecom_clave_new = "releasit_btn_flotante_new" -%}',
-    '    {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
-    '    {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
     '    <span class="ecomMagnatesRsiHueco">',
-    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- render ecom_bloque_old -%}{%- endif -%}</span>',
-    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- render ecom_bloque_new -%}{%- endif -%}</span>',
+    '      <span class="ecomMagnatesRsiBloque">{%- for ecom_block in section.blocks -%}{%- if ecom_block.id == ecom_clave_old -%}{%- render ecom_block -%}{%- endif -%}{%- endfor -%}</span>',
+    '      <span class="ecomMagnatesRsiBloque">{%- for ecom_block in section.blocks -%}{%- if ecom_block.id == ecom_clave_new -%}{%- render ecom_block -%}{%- endif -%}{%- endfor -%}</span>',
     '    <button',
     '      type="button"',
     '      class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
