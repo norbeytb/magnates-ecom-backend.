@@ -679,8 +679,21 @@ export class ImageEditService {
         break;
 
       case 'modouso':
+        // Pedido 09/09, reportado con captura real: en un hervidor eléctrico, el paso
+        // "PREPARA" (llenar de agua) salió acompañado de la foto de una corredora mirando su
+        // reloj, "CONECTA Y ENCIENDE" con un ciclista en ruta, y "DISFRUTA" con una nadadora —
+        // ninguna de las tres tiene que ver con el texto de su propio paso ni con el producto
+        // real. Causa raíz: la plantilla de referencia de ejemplo (PLANTILLA_DESCRIPCIONES) es
+        // de un suplemento deportivo, y sus 3 fotos de ejemplo son escenas de actividad física
+        // (antes/durante/después de entrenar) — la instrucción de "seguir la plantilla con
+        // fidelidad" (ver más arriba) hacía que el modelo copiara ESE TIPO de foto en los 3
+        // pasos sin importar qué producto real es ni qué dice el texto de cada paso puntual.
+        // Es el mismo bug ya resuelto para una sola persona/acción (ver el bloque grande de
+        // arriba sobre "acción con sentido para el producto real"), pero acá son 3 pasos con 3
+        // acciones DISTINTAS, cada una atada a su propio texto — así que se necesita una
+        // instrucción explícita por paso, no alcanza con la genérica de una sola acción.
         partes.push(
-          `Genera una sección de Modo de Uso con 3 pasos numerados, basados en cómo el producto se convierte en la solución ideal: ${this.recortar(f.solucion, 200)}.`,
+          `Genera una sección de Modo de Uso con exactamente 3 pasos numerados que expliquen cómo se usa el producto real en la práctica, basados en: ${this.recortar(f.solucion, 200)}. Redactá vos mismo el texto corto de cada uno de los 3 pasos describiendo una etapa real y concreta del uso de "${f.nombreProducto}" (por ejemplo, según corresponda al producto real: desempacar/preparar, conectar/activar/aplicar, y disfrutar/ver el resultado — adaptado a lo que ESTE producto específico realmente requiere para usarse, no un texto genérico de otro rubro). MUY IMPORTANTE sobre las fotos: la imagen que acompaña a CADA paso tiene que mostrar VISUALMENTE la acción concreta que describe el texto de ESE MISMO paso, con el producto real interactuando de esa forma — nunca una escena de estilo de vida genérica ni sin relación con lo que dice el texto de ese paso (por ejemplo, no muestres a alguien corriendo, andando en bicicleta o nadando salvo que el producto real sea específicamente para practicar ese deporte). No repitas el mismo tipo de escena en los 3 pasos, y no copies las fotos de ejemplo de la plantilla de referencia si son de una actividad que no tiene nada que ver con este producto: cada una de las 3 fotos debe coincidir en contenido con el texto de su propio paso y con el uso real de este producto puntual.`,
         );
         break;
 
