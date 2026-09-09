@@ -1216,7 +1216,31 @@ export class ShopifyService {
     for (const clave of clavesNecesarias) {
       const tipo = clave.endsWith('_old') ? this.BLOQUE_RELEASIT_VIEJO : this.BLOQUE_RELEASIT_NUEVO;
       if (!seccion.blocks[clave]) {
-        seccion.blocks[clave] = { type: tipo, settings: { product: '{{product}}' } };
+        // Pedido de Norbey (09/09): reportó que en la landing publicada
+        // siempre salía el botón de RESPALDO (el diseñado en el taller, que
+        // al hacer clic manda al carrito) en vez del botón real de Releasit/
+        // EasySell — comparando contra una plantilla suya armada a mano
+        // (agregando el bloque real desde el editor de temas), la diferencia
+        // era este "settings.product": acá se le ponía el TEXTO LITERAL
+        // "{{product}}" (creyendo que Shopify lo iba a interpretar como
+        // Liquid), pero este archivo es un ".json", no un ".liquid" —
+        // Shopify nunca corre Liquid dentro de un JSON, así que el bloque
+        // recibía la palabra "{{product}}" tal cual, no el producto real, y
+        // no lograba dibujar nada (de ahí que siempre caía al botón de
+        // respaldo). En la plantilla real que Norbey armó a mano, ese mismo
+        // bloque trae "product": "" (vacío) — así el bloque entiende que
+        // debe usar el producto de la página actual. Se deja vacío acá
+        // también para que coincida con la forma real y correcta.
+        seccion.blocks[clave] = { type: tipo, settings: { product: '' } };
+      } else if (seccion.blocks[clave]?.settings?.product === '{{product}}') {
+        // Reparación para las tiendas que ya se publicaron ANTES de este
+        // arreglo: como esta función solo agregaba el bloque si todavía no
+        // existía, una vez creado con el valor viejo nunca se volvía a
+        // tocar — así que el bug seguía ahí para siempre aunque se
+        // desplegara el fix. Acá se corrige el valor aunque el bloque ya
+        // exista, para que las landings viejas también se reparen solas en
+        // la próxima publicación.
+        seccion.blocks[clave].settings.product = '';
       }
       if (!seccion.block_order.includes(clave)) {
         seccion.block_order.push(clave);
