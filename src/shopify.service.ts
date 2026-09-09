@@ -997,14 +997,26 @@ export class ShopifyService {
     return t.includes('media-gallery') || t.includes('product-media');
   }
 
-  // El bloque de texto que muestra la Descripción del producto (name
-  // "Product description", o cualquier bloque cuyo texto incluya
-  // "product.description"). Nuestra Descripción también lleva las mismas
-  // fotos de la landing apiladas como respaldo (ver construirHtml), así que
-  // si este bloque queda encendido, las fotos se repiten otra vez debajo de
-  // la galería.
+  // El bloque de texto que muestra la Descripción del producto. Antes solo
+  // se reconocía por name "Product description" o por texto de settings que
+  // mencionara "product.description" — eso cubría temas como Horizon, pero
+  // NO Shrine: Norbey mandó el "templates/product.json" real de Shrine
+  // (11/09) y ahí el bloque de Descripción es simplemente
+  // { "type": "description", "settings": { "margin_top": ..., "margin_bottom": ... } }
+  // — sin "name" ni texto en settings, porque el tema mete el
+  // "{{ product.description }}" directo en su propio Liquid, no en un
+  // setting. Como no quedaba atrapado por ninguna de las dos reglas
+  // anteriores, ese bloque seguía encendido y mostraba otra vez, apiladas,
+  // las mismas fotos que ya construirHtml() mete en la Descripción del
+  // producto como respaldo — de ahí el reporte de "las fotos de las
+  // sesiones como en galería" apareciendo de más. "description" a secas es
+  // un nombre de tipo genérico que usan varios temas de Shopify para este
+  // mismo bloque (no es una particularidad de Shrine), así que agregarlo
+  // ayuda de forma general, no solo para esta tienda puntual.
   private esBloqueDescripcionProducto(block: any): boolean {
     if (block?.name === 'Product description') return true;
+    const tipo = String(block?.type || '').toLowerCase();
+    if (tipo === 'description' || tipo === 'product_description' || tipo === 'body') return true;
     return /product\.description/.test(String(block?.settings?.text || ''));
   }
 
@@ -1122,12 +1134,54 @@ export class ShopifyService {
     }
   }
 
+  // Nombres de bloque que, en la inmensa mayoría de los temas Online Store
+  // 2.0 (todos los que siguen la convención del tema de referencia de
+  // Shopify, "Dawn"), identifican el precio, el selector de variantes y el
+  // botón de comprar reales — o sea, SON la sección de producto, sin
+  // importar cómo esa sección se llame a sí misma por fuera. Confirmado
+  // contra el "templates/product.json" real de Shrine que mandó Norbey
+  // (11/09): su sección "main" (type "main-product") tiene bloques "price",
+  // "buy_buttons" y "variant_picker" con esos nombres exactos.
+  private readonly BLOQUES_SENAL_SECCION_PRODUCTO = [
+    'buy_buttons', 'buy-buttons', 'price', 'variant_picker', 'variant-picker',
+    'quantity_selector', 'quantity-selector', 'product-form', 'product_form',
+  ];
+
+  // Antes esta función decidía qué sección "es la de producto" mirando SOLO
+  // el "type" de la sección contra TIPOS_SECCION_PRODUCTO ('product-information'
+  // / 'main-product', nombres del tema Horizon) — con cualquier tema que le
+  // ponga otro nombre a su sección esto no reconocía nada. Pedido de Norbey
+  // (11/09): que funcione sin importar el tema. En vez de mirar cómo se
+  // llama la sección por fuera, ahora se mira qué bloques tiene ADENTRO: si
+  // contiene alguno de BLOQUES_SENAL_SECCION_PRODUCTO (precio/variantes/
+  // botón de comprar — nombres mucho más estandarizados entre temas que el
+  // nombre de la sección en sí), esa es la sección de producto real y se
+  // conserva tal cual (con simplificarSeccionProducto ya aplicado aparte,
+  // que solo apaga la galería/Descripción, sin tocar precio ni botón). Toda
+  // otra sección — resultados, testimonios, comparaciones, FAQ, tarjetas de
+  // beneficios, etc., que el estudiante haya agregado a su página de
+  // producto normal — se descarta de la plantilla "landing": esas secciones
+  // suelen traer el contenido de EJEMPLO del tema (testimonio de "Cristiano
+  // Ronaldo", "Pair text with an icon...", etc.) que no tiene nada que ver
+  // con la landing generada por IA. TIPOS_SECCION_PRODUCTO se deja como
+  // respaldo por si una sección no usa bloques para esto.
+  private esSeccionProductoNativa(seccion: any): boolean {
+    if (!seccion || typeof seccion !== 'object') return false;
+    if (seccion.blocks && typeof seccion.blocks === 'object') {
+      const tieneBloqueDeCompra = Object.values(seccion.blocks).some(
+        (b: any) => this.BLOQUES_SENAL_SECCION_PRODUCTO.includes(String(b?.type || '').toLowerCase()),
+      );
+      if (tieneBloqueDeCompra) return true;
+    }
+    return this.TIPOS_SECCION_PRODUCTO.includes(seccion.type);
+  }
+
   private limpiarSeccionesAjenas(plantilla: any): void {
     const secciones = plantilla?.sections;
     if (!secciones || typeof secciones !== 'object' || !Array.isArray(plantilla.order)) return;
     const conservar = (key: string): boolean => {
       if (key === 'landing_imagenes_auto') return true;
-      return this.TIPOS_SECCION_PRODUCTO.includes(secciones[key]?.type);
+      return this.esSeccionProductoNativa(secciones[key]);
     };
     plantilla.order = plantilla.order.filter(conservar);
     for (const key of Object.keys(secciones)) {
