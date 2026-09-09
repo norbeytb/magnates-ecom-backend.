@@ -723,27 +723,38 @@ export class ShopifyService {
     // id="rsi_buy_now_button" — visto con el inspector el 29/08.
     // Pedido 09/09: ANTES este botón de acá simplemente le hacía clic al
     // botón real de Releasit (mismo resultado que si el cliente lo tocara él
-    // mismo). Norbey pidió ir más directo: en vez de "clickear por control
-    // remoto" al real, el script del final de esta sección (buscá
-    // "ecomMagnatesRsiTarget" ahí abajo) MUEVE el elemento real de Releasit
-    // hasta este mismo lugar — así el que ve y toca el visitante es
-    // literalmente el botón auténtico de Releasit (su propio texto, estilo y
-    // comportamiento), no una copia nuestra. Por eso este botón lleva la
-    // clase "ecomMagnatesRsiTarget": marca DÓNDE tiene que aparecer el botón
-    // real. Ojo: Releasit solo crea UN botón real en toda la página, así que
-    // si la landing tiene más de uno de estos agregados, solo el PRIMERO se
-    // convierte en el real — los demás se quedan con el respaldo de abajo
-    // (clickear al real, o agregar al carrito si Releasit no está instalado
-    // o el script no llegó a moverlo a tiempo), para que nunca quede sin
-    // hacer nada.
+    // mismo). Norbey pidió ir más directo: el script del final de esta
+    // sección (buscá "ecomMagnatesRsiSlot" ahí abajo) MUEVE el elemento real
+    // de Releasit hasta este mismo lugar — así el que ve y toca el
+    // visitante es literalmente el botón auténtico de Releasit (su propio
+    // texto, estilo y comportamiento), no una copia nuestra.
+    // Corregido el 09/09 (2): la primera versión de esto movía el botón real
+    // UNA sola vez y dejaba de vigilar — Norbey reportó con captura que
+    // nuestro botón seguía apareciendo encima, con el real asomando detrás.
+    // Causa: Releasit puede volver a crear su propio botón flotante (es un
+    // widget global de la tienda, independiente de esta sección — aparece
+    // junto a otros elementos globales del tema como el botón de scroll o
+    // el reproductor, no adentro de nuestro contenido) en cualquier momento
+    // después de la carga inicial, y una sola mudanza no alcanza a
+    // sostenerse en el tiempo. Por eso ahora el "destino" no es el botón en
+    // sí (que se reemplaza y desaparece) sino un contenedor ESTABLE que
+    // nunca se borra — el <span class="ecomMagnatesRsiSlot"> de más abajo —
+    // y el script vigila TODA la página sin parar, así que si Releasit
+    // vuelve a crear su botón en otro lado, se lo vuelve a traer para acá al
+    // instante. Ojo: Releasit solo mantiene UN botón real en la página, así
+    // que si la landing tiene más de uno de estos agregados, solo el
+    // PRIMER contenedor se lleva el real — los demás se quedan con el
+    // respaldo de abajo (clickear al real, o agregar al carrito si Releasit
+    // no está instalado), para que nunca quede sin hacer nada.
     '          <div style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
     '            <form id="rsi-fallback-form-{{ forloop.index }}" method="post" action="/cart/add" style="display:none !important;">',
     '              <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '              <input type="hidden" name="quantity" value="1">',
     '            </form>',
+    '            <span class="ecomMagnatesRsiSlot" style="display:block;">',
     '            <button',
     '              type="button"',
-    '              class="ecomMagnatesRsiTarget{% if animacion_boton == \'sacudida\' %} ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %} ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %} ecomMagnatesPulseBtn{% endif %}"',
+    '              class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
     '              onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-{{ forloop.index }}\'); if(f){ f.submit(); } }"',
     // border-radius grande (píldora) + el emoji de camión + animation:
     // referenciando el @keyframes de arriba, para que se vea y se mueva igual
@@ -770,10 +781,7 @@ export class ShopifyService {
     // frame y la aplica con .setProperty(..., "important"), así que gana
     // pase lo que pase en el CSS de la tienda. La animation: de acá abajo
     // se deja además como respaldo (por si algún visitante tiene JavaScript
-    // desactivado), pero el script es el que manda. (La clase de animación
-    // ahora va fusionada en el atributo "class" de más arriba, junto con
-    // "ecomMagnatesRsiTarget" — un botón no puede tener dos atributos
-    // "class" a la vez.)
+    // desactivado), pero el script es el que manda.
     // Pedido 10/09, corregido el 08/09 con la captura real del botón de
     // Releasit: el ícono va SIN ningún fondo relleno (color plano, igual que
     // el texto) y fijo a la izquierda del botón — no una placa oscura ni
@@ -789,6 +797,7 @@ export class ShopifyService {
     // al ser el ícono position:absolute, no lo empuja ni lo descentra.
     '              style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '            >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ paso.colorTexto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '            </span>',
     '          </div>',
     '        {%- endif -%}',
     '      {%- else -%}',
@@ -817,10 +826,10 @@ export class ShopifyService {
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
     '  <div style="position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
     // Mismo enganche a Releasit que el botón intercalado de arriba (ver el
-    // comentario grande ahí sobre "ecomMagnatesRsiTarget"): también lleva
-    // esa misma clase, así que si esta landing NO tiene ningún botón
-    // intercalado (solo el flotante), el botón real de Releasit se muda
-    // acá. Si además de este flotante hay uno o más intercalados, el
+    // comentario grande ahí sobre "ecomMagnatesRsiSlot"): también lleva ese
+    // mismo contenedor estable, así que si esta landing NO tiene ningún
+    // botón intercalado (solo el flotante), el botón real de Releasit se
+    // muda acá. Si además de este flotante hay uno o más intercalados, el
     // intercalado que aparece primero en la página se lleva el real (el
     // flotante se queda con el respaldo de siempre — clickear al real, o
     // agregar al carrito). Mismo texto/color personalizable también (ver
@@ -830,9 +839,10 @@ export class ShopifyService {
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
     '    </form>',
+    '    <span class="ecomMagnatesRsiSlot" style="display:block;">',
     '    <button',
     '      type="button"',
-    '      class="ecomMagnatesRsiTarget{% if animacion_boton == \'sacudida\' %} ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %} ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %} ecomMagnatesPulseBtn{% endif %}"',
+    '      class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
     // Mismo cambio que el botón intercalado de arriba — ícono sin fondo
     // relleno, fijo a la izquierda del botón con position:absolute pero sin
@@ -840,6 +850,7 @@ export class ShopifyService {
     // grande ahí.
     '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '    </span>',
     '  </div>',
     '{%- endif -%}',
     // El pulso lo mueve este script (ver el comentario largo junto al botón
@@ -899,53 +910,55 @@ export class ShopifyService {
     '})();',
     // Pedido 09/09 de Norbey: en vez de que nuestro botón le haga clic "por
     // control remoto" al botón real de Releasit (ver el comentario grande
-    // junto a "ecomMagnatesRsiTarget" más arriba), este script MUEVE el
+    // junto a "ecomMagnatesRsiSlot" más arriba), este script MUEVE el
     // elemento real de Releasit (id="rsi_buy_now_button") al lugar exacto
     // donde el estudiante puso su botón "COMPRAR AHORA" — así el visitante
     // ve y toca directamente el botón auténtico, con su propio texto/estilo/
     // comportamiento, no una copia nuestra. Solo se mueve UNO (Releasit solo
-    // crea un botón real por página): si la landing tiene varios "COMPRAR
-    // AHORA" agregados, se lleva el real el primero que aparece en la
-    // página (ver ecomMagnatesRsiTarget arriba).
+    // mantiene un botón real por página): si la landing tiene varios
+    // "COMPRAR AHORA" agregados, se lleva el real el primer contenedor que
+    // aparece en la página (ver ecomMagnatesRsiSlot arriba).
     //
-    // Pedido 09/09 (2): la primera versión de esto revisaba cada 200ms
-    // ("¿ya apareció el botón real?") durante 3 segundos — Norbey avisó que
-    // el formulario tardaba mucho en salir. La demora real es Releasit
-    // cargando SU PROPIO script (algo que no controlamos), pero encima
-    // nuestro propio sondeo cada 200ms le sumaba hasta 200ms más de espera
-    // de pura pérdida de tiempo, sin necesidad. Ahora se usa
-    // "MutationObserver": en vez de preguntar cada tanto, el navegador nos
-    // avisa el MISMO INSTANTE en que Releasit agrega su botón real a la
-    // página — cero demora extra de nuestra parte, se muda apenas existe.
-    // Se deja de escuchar recién a los 20 segundos (por si la conexión del
-    // visitante es muy lenta) para no quedar corriendo para siempre; si
-    // Releasit no está instalado o cambió ese id, nunca se dispara y el
-    // botón nuestro se queda tal cual, con su respaldo de siempre.
+    // Pedido 09/09 (2, ya resuelto): la primera versión revisaba cada 200ms
+    // durante 3 segundos — se cambió a MutationObserver para que el cambio
+    // sea instantáneo apenas Releasit crea su botón, sin demora nuestra.
+    //
+    // Pedido 09/09 (3): Norbey reportó con captura que, después de mudar el
+    // botón una vez, nuestro botón de respaldo volvía a aparecer arriba con
+    // el real asomando detrás. Causa: el botón real de Releasit NO vive
+    // adentro de esta sección — es un widget global de la tienda (aparece
+    // junto a otros elementos globales del tema, como el botón de scroll o
+    // el reproductor, en el pie de la página) que la propia app puede
+    // volver a crear o reposicionar en cualquier momento después de la
+    // carga inicial. Mudarlo una sola vez y dejar de vigilar (como hacía la
+    // versión anterior, que además usaba como "destino" al propio botón —
+    // que desaparece al ser reemplazado, perdiendo la referencia de dónde
+    // pertenecía) no alcanzaba. Fix: el "destino" ahora es un CONTENEDOR
+    // (el <span class="ecomMagnatesRsiSlot">) que nunca se borra —
+    // encierra al botón de respaldo, pero se vacía y pasa a alojar al real
+    // la primera vez que aparece. Como el contenedor nunca desaparece, el
+    // script puede seguir comparando "¿el botón real está AHORA MISMO
+    // adentro de mi contenedor?" para siempre, y si en algún momento deja
+    // de estarlo (porque Releasit lo recreó o lo movió a otro lado), lo trae
+    // de vuelta al instante — sin límite de tiempo, sin desconectarse nunca.
     '<script>',
     '(function(){',
-    '  function intentarMudarBotonReal(){',
+    '  function asegurarBotonReal(){',
     '    var real = document.getElementById("rsi_buy_now_button");',
-    '    var destino = document.querySelector(".ecomMagnatesRsiTarget");',
-    '    if(real && destino && destino.parentNode){',
-    '      destino.parentNode.replaceChild(real, destino);',
-    '      return true;',
+    '    var slot = document.querySelector(".ecomMagnatesRsiSlot");',
+    '    if(!real || !slot) return;',
+    '    if(real.parentNode !== slot){',
+    '      slot.innerHTML = "";',
+    '      slot.appendChild(real);',
     '    }',
-    '    return false;',
     '  }',
-    '  if(intentarMudarBotonReal()) return;',
+    '  asegurarBotonReal();',
     '  if(!window.MutationObserver){',
-    '    var intentos = 0;',
-    '    var reintento = setInterval(function(){',
-    '      intentos++;',
-    '      if(intentarMudarBotonReal() || intentos >= 15){ clearInterval(reintento); }',
-    '    }, 200);',
+    '    setInterval(asegurarBotonReal, 500);',
     '    return;',
     '  }',
-    '  var observer = new MutationObserver(function(){',
-    '    if(intentarMudarBotonReal()){ observer.disconnect(); }',
-    '  });',
+    '  var observer = new MutationObserver(asegurarBotonReal);',
     '  observer.observe(document.documentElement, { childList: true, subtree: true });',
-    '  setTimeout(function(){ observer.disconnect(); }, 20000);',
     '})();',
     '</script>',
     '',
