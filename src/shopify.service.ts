@@ -1006,6 +1006,334 @@ export class ShopifyService {
     '',
   ].join('\n');
 
+  // Pedido de Norbey (09/09, con la plantilla armada a mano que mandó como
+  // referencia): confirmó con una prueba real que Shopify NUNCA dibuja el
+  // contenido real de un bloque de app (Releasit/EasySell) cuando ese bloque
+  // vive DENTRO de una sección personalizada nuestra — ni buscándolo con
+  // "where", ni con un "for" real (ver los comentarios grandes en
+  // "seccionLandingLiquid", arriba, sobre las vueltas fallidas). La única
+  // forma que funciona de verdad es la que él mismo armó a mano: el botón
+  // como su PROPIA sección de tipo "apps" (una sección independiente, igual
+  // que cualquier otra de la plantilla), nunca como bloque de otra sección.
+  //
+  // Como "apps" es un tipo de sección que ya trae Shopify (no la escribimos
+  // nosotros), y el archivo de plantilla es compartido entre TODAS las
+  // landings de una tienda, no hay forma de que ese archivo compartido
+  // tenga "la cantidad justa" de fotos y botones para cada producto (uno
+  // puede necesitar 3 botones, otro 6) — la plantilla es una sola y se ve
+  // igual para cualquier producto que la use. Por eso a partir de acá cada
+  // landing pasa a tener su PROPIO archivo de plantilla (uno por producto,
+  // armado a la medida en el momento de publicar — ver
+  // construirPlantillaLandingProducto() y el publicarLanding() nuevo más
+  // abajo) en vez de uno solo compartido: así cada producto tiene
+  // exactamente sus fotos y sus botones, organizados igual que el ejemplo
+  // de Norbey — una sección por cada foto, una sección "apps" por cada
+  // botón, intercaladas en el orden correcto. Esto además evita TODO el
+  // problema de "heredar y limpiar" la plantilla normal de la tienda (la
+  // sección "main", su galería, sus reseñas de ejemplo, etc. — ver
+  // TIPOS_SECCION_PRODUCTO y compañía más abajo, que quedan sin usar pero
+  // se dejan por si hace falta volver atrás): cada plantilla nueva arranca
+  // limpia, solo con lo que esa landing puntual necesita.
+  //
+  // Se reparte en 3 secciones propias chiquitas, reutilizadas UNA vez cada
+  // una por cada foto/botón que haga falta:
+  //  - "landing-controlador" (seccionControladorLiquid): va UNA sola vez,
+  //    siempre primera — trae los estilos/animaciones globales, la barra de
+  //    movimiento, el botón flotante (su respaldo; el bloque real vive en su
+  //    propia sección "apps_flotante", ver más abajo) y el script que decide
+  //    si mostrar el botón real o el de respaldo en cada posición.
+  //  - "landing-imagen" (seccionImagenLiquid): una instancia por cada foto,
+  //    con la URL guardada directo en el setting de esa instancia (ya no
+  //    hace falta leer la secuencia desde un metafield en tiempo real: como
+  //    ahora la plantilla es propia de este producto, se arma ya con las
+  //    URLs correctas adentro).
+  //  - "landing-respaldo-boton" (seccionRespaldoBotonLiquid): una instancia
+  //    por cada posición de botón (intercalado o flotante) — dibuja el botón
+  //    de respaldo (arranca oculto) que el script de "landing-controlador"
+  //    muestra solo si la sección "apps" vecina de esa misma posición no
+  //    logró dibujar nada real.
+  private readonly seccionControladorLiquid = [
+    '{%- comment -%}',
+    '  Sección creada automáticamente por Ecom Magnates: controla toda la',
+    '  landing (animaciones, barra de movimiento, botón flotante y el',
+    '  mecanismo que decide si mostrar el botón real de Releasit/EasySell o',
+    '  el de respaldo en cada posición). Va SIEMPRE, una sola vez, primera en',
+    '  el orden de la plantilla. No editar a mano, se sobrescribe si el',
+    '  backend la vuelve a necesitar.',
+    '{%- endcomment -%}',
+    '{%- assign animacion_boton = product.metafields.ecom_magnates.landing_animacion_boton.value -%}',
+    '{%- unless animacion_boton -%}',
+    '  {%- if product.metafields.ecom_magnates.landing_movimiento.value -%}',
+    '    {%- assign animacion_boton = "pulsacion" -%}',
+    '  {%- else -%}',
+    '    {%- assign animacion_boton = "ninguna" -%}',
+    '  {%- endif -%}',
+    '{%- endunless -%}',
+    '{%- assign icono_boton = product.metafields.ecom_magnates.landing_icono_boton.value | default: "camion" -%}',
+    '{%- capture icono_boton_svg -%}',
+    '{%- case icono_boton -%}',
+    '  {%- when "ninguno" -%}',
+    '  {%- when "carrito" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>',
+    '  {%- when "bolsa" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>',
+    '  {%- when "canasta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M9 4L7 10"></path><path d="M15 4l2 6"></path><path d="M5 10h14l-1.2 8.4a2 2 0 0 1-1.98 1.6H8.18a2 2 0 0 1-1.98-1.6L5 10z"></path><path d="M12 10v6"></path><path d="M9 13h6"></path></svg>',
+    '  {%- when "tarjeta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>',
+    '  {%- when "etiqueta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>',
+    '  {%- when "flecha" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>',
+    '  {%- when "caja" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>',
+    '  {%- when "bolso" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M4 9h16l-1.5 10.5a2 2 0 0 1-2 1.5H7.5a2 2 0 0 1-2-1.5L4 9z"></path><path d="M8 9V7a4 4 0 0 1 8 0v2"></path><circle cx="12" cy="14" r="1"></circle></svg>',
+    '  {%- else -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>',
+    '{%- endcase -%}',
+    '{%- endcapture -%}',
+    '{%- assign barra_movimiento = product.metafields.ecom_magnates.barra_movimiento.value -%}',
+    '{%- assign barra_movimiento_texto = product.metafields.ecom_magnates.barra_movimiento_texto.value -%}',
+    '{%- assign barra_movimiento_color = product.metafields.ecom_magnates.barra_movimiento_color.value -%}',
+    '{%- assign barra_movimiento_color_texto = product.metafields.ecom_magnates.barra_movimiento_color_texto.value -%}',
+    '{%- assign barra_movimiento_velocidad = product.metafields.ecom_magnates.barra_movimiento_velocidad.value -%}',
+    '{%- assign boton_flotante = product.metafields.ecom_magnates.boton_flotante.value -%}',
+    '{%- assign boton_flotante_texto = product.metafields.ecom_magnates.boton_flotante_texto.value -%}',
+    '{%- assign boton_flotante_color = product.metafields.ecom_magnates.boton_flotante_color.value -%}',
+    '{%- assign boton_flotante_color_texto = product.metafields.ecom_magnates.boton_flotante_color_texto.value -%}',
+    '<style>@keyframes ecomMagnatesBtnPulse{0%,70%{transform:scale(1);}80%{transform:scale(1.06);}90%,100%{transform:scale(1);}}@keyframes ecomMagnatesBtnShake{0%,80%{transform:translateX(0);}84%{transform:translateX(-5px);}88%{transform:translateX(4px);}92%{transform:translateX(-3px);}96%{transform:translateX(2px);}100%{transform:translateX(0);}}@keyframes ecomMagnatesBtnBounce{0%,68%,100%{transform:translateY(0);}75%{transform:translateY(-8px);}82%{transform:translateY(0);}88%{transform:translateY(-4px);}94%{transform:translateY(0);}}@keyframes ecomMagnatesBarraScroll{0%{transform:translateX(0);}100%{transform:translateX(-50%);}}</style>',
+    '<style>#shopify-section-announcement-bar,.section-announcement-bar,.announcement-bar,[class*="announcement-bar"],[id*="announcement-bar"],.horizontal-ticker{display:none!important;}</style>',
+    '<style>footer,#shopify-section-footer,.footer,.site-footer{display:none!important;}</style>',
+    // Cada sección "apps_..." (una por posición de botón, más "apps_flotante"
+    // si aplica) arranca ESCONDIDA por CSS — así nunca se ve un hueco en
+    // blanco mientras se espera a que cargue la página. El script de más
+    // abajo (una vez que TODO el HTML ya existe) la muestra si de verdad
+    // dibujó el botón real, o si no, muestra el respaldo de esa misma
+    // posición en su lugar. Este <style> no depende de dónde esté esta
+    // sección en el orden de la plantilla — un <style> aplica a toda la
+    // página sin importar en qué parte del HTML esté escrito.
+    '<style>[id^="shopify-section-apps_"]{display:none;}{% if boton_flotante %}body{padding-bottom:66px;}{% endif %}</style>',
+    '{%- if barra_movimiento -%}',
+    '  {%- assign barra_texto_final = barra_movimiento_texto | default: "CALIDAD GARANTIZADA  •  ENVÍO RÁPIDO  •  PAGO SEGURO" -%}',
+    '  <div style="width:100%; overflow:hidden; white-space:nowrap; background:{{ barra_movimiento_color | default: "#f0b90b" }};">',
+    '    <div style="display:inline-block; animation:ecomMagnatesBarraScroll {{ barra_movimiento_velocidad | default: 14 | times: 12 }}s linear infinite; padding:9px 0;">',
+    '      {%- for i in (1..12) -%}<span{% unless forloop.first %} aria-hidden="true"{% endunless %} style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_texto_final | escape }}</span>{%- endfor -%}',
+    '      {%- for i in (1..12) -%}<span aria-hidden="true" style="display:inline-block; padding-right:36px; color:{{ barra_movimiento_color_texto | default: "#111" }}; font-weight:800; font-size:13px; letter-spacing:0.04em;">{{ barra_texto_final | escape }}</span>{%- endfor -%}',
+    '    </div>',
+    '  </div>',
+    '{%- endif -%}',
+    // Botón flotante: el bloque REAL vive en su propia sección "apps_flotante"
+    // (ver construirPlantillaLandingProducto) — acá solo va el de respaldo,
+    // que el script de abajo muestra si esa sección vecina no dibujó nada.
+    '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
+    '  <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
+    '    <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
+    '    <input type="hidden" name="quantity" value="1">',
+    '  </form>',
+    '  <div data-ecom-grupo="flotante" style="display:none; position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
+    '    <button',
+    '      type="button"',
+    '      class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '      onclick="var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); }"',
+    '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '  </div>',
+    '{%- endif -%}',
+    // Pedido 09/09: ambos scripts van adentro de un "DOMContentLoaded" — como
+    // esta sección va SIEMPRE PRIMERA en el orden (para que la barra de
+    // movimiento quede arriba de todo), un <script> normal correría ANTES de
+    // que existan en el HTML las secciones de fotos/botones que vienen
+    // después, y no encontraría nada. Esperando a "DOMContentLoaded" el
+    // script se ejecuta recién cuando TODA la página ya está armada, sin
+    // importar en qué parte del orden esté esta sección.
+    '<script>',
+    'document.addEventListener("DOMContentLoaded", function(){',
+    '  var pulseEls = document.querySelectorAll(".ecomMagnatesPulseBtn");',
+    '  var shakeEls = document.querySelectorAll(".ecomMagnatesShakeBtn");',
+    '  var bounceEls = document.querySelectorAll(".ecomMagnatesBounceBtn");',
+    '  if(!pulseEls.length && !shakeEls.length && !bounceEls.length) return;',
+    '  function aplicar(list, v){ for(var i = 0; i < list.length; i++){ list[i].style.setProperty("transform", v, "important"); } }',
+    '  function tick(ts){',
+    '    var t = (ts % 3000) / 3000;',
+    '    if(pulseEls.length){',
+    '      var s = 1;',
+    '      if(t > 0.70 && t <= 0.80){ s = 1 + 0.06 * ((t - 0.70) / 0.10); }',
+    '      else if(t > 0.80 && t <= 0.90){ s = 1.06 - 0.06 * ((t - 0.80) / 0.10); }',
+    '      aplicar(pulseEls, "scale(" + s.toFixed(4) + ")");',
+    '    }',
+    '    if(shakeEls.length){',
+    '      var x = 0;',
+    '      if(t > 0.80 && t <= 0.84){ x = -5 * ((t - 0.80) / 0.04); }',
+    '      else if(t > 0.84 && t <= 0.88){ x = -5 + 9 * ((t - 0.84) / 0.04); }',
+    '      else if(t > 0.88 && t <= 0.92){ x = 4 - 7 * ((t - 0.88) / 0.04); }',
+    '      else if(t > 0.92 && t <= 0.96){ x = -3 + 5 * ((t - 0.92) / 0.04); }',
+    '      else if(t > 0.96){ x = 2 - 2 * ((t - 0.96) / 0.04); }',
+    '      aplicar(shakeEls, "translateX(" + x.toFixed(2) + "px)");',
+    '    }',
+    '    if(bounceEls.length){',
+    '      var y = 0;',
+    '      if(t > 0.68 && t <= 0.75){ y = -8 * ((t - 0.68) / 0.07); }',
+    '      else if(t > 0.75 && t <= 0.82){ y = -8 + 8 * ((t - 0.75) / 0.07); }',
+    '      else if(t > 0.82 && t <= 0.88){ y = -4 * ((t - 0.82) / 0.06); }',
+    '      else if(t > 0.88 && t <= 0.94){ y = -4 + 4 * ((t - 0.88) / 0.06); }',
+    '      aplicar(bounceEls, "translateY(" + y.toFixed(2) + "px)");',
+    '    }',
+    '    requestAnimationFrame(tick);',
+    '  }',
+    '  requestAnimationFrame(tick);',
+    '});',
+    '</script>',
+    // Pedido 09/09 (6): reemplaza el mecanismo de ".ecomMagnatesRsiHueco" (que
+    // necesitaba que el bloque real y el respaldo estuvieran en la MISMA
+    // sección) — ahora cada posición de botón es una sección "apps_<grupo>"
+    // (el bloque real) y una sección "landing-respaldo-boton" separada (el
+    // respaldo, con "data-ecom-grupo" marcando a qué posición pertenece). El
+    // script recorre cada respaldo, busca su sección "apps" vecina por el id
+    // que Shopify le pone automáticamente a toda sección
+    // ("shopify-section-<clave>") y muestra una u otra según si la sección
+    // de la app realmente dibujó algo.
+    '<script>',
+    'document.addEventListener("DOMContentLoaded", function(){',
+    '  function tieneContenidoReal(nodo){',
+    '    if(!nodo) return false;',
+    '    if(nodo.querySelector("button, a, input, iframe")) return true;',
+    '    return nodo.textContent.replace(/\\s+/g, "") !== "";',
+    '  }',
+    '  var respaldos = document.querySelectorAll("[data-ecom-grupo]");',
+    '  for(var i = 0; i < respaldos.length; i++){',
+    '    var el = respaldos[i];',
+    '    var grupo = el.getAttribute("data-ecom-grupo");',
+    '    var appsWrap = document.getElementById("shopify-section-apps_" + grupo);',
+    '    if(tieneContenidoReal(appsWrap)){',
+    '      appsWrap.style.display = "block";',
+    '      if(grupo === "flotante"){',
+    '        appsWrap.style.position = "fixed";',
+    '        appsWrap.style.left = "0";',
+    '        appsWrap.style.right = "0";',
+    '        appsWrap.style.bottom = "0";',
+    '        appsWrap.style.zIndex = "999";',
+    '        appsWrap.style.background = "#fff";',
+    '        appsWrap.style.boxShadow = "0 -2px 12px rgba(0,0,0,0.18)";',
+    '        appsWrap.style.padding = "10px 14px";',
+    '      }',
+    '    } else if(el){',
+    '      el.style.display = "block";',
+    '    }',
+    '  }',
+    '});',
+    '</script>',
+    '',
+    '{% schema %}',
+    '{',
+    '  "name": "Landing controlador",',
+    '  "settings": [],',
+    '  "presets": [{ "name": "Landing controlador" }]',
+    '}',
+    '{% endschema %}',
+    '',
+  ].join('\n');
+
+  // Una instancia de esta sección por cada FOTO de la landing — a diferencia
+  // de la sección vieja (seccionLandingLiquid), la URL va escrita directo en
+  // el setting de ESTA instancia (ver construirPlantillaLandingProducto),
+  // porque ahora la plantilla es propia de este producto y se arma ya con
+  // los datos correctos adentro — no hace falta leer ningún metafield en
+  // tiempo real para saber qué foto va acá.
+  private readonly seccionImagenLiquid = [
+    '{%- comment -%}',
+    '  Sección creada automáticamente por Ecom Magnates: dibuja UNA sola foto',
+    '  de la landing. No editar a mano, se sobrescribe si el backend la',
+    '  vuelve a necesitar.',
+    '{%- endcomment -%}',
+    '<div style="width:100%; margin:0; padding:0; line-height:0; font-size:0;">',
+    '  <img src="{{ section.settings.url | escape }}" alt="{{ product.title | escape }}" loading="lazy" style="display:block; width:100%; margin:0; padding:0; border:0;">',
+    '</div>',
+    '{% schema %}',
+    '{',
+    '  "name": "Imagen landing",',
+    '  "settings": [{ "type": "text", "id": "url", "label": "URL" }],',
+    '  "presets": [{ "name": "Imagen landing" }]',
+    '}',
+    '{% endschema %}',
+    '',
+  ].join('\n');
+
+  // Una instancia de esta sección por cada POSICIÓN de botón (intercalado o
+  // flotante) — dibuja el botón de RESPALDO (arranca oculto). El bloque
+  // real de Releasit/EasySell para esa misma posición vive en su propia
+  // sección "apps_<grupo>" vecina (ver construirPlantillaLandingProducto);
+  // el script de "landing-controlador" decide cuál de las dos mostrar.
+  private readonly seccionRespaldoBotonLiquid = [
+    '{%- comment -%}',
+    '  Sección creada automáticamente por Ecom Magnates: botón de comprar de',
+    '  RESPALDO para una posición puntual — arranca oculto, "landing-',
+    '  controlador" lo muestra solo si la sección "apps" real de esa misma',
+    '  posición no logró dibujar nada (tienda sin Releasit/EasySell',
+    '  instalado). No editar a mano.',
+    '{%- endcomment -%}',
+    '{%- assign animacion_boton = product.metafields.ecom_magnates.landing_animacion_boton.value -%}',
+    '{%- unless animacion_boton -%}',
+    '  {%- if product.metafields.ecom_magnates.landing_movimiento.value -%}',
+    '    {%- assign animacion_boton = "pulsacion" -%}',
+    '  {%- else -%}',
+    '    {%- assign animacion_boton = "ninguna" -%}',
+    '  {%- endif -%}',
+    '{%- endunless -%}',
+    '{%- assign icono_boton = product.metafields.ecom_magnates.landing_icono_boton.value | default: "camion" -%}',
+    '{%- capture icono_boton_svg -%}',
+    '{%- case icono_boton -%}',
+    '  {%- when "ninguno" -%}',
+    '  {%- when "carrito" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>',
+    '  {%- when "bolsa" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>',
+    '  {%- when "canasta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M9 4L7 10"></path><path d="M15 4l2 6"></path><path d="M5 10h14l-1.2 8.4a2 2 0 0 1-1.98 1.6H8.18a2 2 0 0 1-1.98-1.6L5 10z"></path><path d="M12 10v6"></path><path d="M9 13h6"></path></svg>',
+    '  {%- when "tarjeta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>',
+    '  {%- when "etiqueta" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>',
+    '  {%- when "flecha" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>',
+    '  {%- when "caja" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>',
+    '  {%- when "bolso" -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><path d="M4 9h16l-1.5 10.5a2 2 0 0 1-2 1.5H7.5a2 2 0 0 1-2-1.5L4 9z"></path><path d="M8 9V7a4 4 0 0 1 8 0v2"></path><circle cx="12" cy="14" r="1"></circle></svg>',
+    '  {%- else -%}',
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; vertical-align:-3px;"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>',
+    '{%- endcase -%}',
+    '{%- endcapture -%}',
+    '{%- if product.selected_or_first_available_variant -%}',
+    '  <form id="rsi-fallback-form-{{ section.settings.grupo }}" method="post" action="/cart/add" style="display:none !important;">',
+    '    <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
+    '    <input type="hidden" name="quantity" value="1">',
+    '  </form>',
+    '  <div data-ecom-grupo="{{ section.settings.grupo }}" style="display:none; {% if section.settings.flotante %}position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);{% else %}width:100%; margin:0; padding:0; line-height:0; font-size:0;{% endif %}">',
+    '    <button',
+    '      type="button"',
+    '      class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '      onclick="var f=document.getElementById(\'rsi-fallback-form-{{ section.settings.grupo }}\'); if(f){ f.submit(); }"',
+    '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block; width:100% !important; margin:0 !important; padding:16px !important; background:{{ section.settings.color | default: "#f0b90b" }} !important; color:{{ section.settings.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ section.settings.colorTexto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ section.settings.texto | default: "COMPRAR AHORA" | escape }}</button>',
+    '  </div>',
+    '{%- endif -%}',
+    '{% schema %}',
+    '{',
+    '  "name": "Landing respaldo botón",',
+    '  "settings": [',
+    '    { "type": "text", "id": "grupo", "label": "Grupo" },',
+    '    { "type": "text", "id": "texto", "label": "Texto" },',
+    '    { "type": "text", "id": "color", "label": "Color" },',
+    '    { "type": "text", "id": "colorTexto", "label": "Color texto" },',
+    '    { "type": "checkbox", "id": "flotante", "label": "Flotante", "default": false }',
+    '  ],',
+    '  "presets": [{ "name": "Landing respaldo botón" }]',
+    '}',
+    '{% endschema %}',
+    '',
+  ].join('\n');
+
   // Tipos de SECCIÓN (no de bloque) que en distintos temas corresponden a la
   // ficha de producto de siempre (título/precio/galería/comprar/descripción).
   // En Dawn y temas viejos se llama "main-product"; en Horizon se llama
@@ -1412,6 +1740,136 @@ export class ShopifyService {
     }
   }
 
+  // Reemplazo de asegurarPlantillaLanding (09/09, ver el comentario grande
+  // sobre "seccionControladorLiquid" más arriba): se asegura de que el tema
+  // tenga instaladas las 3 secciones propias chiquitas (controlador, imagen,
+  // respaldo de botón) que arma construirPlantillaLandingProducto() más
+  // abajo. A diferencia de la plantilla en sí (que ahora es una por
+  // producto), estas 3 secciones SÍ son compartidas por todas las landings
+  // de la tienda — son código Liquid genérico, reutilizado por cada
+  // instancia con distintos "settings" — así que sigue el mismo patrón de
+  // siempre: se sobrescriben solo si el texto cambió, y si algo falla acá no
+  // debe tumbar la publicación del producto.
+  private async asegurarSeccionesLandingEnTema(
+    credenciales: ShopifyCredenciales,
+    temaId: number,
+    avisos?: string[],
+  ): Promise<void> {
+    const archivos: Array<[string, string, string]> = [
+      ['sections/landing-controlador.liquid', this.seccionControladorLiquid, 'controlador'],
+      ['sections/landing-imagen.liquid', this.seccionImagenLiquid, 'imagen'],
+      ['sections/landing-respaldo-boton.liquid', this.seccionRespaldoBotonLiquid, 'respaldo de botón'],
+    ];
+    for (const [archivo, contenido, nombreCorto] of archivos) {
+      try {
+        const existente = await this.obtenerAsset(credenciales, temaId, archivo);
+        if (existente !== contenido) {
+          await this.guardarAsset(credenciales, temaId, archivo, contenido);
+          this.logger.log(existente === null ? `Sección "${nombreCorto}" creada en el tema.` : `Sección "${nombreCorto}" actualizada en el tema.`);
+        }
+      } catch (err) {
+        this.logger.warn(`No se pudo preparar la sección "${nombreCorto}" del tema: ${(err as Error).message}`);
+        if (avisos) {
+          avisos.push(`No se pudo actualizar la sección "${nombreCorto}" en el tema. Volvé a publicar en un momento.`);
+        }
+      }
+    }
+  }
+
+  // Nombre de archivo ÚNICO por producto para la plantilla alterna "landing"
+  // (ver el comentario grande sobre "seccionControladorLiquid" más arriba,
+  // sobre por qué ya no se puede compartir un solo archivo entre todos los
+  // productos). El id del producto lo pone Shopify (numérico, único por
+  // tienda), así que nunca hay dos landings distintas peleando por el mismo
+  // nombre de archivo.
+  private nombreArchivoPlantillaProducto(productId: number): string {
+    return `templates/product.${this.sufijoPlantillaProducto(productId)}.json`;
+  }
+
+  private sufijoPlantillaProducto(productId: number): string {
+    return `ecom-magnates-landing-${productId}`;
+  }
+
+  // Arma DE CERO (no repara ni hereda nada de la plantilla normal de la
+  // tienda — ver el comentario grande sobre "seccionControladorLiquid" más
+  // arriba) la plantilla "landing" de ESTE producto puntual: una sección
+  // "landing-controlador" (siempre primera), una sección "landing-imagen"
+  // por cada foto de la secuencia (con su URL ya escrita en el setting) y,
+  // por cada botón "comprar" (intercalado o flotante), un PAR de secciones
+  // vecinas — "apps_<grupo>" (el bloque real de Releasit/EasySell, tipo
+  // sección nativo de Shopify) y "respaldo_<grupo>" (nuestro botón de
+  // respaldo) — donde <grupo> identifica esa posición puntual ("pos_1",
+  // "pos_2", ..., o "flotante"). "landing-controlador" es quien después, en
+  // el navegador, decide cuál de las dos mostrar en cada posición (ver su
+  // comentario grande, más arriba).
+  private construirPlantillaLandingProducto(
+    secuencia: LandingSecuenciaPaso[],
+    botonFlotante: boolean | undefined,
+    botonFlotanteTexto: string | undefined,
+    botonFlotanteColor: string | undefined,
+    botonFlotanteColorTexto: string | undefined,
+  ): { sections: Record<string, any>; order: string[] } {
+    const sections: Record<string, any> = {
+      controlador: { type: 'landing-controlador', settings: {} },
+    };
+    const order: string[] = ['controlador'];
+
+    const seccionApps = () => ({
+      type: 'apps',
+      blocks: {
+        old: { type: this.BLOQUE_RELEASIT_VIEJO, settings: { product: '' } },
+        new: { type: this.BLOQUE_RELEASIT_NUEVO, settings: { product: '' } },
+      },
+      block_order: ['old', 'new'],
+      settings: { include_margins: true },
+    });
+
+    let idxImagen = 0;
+    let idxBoton = 0;
+    for (const paso of secuencia) {
+      if (paso.tipo === 'boton_comprar') {
+        idxBoton++;
+        const grupo = `pos_${idxBoton}`;
+        const claveApps = `apps_${grupo}`;
+        const claveRespaldo = `respaldo_${grupo}`;
+        sections[claveApps] = seccionApps();
+        sections[claveRespaldo] = {
+          type: 'landing-respaldo-boton',
+          settings: {
+            grupo,
+            texto: paso.texto || '',
+            color: paso.color || '',
+            colorTexto: paso.colorTexto || '',
+            flotante: false,
+          },
+        };
+        order.push(claveApps, claveRespaldo);
+      } else {
+        idxImagen++;
+        const claveImagen = `imagen_${idxImagen}`;
+        sections[claveImagen] = { type: 'landing-imagen', settings: { url: paso.url } };
+        order.push(claveImagen);
+      }
+    }
+
+    if (botonFlotante) {
+      sections['apps_flotante'] = seccionApps();
+      sections['respaldo_flotante'] = {
+        type: 'landing-respaldo-boton',
+        settings: {
+          grupo: 'flotante',
+          texto: botonFlotanteTexto || '',
+          color: botonFlotanteColor || '',
+          colorTexto: botonFlotanteColorTexto || '',
+          flotante: true,
+        },
+      };
+      order.push('apps_flotante', 'respaldo_flotante');
+    }
+
+    return { sections, order };
+  }
+
   private slugify(texto: string): string {
     return (texto || '')
       .toLowerCase()
@@ -1572,13 +2030,21 @@ export class ShopifyService {
     // estudiante en vez de que se pierdan solo en los logs de Railway.
     const avisos: string[] = [];
 
-    // Se asegura (una sola vez por tienda) de que el tema tenga la plantilla
-    // alterna "landing" lista, antes de crear/actualizar el producto.
-    await this.asegurarPlantillaLanding(
-      credenciales,
-      this.clavesBloquesBotonesNecesarias(input.secuencia, input.botonFlotante),
-      avisos,
-    );
+    // Se asegura (una sola vez por tienda) de que el tema tenga las 3
+    // secciones Liquid reutilizables que arman la landing: el "controlador"
+    // (CSS + scripts globales), "landing-imagen" (una instancia por foto) y
+    // "landing-respaldo-boton" (el botón de repuesto, uno por posición). Esto
+    // reemplaza a la vieja plantilla ÚNICA y compartida entre productos — ver
+    // construirPlantillaLandingProducto() más abajo — porque cada landing
+    // ahora arma su PROPIA plantilla, exclusiva, con exactamente las
+    // secciones que necesita en el orden que necesita (fotos y botones
+    // intercalados como secciones de nivel superior, nunca como bloques
+    // metidos dentro de otra sección). Esto es lo que finalmente hace que
+    // Shopify sí muestre el botón real de Releasit/EasySell: los bloques de
+    // apps de Shopify solo se renderizan de verdad cuando están en su propia
+    // sección tipo "apps", nunca anidados dentro de una sección nuestra.
+    const temaId = await this.obtenerTemaActivoId(credenciales);
+    await this.asegurarSeccionesLandingEnTema(credenciales, temaId, avisos);
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
@@ -1602,6 +2068,12 @@ export class ShopifyService {
     // "handle" ya existe (mismo producto/landing reenviado), Shopify no
     // rechaza la creación: le agrega solo un sufijo ("-1", "-2", etc.) para
     // que sea único, así que esto nunca falla por handle repetido.
+    //
+    // Ojo: acá TODAVÍA no se manda "template_suffix" — el nombre de la
+    // plantilla de esta landing incluye el ID del producto (para que cada
+    // landing tenga la suya, exclusiva), y ese ID todavía no existe antes de
+    // crear el producto. Se agrega más abajo, en el mismo PUT que ya
+    // actualiza la descripción.
     const crear = await this.llamarShopify(credenciales, '/products.json', {
       method: 'POST',
       body: JSON.stringify({
@@ -1610,7 +2082,6 @@ export class ShopifyService {
           handle,
           images,
           status: 'active',
-          template_suffix: this.SUFIJO_PLANTILLA_LANDING,
           variants: [{ price: precio, compare_at_price: precioComparacion ?? null }],
         },
       }),
@@ -1634,15 +2105,65 @@ export class ShopifyService {
     // "position" contra product.images como antes.
     const imagenesShopify: string[] = await this.subirImagenesComoArchivos(credenciales, input.imagenes);
 
+    // Reemplaza cada URL de imagen de la secuencia por su copia ya alojada en
+    // Shopify (ver comentario arriba) — tanto para dibujarla directo en la
+    // plantilla nueva (construirPlantillaLandingProducto, más abajo) como
+    // para guardarla en el metafield de respaldo. Los pasos "boton_comprar"
+    // no tienen url, se dejan tal cual.
+    let secuenciaFinal: LandingSecuenciaPaso[] = input.secuencia && input.secuencia.length > 0 ? input.secuencia : [];
+    if (secuenciaFinal.length > 0) {
+      let idxImagen = 0;
+      secuenciaFinal = secuenciaFinal.map((paso) => {
+        if (paso.tipo === 'boton_comprar') return paso;
+        const nuevaUrl = imagenesShopify[idxImagen] ?? paso.url;
+        idxImagen++;
+        return { ...paso, url: nuevaUrl };
+      });
+    } else {
+      // Si el taller no mandó una secuencia explícita (caso raro, landings
+      // viejas del editor), se arma una de respaldo: todas las fotos
+      // seguidas y, si corresponde, ningún botón intercalado (solo el
+      // flotante, si está prendido) — así construirPlantillaLandingProducto
+      // siempre tiene algo con qué armar la plantilla.
+      secuenciaFinal = imagenesShopify.map((url) => ({ tipo: 'imagen', url }));
+    }
+
+    // Arma, desde cero, la plantilla EXCLUSIVA de este producto: una sección
+    // "landing-imagen" por cada foto y, intercalado donde el estudiante puso
+    // cada botón, un par de secciones "apps_pos_N" (la de verdad, tipo
+    // nativo "apps") + "respaldo_pos_N" (el botón de nuestro diseño, que se
+    // muestra únicamente si la de verdad no cargó nada). Esto reemplaza a la
+    // vieja plantilla única y compartida entre todos los productos.
+    const plantillaProducto = this.construirPlantillaLandingProducto(
+      secuenciaFinal,
+      input.botonFlotante,
+      input.botonFlotanteTexto,
+      input.botonFlotanteColor,
+      input.botonFlotanteColorTexto,
+    );
+    const sufijoPlantilla = this.sufijoPlantillaProducto(json.product.id);
+    try {
+      await this.guardarAsset(
+        credenciales,
+        temaId,
+        this.nombreArchivoPlantillaProducto(json.product.id),
+        JSON.stringify(plantillaProducto, null, 2),
+      );
+    } catch (err) {
+      avisos.push('El producto se creó, pero no se pudo terminar de armar la plantilla de la landing. Volvé a publicar en un momento.');
+    }
+
     // La descripción nativa (respaldo por si el tema no soporta la plantilla
     // alterna) se arma DESPUÉS de crear el producto, con las URLs ya
     // alojadas en Shopify — no se puede mandar en el mismo POST de arriba
     // porque esas URLs recién existen una vez que Shopify terminó de subir
-    // las imágenes.
+    // las imágenes. Se manda en el mismo PUT que ya asigna la plantilla
+    // exclusiva de esta landing (template_suffix), para no hacer dos llamados
+    // separados.
     const bodyHtml = this.construirHtml(imagenesShopify);
     const actualizarBody = await this.llamarShopify(credenciales, `/products/${json.product.id}.json`, {
       method: 'PUT',
-      body: JSON.stringify({ product: { id: json.product.id, body_html: bodyHtml } }),
+      body: JSON.stringify({ product: { id: json.product.id, body_html: bodyHtml, template_suffix: sufijoPlantilla } }),
     });
     if (!actualizarBody.ok) {
       avisos.push(
@@ -1651,19 +2172,9 @@ export class ShopifyService {
     }
 
     if (input.secuencia && input.secuencia.length > 0) {
-      // Reemplaza cada URL de imagen de la secuencia por su copia ya alojada
-      // en Shopify (ver comentario arriba) antes de guardarla en el
-      // metafield — así la landing real (sections/landing-imagenes.liquid,
-      // que dibuja "paso.url" tal cual viene) también queda apuntando a
-      // Shopify, no a fal.media. Los pasos "boton_comprar" no tienen url, se
-      // dejan tal cual.
-      let idxImagen = 0;
-      const secuenciaFinal: LandingSecuenciaPaso[] = input.secuencia.map((paso) => {
-        if (paso.tipo === 'boton_comprar') return paso;
-        const nuevaUrl = imagenesShopify[idxImagen] ?? paso.url;
-        idxImagen++;
-        return { ...paso, url: nuevaUrl };
-      });
+      // Se guarda también en el metafield, como respaldo/compatibilidad,
+      // aunque la plantilla nueva ya no necesite leerlo para dibujar las
+      // fotos (las trae escritas directo en sus settings).
       await this.guardarMetafieldSecuencia(credenciales, json.product.id, secuenciaFinal, avisos);
     }
     await this.guardarMetafieldBotonFlotante(credenciales, json.product.id, !!input.botonFlotante, avisos);
