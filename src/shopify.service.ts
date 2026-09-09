@@ -1357,6 +1357,82 @@ export class ShopifyService {
     return Number.isFinite(n) && n > 0 ? n.toFixed(2) : undefined;
   }
 
+  // Pedido de Norbey (11/09): antes, TODAS las fotos de la landing se
+  // adjuntaban a la Multimedia del producto (product.images/product.media)
+  // — de ahí las tomaba también nuestra propia sección para dibujarlas a
+  // pantalla completa. El problema (visto primero con captura real en
+  // esenciaselecta, tema Shrine): cualquier tema dibuja SU PROPIA galería
+  // nativa a partir de esa misma Multimedia, y en varios temas esa galería
+  // no es un bloque que se pueda apagar (es parte fija de la sección de
+  // producto) — así que las 5-6 fotos de la landing terminaban apareciendo
+  // OTRA VEZ, en miniatura/tira, más abajo en la página, sin ninguna forma
+  // de ocultarlas por más que probáramos con bloques.
+  //
+  // La solución de raíz: subir las fotos a la biblioteca de Archivos de
+  // Shopify (GraphQL "fileCreate") en vez de a la Multimedia del producto.
+  // Quedan alojadas para siempre en el mismo CDN de Shopify (mismo
+  // beneficio que ya teníamos: no dependen de fal.media, que es temporal),
+  // pero como NO forman parte de "product.images"/"product.media", ningún
+  // tema tiene de dónde sacarlas para su propia galería — nuestra sección
+  // las sigue mostrando igual, porque ya las toma del metafield "secuencia"
+  // (paso.url), no de product.images. Ver publicarLanding: al producto
+  // ahora solo se le adjunta como Multimedia la PRIMERA foto (para que el
+  // admin y las redes sociales tengan una portada), el resto solo vive acá.
+  //
+  // "fileCreate" es asíncrono: Shopify tarda un instante en procesar cada
+  // imagen antes de tener su URL final, así que después de crearlas se
+  // pregunta de nuevo por su estado con un query "nodes(ids: ...)",
+  // reintentando unas pocas veces con una espera corta entre cada una.
+  private async subirImagenesComoArchivos(credenciales: ShopifyCredenciales, urls: string[]): Promise<string[]> {
+    if (urls.length === 0) return [];
+    const creacion = await this.graphql(
+      credenciales,
+      `mutation SubirArchivosLanding($files: [FileCreateInput!]!) {
+        fileCreate(files: $files) {
+          files { id }
+          userErrors { field message }
+        }
+      }`,
+      { files: urls.map((src) => ({ originalSource: src, contentType: 'IMAGE' })) },
+    );
+    const errores = creacion?.fileCreate?.userErrors;
+    if (errores && errores.length > 0) {
+      throw new Error(`No se pudieron subir las imágenes como archivos: ${errores.map((e: any) => e.message).join('; ')}`);
+    }
+    const ids: string[] = (creacion?.fileCreate?.files || []).map((f: any) => f?.id).filter(Boolean);
+    if (ids.length !== urls.length) {
+      throw new Error('Shopify no devolvió un archivo por cada imagen subida.');
+    }
+
+    const resultado: (string | null)[] = new Array(ids.length).fill(null);
+    for (let intento = 0; intento < 8 && resultado.includes(null); intento++) {
+      if (intento > 0) await new Promise((resolve) => setTimeout(resolve, 700));
+      const pendientes = ids.map((id, i) => ({ id, i })).filter(({ i }) => resultado[i] === null);
+      const consulta = await this.graphql(
+        credenciales,
+        `query ConsultarArchivosLanding($ids: [ID!]!) {
+          nodes(ids: $ids) {
+            id
+            ... on MediaImage { image { url } }
+          }
+        }`,
+        { ids: pendientes.map((p) => p.id) },
+      );
+      const urlPorId = new Map<string, string>();
+      for (const nodo of consulta?.nodes || []) {
+        if (nodo?.id && nodo?.image?.url) urlPorId.set(nodo.id, nodo.image.url);
+      }
+      for (const { id, i } of pendientes) {
+        const url = urlPorId.get(id);
+        if (url) resultado[i] = url;
+      }
+    }
+
+    // Defensivo: si alguna imagen puntual no llegó a procesarse a tiempo
+    // (muy raro), se usa la original en vez de romper toda la publicación.
+    return resultado.map((url, i) => url ?? urls[i]);
+  }
+
   // Guarda el texto/color personalizado del botón flotante, solo cuando el
   // taller efectivamente mandó algo para ese campo (typeof === 'string') —
   // así una landing vieja, o un reenvío desde una versión del taller que
@@ -1405,17 +1481,13 @@ export class ShopifyService {
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
-    // Todas las imágenes van a la Multimedia del producto (galería nativa) —
-    // de ahí las toma también la sección automática "landing-imagenes" para
-    // dibujarlas a pantalla completa.
-    //
-    // "position" se manda explícito (1, 2, 3...) en vez de confiar en que
-    // Shopify devuelva las imágenes creadas en el mismo orden en que se
-    // mandaron: la documentación oficial de Shopify NO garantiza eso salvo
-    // que se fije "position" a mano. Sin esto, el cruce de más abajo (URL de
-    // fal.media -> URL ya alojada en Shopify) podría emparejar mal una
-    // imagen con el paso equivocado de la secuencia.
-    const images = input.imagenes.map((src, i) => ({ src, position: i + 1 }));
+    // Ya NO se adjuntan todas las fotos a la Multimedia del producto (ver el
+    // comentario grande en subirImagenesComoArchivos, más arriba, sobre por
+    // qué eso hacía que cualquier tema las mostrara otra vez en su propia
+    // galería nativa). Solo la PRIMERA se manda acá, como portada del
+    // producto para el admin y para compartir en redes — el resto de las
+    // fotos se sube aparte, como archivos sueltos, más abajo.
+    const images = [{ src: input.imagenes[0] }];
     const precio = this.normalizarPrecio(input.precio);
     const precioComparacion = this.normalizarPrecioOpcional(input.precioComparacion);
 
@@ -1455,13 +1527,11 @@ export class ShopifyService {
     // landing ya publicada se rompería sola sin que nadie haya tocado nada;
     // (2) Shopify solo optimiza/convierte a WebP o AVIF automáticamente las
     // imágenes que él mismo aloja, nunca las que están solo hotlinkeadas
-    // desde otro dominio. Se cruza por "position" (fijado arriba al armar
-    // "images"), nunca por el orden en que vino el array de la respuesta,
-    // porque Shopify no lo garantiza.
-    const imagenesShopify: string[] = input.imagenes.map((original, i) => {
-      const subida = (json.product.images || []).find((img: any) => img.position === i + 1);
-      return subida?.src || original; // fallback defensivo: si por lo que sea no aparece, no rompe la publicación
-    });
+    // desde otro dominio. Ahora se suben TODAS (incluida la primera, aunque
+    // esa ya haya quedado además como portada del producto) como archivos
+    // sueltos — ver subirImagenesComoArchivos — en vez de cruzar por
+    // "position" contra product.images como antes.
+    const imagenesShopify: string[] = await this.subirImagenesComoArchivos(credenciales, input.imagenes);
 
     // La descripción nativa (respaldo por si el tema no soporta la plantilla
     // alterna) se arma DESPUÉS de crear el producto, con las URLs ya
