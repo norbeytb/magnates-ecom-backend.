@@ -718,84 +718,58 @@ export class ShopifyService {
     '    {%- for paso in secuencia -%}',
     '      {%- if paso.tipo == "boton_comprar" -%}',
     '        {%- if product.selected_or_first_available_variant -%}',
-    // La tienda tiene instalada Releasit (Contra Entrega): su botón real
-    // ("Pídela y Paga en Casa") vive en el bloque nativo de compra, con
-    // id="rsi_buy_now_button" — visto con el inspector el 29/08.
-    // Pedido 09/09: ANTES este botón de acá simplemente le hacía clic al
-    // botón real de Releasit (mismo resultado que si el cliente lo tocara él
-    // mismo). Norbey pidió ir más directo: el script del final de esta
-    // sección (buscá "ecomMagnatesRsiSlot" ahí abajo) MUEVE el elemento real
-    // de Releasit hasta este mismo lugar — así el que ve y toca el
-    // visitante es literalmente el botón auténtico de Releasit (su propio
-    // texto, estilo y comportamiento), no una copia nuestra.
-    // Corregido el 09/09 (2): la primera versión de esto movía el botón real
-    // UNA sola vez y dejaba de vigilar — Norbey reportó con captura que
-    // nuestro botón seguía apareciendo encima, con el real asomando detrás.
-    // Causa: Releasit puede volver a crear su propio botón flotante (es un
-    // widget global de la tienda, independiente de esta sección — aparece
-    // junto a otros elementos globales del tema como el botón de scroll o
-    // el reproductor, no adentro de nuestro contenido) en cualquier momento
-    // después de la carga inicial, y una sola mudanza no alcanza a
-    // sostenerse en el tiempo. Por eso ahora el "destino" no es el botón en
-    // sí (que se reemplaza y desaparece) sino un contenedor ESTABLE que
-    // nunca se borra — el <span class="ecomMagnatesRsiSlot"> de más abajo —
-    // y el script vigila TODA la página sin parar, así que si Releasit
-    // vuelve a crear su botón en otro lado, se lo vuelve a traer para acá al
-    // instante. Ojo: Releasit solo mantiene UN botón real en la página, así
-    // que si la landing tiene más de uno de estos agregados, solo el
-    // PRIMER contenedor se lleva el real — los demás se quedan con el
-    // respaldo de abajo (clickear al real, o agregar al carrito si Releasit
-    // no está instalado), para que nunca quede sin hacer nada.
+    // Pedido 09/09 (5), reemplaza TODO el mecanismo anterior de "mover/clonar
+    // por JavaScript el botón real de Releasit" (ver más abajo en el
+    // historial de comentarios del <script> final para el detalle de cómo
+    // era antes): Norbey consiguió, con capturas reales de código de dos
+    // tiendas de estudiantes, el identificador EXACTO que Shopify le pone al
+    // bloque nativo del botón de contra entrega cuando se agrega a mano
+    // desde "Agregar bloque → Apps" en el editor de temas — uno para la
+    // versión vieja de la app (se llamaba "Releasit") y otro para la
+    // versión nueva (se renombró a "EasySell"), cada estudiante tiene
+    // instalada una sola de las dos según cuándo se dio de alta. Con
+    // "{% content_for 'block' %}" (función de Shopify agregada en 2024) se
+    // le puede pedir a Shopify que dibuje ACÁ ese bloque real de la app,
+    // nativo, sin ningún truco de JavaScript — es Shopify mismo quien lo
+    // arma, exactamente igual que si el estudiante lo hubiera puesto a mano
+    // en el editor. Como cada estudiante solo tiene UNA de las dos
+    // versiones, se intentan las DOS acá abajo: la que no corresponda a la
+    // app instalada en esa tienda no dibuja nada (Shopify no rompe la
+    // página por una referencia a una app que no está instalada, solo la
+    // deja vacía) y la que sí corresponde se ve normal.
+    // "asegurarBloquesRealesReleasit" (ver más abajo en el archivo) es quien
+    // se encarga de que la plantilla realmente tenga estos dos bloques
+    // declarados para esta posición puntual antes de que esta sección
+    // intente usarlos — por eso acá se verifica con "section.blocks | where"
+    // que el bloque exista de verdad antes de pedirlo con content_for: si
+    // todavía no se sincronizó (por ejemplo, la primera vez que se sube este
+    // cambio, antes de que alguna landing de esa tienda se vuelva a
+    // publicar), no se intenta nada raro y se cae directo al botón de
+    // respaldo de siempre, sin arriesgarse a un error de Liquid por pedir un
+    // bloque que no existe.
     '          <div style="margin:0 !important; padding:0 !important; font-size:0 !important; line-height:0 !important; display:block !important;">',
     '            <form id="rsi-fallback-form-{{ forloop.index }}" method="post" action="/cart/add" style="display:none !important;">',
     '              <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '              <input type="hidden" name="quantity" value="1">',
     '            </form>',
-    '            <span class="ecomMagnatesRsiSlot" style="display:block;">',
+    '            {%- assign ecom_clave_old = "releasit_btn_" | append: forloop.index | append: "_old" -%}',
+    '            {%- assign ecom_clave_new = "releasit_btn_" | append: forloop.index | append: "_new" -%}',
+    '            {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
+    '            {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
+    '            <span class="ecomMagnatesRsiHueco">',
+    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- content_for "block", id: ecom_bloque_old.id, type: ecom_bloque_old.type -%}{%- endif -%}</span>',
+    '              <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- content_for "block", id: ecom_bloque_new.id, type: ecom_bloque_new.type -%}{%- endif -%}</span>',
     '            <button',
     '              type="button"',
-    '              class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '              class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
     '              onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-{{ forloop.index }}\'); if(f){ f.submit(); } }"',
-    // border-radius grande (píldora) + el emoji de camión + animation:
-    // referenciando el @keyframes de arriba, para que se vea y se mueva igual
-    // que el botón amarillo real de Releasit. El texto sale de paso.texto —
-    // lo que el estudiante haya escrito en el taller para ESE botón puntual
-    // (ver realBotonComprarHtml) — y si no escribió nada cae en "COMPRAR AHORA".
-    // El color (fondo y texto) también sale del taller, elegido con un
-    // selector de color por botón — colorTexto ya viene calculado por el
-    // taller según el contraste del fondo elegido, para que nunca quede
-    // texto negro sobre un fondo oscuro (o blanco sobre uno claro).
-    //
-    // "ecomMagnatesPulseBtn" (clase, no solo la animation: de acá abajo): el
-    // 03/09 Norbey mostró con video que en su tienda real el pulso por CSS
-    // (@keyframes de arriba) queda perfectamente definido en el HTML — se
-    // confirmó con su propio inspector, la propiedad animation: SÍ estaba
-    // puesta — pero visualmente el botón se quedaba quieto igual. La causa
-    // más probable: muchos temas (Dawn incluido) traen su propio CSS de
-    // accesibilidad que, si el navegador/SO tiene activado "reducir
-    // movimiento", apaga TODAS las animaciones del sitio de punta a punta
-    // (una regla @media (prefers-reduced-motion) con selector * !important).
-    // En vez de seguir peleando en CSS contra un estilo del tema que no
-    // controlamos, el pulso ahora lo mueve JavaScript directo (ver el
-    // <script> al final de esta sección): re-calcula la escala en cada
-    // frame y la aplica con .setProperty(..., "important"), así que gana
-    // pase lo que pase en el CSS de la tienda. La animation: de acá abajo
-    // se deja además como respaldo (por si algún visitante tiene JavaScript
-    // desactivado), pero el script es el que manda.
-    // Pedido 10/09, corregido el 08/09 con la captura real del botón de
-    // Releasit: el ícono va SIN ningún fondo relleno (color plano, igual que
-    // el texto) y fijo a la izquierda del botón — no una placa oscura ni
-    // pegado al texto en el centro. Se probaron dos diseños antes de este:
-    // (1) superpuesto en la esquina con top negativo — mordía la imagen de
-    // arriba porque este botón no tiene colchón de padding antes (el div que
-    // lo envuelve tiene padding:0 !important); (2) placa oscura en línea
-    // junto al texto — Norbey aclaró que el ícono real no lleva fondo. Ahora:
-    // position:absolute con top:50% + translateY(-50%), SIN ningún offset
-    // negativo, así el ícono siempre queda contenido adentro del botón
-    // (nunca se sale ni tapa nada de arriba) pero pegado a la izquierda como
-    // en la foto real. El texto sigue centrado solo vía text-align:center —
-    // al ser el ícono position:absolute, no lo empuja ni lo descentra.
-    '              style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    // El texto sale de paso.texto — lo que el estudiante haya escrito en el
+    // taller para ESE botón puntual — y si no escribió nada cae en "COMPRAR
+    // AHORA". El color (fondo y texto) también sale del taller. Este botón
+    // ahora arranca OCULTO (display:none) — el script del final de la
+    // sección lo muestra solo si ninguno de los dos bloques reales de arriba
+    // llegó a dibujar algo (ver "ecomMagnatesRsiHueco" en ese script).
+    '              style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:none; width:100% !important; margin:0 !important; padding:16px !important; background:{{ paso.color | default: "#f0b90b" }} !important; color:{{ paso.colorTexto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '            >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ paso.colorTexto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ paso.texto | default: "COMPRAR AHORA" | escape }}</button>',
     '            </span>',
     '          </div>',
@@ -825,30 +799,29 @@ export class ShopifyService {
     '</div>',
     '{%- if boton_flotante and product.selected_or_first_available_variant -%}',
     '  <div style="position:fixed !important; left:0; right:0; bottom:0; z-index:999; padding:10px 14px; background:#fff; box-shadow:0 -2px 12px rgba(0,0,0,0.18);">',
-    // Mismo enganche a Releasit que el botón intercalado de arriba (ver el
-    // comentario grande ahí sobre "ecomMagnatesRsiSlot"): también lleva ese
-    // mismo contenedor estable, así que si esta landing NO tiene ningún
-    // botón intercalado (solo el flotante), el botón real de Releasit se
-    // muda acá. Si además de este flotante hay uno o más intercalados, el
-    // intercalado que aparece primero en la página se lleva el real (el
-    // flotante se queda con el respaldo de siempre — clickear al real, o
-    // agregar al carrito). Mismo texto/color personalizable también (ver
-    // guardarMetafieldBotonFlotanteTexto/Color más arriba) — si el estudiante
-    // nunca los tocó en el taller, cae de vuelta a amarillo con "COMPRAR AHORA".
+    // Mismo mecanismo que el botón intercalado de arriba (bloque nativo real
+    // vía content_for "block", ver el comentario grande ahí sobre
+    // "ecomMagnatesRsiHueco") — clave fija "releasit_btn_flotante_old" /
+    // "_new" en vez de un número, porque solo hay UN botón flotante por
+    // landing (no está adentro del "for paso in secuencia").
     '    <form id="rsi-fallback-form-flotante" method="post" action="/cart/add" style="display:none !important;">',
     '      <input type="hidden" name="id" value="{{ product.selected_or_first_available_variant.id }}">',
     '      <input type="hidden" name="quantity" value="1">',
     '    </form>',
-    '    <span class="ecomMagnatesRsiSlot" style="display:block;">',
+    '    {%- assign ecom_clave_old = "releasit_btn_flotante_old" -%}',
+    '    {%- assign ecom_clave_new = "releasit_btn_flotante_new" -%}',
+    '    {%- assign ecom_bloque_old = section.blocks | where: "id", ecom_clave_old | first -%}',
+    '    {%- assign ecom_bloque_new = section.blocks | where: "id", ecom_clave_new | first -%}',
+    '    <span class="ecomMagnatesRsiHueco">',
+    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_old -%}{%- content_for "block", id: ecom_bloque_old.id, type: ecom_bloque_old.type -%}{%- endif -%}</span>',
+    '      <span class="ecomMagnatesRsiBloque">{%- if ecom_bloque_new -%}{%- content_for "block", id: ecom_bloque_new.id, type: ecom_bloque_new.type -%}{%- endif -%}</span>',
     '    <button',
     '      type="button"',
-    '      class="{% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
+    '      class="ecomMagnatesRsiRespaldo {% if animacion_boton == \'sacudida\' %}ecomMagnatesShakeBtn{% elsif animacion_boton == \'rebote\' %}ecomMagnatesBounceBtn{% elsif animacion_boton == \'pulsacion\' %}ecomMagnatesPulseBtn{% endif %}"',
     '      onclick="var rsiBtn=document.getElementById(\'rsi_buy_now_button\'); if(rsiBtn){ rsiBtn.click(); } else { var f=document.getElementById(\'rsi-fallback-form-flotante\'); if(f){ f.submit(); } }"',
-    // Mismo cambio que el botón intercalado de arriba — ícono sin fondo
-    // relleno, fijo a la izquierda del botón con position:absolute pero sin
-    // ningún offset negativo (siempre contenido adentro). Ver el comentario
-    // grande ahí.
-    '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:block !important; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
+    // Igual que el intercalado: arranca oculto, el script del final lo
+    // muestra solo si ninguno de los dos bloques reales dibujó algo.
+    '      style="all:revert !important; box-sizing:border-box !important; position:relative !important; display:none; width:100% !important; margin:0 !important; padding:14px !important; background:{{ boton_flotante_color | default: "#f0b90b" }} !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; border:0 !important; font-family:inherit !important; font-size:15px !important; font-weight:800 !important; letter-spacing:0.03em !important; line-height:normal !important; text-align:center !important; text-transform:none !important; border-radius:999px !important; cursor:pointer !important; appearance:none !important; -webkit-appearance:none !important; box-shadow:0 2px 8px rgba(0,0,0,0.18) !important;{% if animacion_boton == \'sacudida\' %} animation:ecomMagnatesBtnShake 3s ease-in-out infinite !important;{% elsif animacion_boton == \'rebote\' %} animation:ecomMagnatesBtnBounce 3s ease-in-out infinite !important;{% elsif animacion_boton == \'pulsacion\' %} animation:ecomMagnatesBtnPulse 3s ease-in-out infinite !important;{% endif %}"',
     '    >{% unless icono_boton == "ninguno" %}<span style="position:absolute !important; left:16px !important; top:50% !important; transform:translateY(-50%) !important; display:flex !important; align-items:center !important; justify-content:center !important; color:{{ boton_flotante_color_texto | default: "#111" }} !important; pointer-events:none !important;">{{ icono_boton_svg }}</span>{% endunless %}{{ boton_flotante_texto | default: "COMPRAR AHORA" | escape }}</button>',
     '    </span>',
     '  </div>',
@@ -908,115 +881,43 @@ export class ShopifyService {
     '  }',
     '  requestAnimationFrame(tick);',
     '})();',
-    // Pedido 09/09 de Norbey: en vez de que nuestro botón le haga clic "por
-    // control remoto" al botón real de Releasit (ver el comentario grande
-    // junto a "ecomMagnatesRsiSlot" más arriba), este script MUEVE el
-    // elemento real de Releasit (id="rsi_buy_now_button") al lugar exacto
-    // donde el estudiante puso su botón "COMPRAR AHORA" — así el visitante
-    // ve y toca directamente el botón auténtico, con su propio texto/estilo/
-    // comportamiento, no una copia nuestra. Solo se mueve UNO (Releasit solo
-    // mantiene un botón real por página): si la landing tiene varios
-    // "COMPRAR AHORA" agregados, se lleva el real el primer contenedor que
-    // aparece en la página (ver ecomMagnatesRsiSlot arriba).
-    //
-    // Pedido 09/09 (2, ya resuelto): la primera versión revisaba cada 200ms
-    // durante 3 segundos — se cambió a MutationObserver para que el cambio
-    // sea instantáneo apenas Releasit crea su botón, sin demora nuestra.
-    //
-    // Pedido 09/09 (3): Norbey reportó con captura que, después de mudar el
-    // botón una vez, nuestro botón de respaldo volvía a aparecer arriba con
-    // el real asomando detrás. Causa: el botón real de Releasit NO vive
-    // adentro de esta sección — es un widget global de la tienda (aparece
-    // junto a otros elementos globales del tema, como el botón de scroll o
-    // el reproductor, en el pie de la página) que la propia app puede
-    // volver a crear o reposicionar en cualquier momento después de la
-    // carga inicial. Mudarlo una sola vez y dejar de vigilar (como hacía la
-    // versión anterior, que además usaba como "destino" al propio botón —
-    // que desaparece al ser reemplazado, perdiendo la referencia de dónde
-    // pertenecía) no alcanzaba. Fix: el "destino" ahora es un CONTENEDOR
-    // (el <span class="ecomMagnatesRsiSlot">) que nunca se borra —
-    // encierra al botón de respaldo, pero se vacía y pasa a alojar al real
-    // la primera vez que aparece. Como el contenedor nunca desaparece, el
-    // script puede seguir comparando "¿el botón real está AHORA MISMO
-    // adentro de mi contenedor?" para siempre, y si en algún momento deja
-    // de estarlo (porque Releasit lo recreó o lo movió a otro lado), lo trae
-    // de vuelta al instante — sin límite de tiempo, sin desconectarse nunca.
-    //
-    // Pedido 09/09 (4): Norbey pidió que, si el estudiante agrega VARIOS
-    // botones "comprar" en la misma landing (2, 3, 4...), TODOS se vean y
-    // funcionen como el botón real de Releasit — no solo uno con el resto
-    // mostrando nuestro diseño genérico. Como Releasit solo crea UN único
-    // elemento real por página (no existen "varios originales"), el real
-    // solo puede vivir físicamente en UNO de los huecos (el primero que
-    // aparece en la página, ver "principal" abajo). A los demás huecos NO
-    // se les deja el botón genérico nuestro: se les pone un botón nuevo que
-    // COPIA el aspecto visual actual del botón real (mismo texto/ícono,
-    // mismo color, misma tipografía, mismo tamaño de letra, mismo radio de
-    // bordes, mismo relleno) leyendo su estilo ya calculado en pantalla, y
-    // que al tocarlo dispara el clic del botón real de Releasit por
-    // detrás — así la compra sí pasa por Releasit igual que si el cliente
-    // hubiera tocado el original, y visualmente no se nota cuál es "la
-    // copia". Esta copia se vuelve a generar sola cada vez que cambia el
-    // contenido del botón real (por ejemplo si Releasit lo actualiza), para
-    // no quedar con una copia vieja/desactualizada.
+    '</script>',
+    // Pedido 09/09 (5): reemplaza TODO el mecanismo anterior de mover/clonar
+    // por JavaScript el botón real de Releasit (esa versión vieja quedó
+    // documentada en el historial de git si hace falta volver a mirarla).
+    // Ahora el botón real se dibuja de forma NATIVA con content_for "block"
+    // (ver "ecomMagnatesRsiHueco" más arriba, en el botón intercalado y en
+    // el flotante) — así que este script ya NO necesita mover ni copiar
+    // nada. Su único trabajo es: si NINGUNO de los dos bloques reales
+    // (Releasit viejo / EasySell nuevo) llegó a dibujar algo — porque esa
+    // tienda tiene otra app de contra entrega, o todavía no tiene ninguna,
+    // o la plantilla no se sincronizó a tiempo — mostrar el botón de
+    // respaldo de siempre (que ya venía oculto por defecto, ver
+    // "ecomMagnatesRsiRespaldo" arriba) para que el visitante nunca se
+    // quede sin ningún botón para comprar. Se corre UNA sola vez al cargar
+    // la página (los bloques de apps se dibujan del lado del servidor, ya
+    // vienen listos en el HTML — no hace falta ningún MutationObserver como
+    // antes, que era para el widget flotante que Releasit creaba por JS).
     '<script>',
     '(function(){',
-    '  function copiarEstiloBotonReal(real){',
-    '    var estilo = window.getComputedStyle(real);',
-    '    return (',
-    '      "all:revert !important; box-sizing:border-box !important; display:block !important; " +',
-    '      "width:100% !important; margin:0 !important; cursor:pointer !important; border:0 !important; " +',
-    '      "appearance:none !important; -webkit-appearance:none !important; " +',
-    '      "font-family:" + estilo.fontFamily + " !important; font-size:" + estilo.fontSize + " !important; " +',
-    '      "font-weight:" + estilo.fontWeight + " !important; letter-spacing:" + estilo.letterSpacing + " !important; " +',
-    '      "line-height:" + estilo.lineHeight + " !important; text-align:" + estilo.textAlign + " !important; " +',
-    '      "text-transform:" + estilo.textTransform + " !important; color:" + estilo.color + " !important; " +',
-    '      "background:" + estilo.backgroundColor + " !important; box-shadow:" + estilo.boxShadow + " !important; " +',
-    '      "border-radius:" + estilo.borderTopLeftRadius + " !important; " +',
-    '      "padding:" + estilo.paddingTop + " " + estilo.paddingRight + " " + estilo.paddingBottom + " " + estilo.paddingLeft + " !important;"',
-    '    );',
+    '  function tieneContenidoReal(nodo){',
+    '    if(!nodo) return false;',
+    '    if(nodo.querySelector("button, a, input, iframe")) return true;',
+    '    return nodo.textContent.replace(/\\s+/g, "") !== "";',
     '  }',
-    '  function firmaBotonReal(real){',
-    '    return real.innerHTML + "|" + copiarEstiloBotonReal(real);',
-    '  }',
-    '  function clonarBotonReal(hueco, real, firma){',
-    '    var clon = document.createElement("button");',
-    '    clon.type = "button";',
-    '    clon.innerHTML = real.innerHTML;',
-    '    clon.setAttribute("style", copiarEstiloBotonReal(real));',
-    '    clon.addEventListener("click", function(){',
-    '      var actual = document.getElementById("rsi_buy_now_button");',
-    '      if(actual){ actual.click(); }',
-    '    });',
-    '    hueco.innerHTML = "";',
-    '    hueco.appendChild(clon);',
-    '    hueco.setAttribute("data-ecom-rsi-firma", firma);',
-    '  }',
-    '  function asegurarBotonReal(){',
-    '    var real = document.getElementById("rsi_buy_now_button");',
-    '    var huecos = document.querySelectorAll(".ecomMagnatesRsiSlot");',
-    '    if(!real || !huecos.length) return;',
-    '    var principal = huecos[0];',
-    '    if(real.parentNode !== principal){',
-    '      principal.innerHTML = "";',
-    '      principal.appendChild(real);',
-    '      principal.removeAttribute("data-ecom-rsi-firma");',
+    '  var huecos = document.querySelectorAll(".ecomMagnatesRsiHueco");',
+    '  for(var i = 0; i < huecos.length; i++){',
+    '    var hueco = huecos[i];',
+    '    var bloques = hueco.querySelectorAll(".ecomMagnatesRsiBloque");',
+    '    var hayReal = false;',
+    '    for(var j = 0; j < bloques.length; j++){',
+    '      if(tieneContenidoReal(bloques[j])){ hayReal = true; break; }',
     '    }',
-    '    var firma = firmaBotonReal(real);',
-    '    for(var i = 1; i < huecos.length; i++){',
-    '      var hueco = huecos[i];',
-    '      if(hueco.getAttribute("data-ecom-rsi-firma") !== firma){',
-    '        clonarBotonReal(hueco, real, firma);',
-    '      }',
+    '    if(!hayReal){',
+    '      var respaldo = hueco.querySelector(".ecomMagnatesRsiRespaldo");',
+    '      if(respaldo){ respaldo.style.display = "block"; }',
     '    }',
     '  }',
-    '  asegurarBotonReal();',
-    '  if(!window.MutationObserver){',
-    '    setInterval(asegurarBotonReal, 500);',
-    '    return;',
-    '  }',
-    '  var observer = new MutationObserver(asegurarBotonReal);',
-    '  observer.observe(document.documentElement, { childList: true, subtree: true });',
     '})();',
     '</script>',
     '',
@@ -1024,6 +925,11 @@ export class ShopifyService {
     '{',
     '  "name": "Imágenes landing",',
     '  "settings": [],',
+    // Pedido 09/09 (5): habilita que esta sección pueda alojar bloques de
+    // OTRAS apps (Releasit/EasySell, la del botón de contra entrega) — sin
+    // esto Shopify no deja referenciar ningún "shopify://apps/..." en las
+    // plantillas que usan esta sección (ver más abajo, "releasit_btn_...").
+    '  "blocks": [{ "type": "@app" }],',
     '  "presets": [{ "name": "Imágenes landing" }]',
     '}',
     '{% endschema %}',
@@ -1142,6 +1048,67 @@ export class ShopifyService {
   // (imágenes + botones) y el bloque de comprar/precio/variantes de siempre,
   // nada más, sea cual sea el tema o las secciones extra que tenga esa
   // tienda puntual en su plantilla normal.
+  // Identificadores fijos que Shopify le asigna al bloque nativo del botón
+  // de contra entrega de Releasit/EasySell cuando se agrega a mano desde
+  // "Agregar bloque → Apps" en el editor de temas — confirmados el 09/09
+  // con capturas reales de código de DOS tiendas de estudiantes distintas:
+  // una con la versión vieja de la app (se llamaba "Releasit") y otra con
+  // la versión nueva (se renombró a "EasySell"). Cada estudiante tiene
+  // instalada una sola de las dos, nunca las dos a la vez — por eso en
+  // seccionLandingLiquid se intentan las DOS en cada punto donde haya un
+  // botón: la que no corresponda a la app de esa tienda no dibuja nada
+  // (Shopify no rompe la página por referenciar una app no instalada), y
+  // la que sí corresponde se ve normal, con su propio estilo/texto/
+  // comportamiento real, sin ningún truco de JavaScript.
+  private readonly BLOQUE_RELEASIT_VIEJO =
+    'shopify://apps/releasit-cod-form/blocks/button-app-block/72faf214-4174-4fec-886b-0d0e8d3af9a2';
+  private readonly BLOQUE_RELEASIT_NUEVO =
+    'shopify://apps/easysell-cod-form/blocks/app-block/7bfd0a95-6839-4f02-b2ee-896832dbe67e';
+
+  // Arma la lista de claves de bloque que ESTA landing puntual necesita
+  // según su secuencia (2 claves — vieja/nueva, ver arriba — por cada paso
+  // "boton_comprar", más 2 para el flotante si está activado).
+  private clavesBloquesBotonesNecesarias(
+    secuencia: LandingSecuenciaPaso[] | undefined,
+    botonFlotante: boolean | undefined,
+  ): string[] {
+    const claves: string[] = [];
+    (secuencia || []).forEach((paso, i) => {
+      if (paso.tipo === 'boton_comprar') {
+        claves.push(`releasit_btn_${i + 1}_old`, `releasit_btn_${i + 1}_new`);
+      }
+    });
+    if (botonFlotante) {
+      claves.push('releasit_btn_flotante_old', 'releasit_btn_flotante_new');
+    }
+    return claves;
+  }
+
+  // Se asegura de que la sección "landing_imagenes_auto" de la plantilla
+  // tenga declarado, para cada posición donde ESTA landing puntual necesite
+  // un botón "comprar", los bloques nativos de Releasit/EasySell — así
+  // seccionLandingLiquid los puede pedir con content_for "block" sin
+  // arriesgarse a referenciar un bloque que no existe (ver el comentario
+  // grande sobre "ecomMagnatesRsiHueco" en seccionLandingLiquid). Como esta
+  // plantilla la comparten TODAS las landings de la misma tienda, nunca se
+  // borra ningún bloque ya existente acá (otra landing puede seguir
+  // necesitándolo) — solo se agregan los que falten.
+  private asegurarBloquesRealesReleasit(plantilla: any, clavesNecesarias: string[]): void {
+    const seccion = plantilla?.sections?.['landing_imagenes_auto'];
+    if (!seccion || !clavesNecesarias.length) return;
+    seccion.blocks = seccion.blocks && typeof seccion.blocks === 'object' ? seccion.blocks : {};
+    seccion.block_order = Array.isArray(seccion.block_order) ? seccion.block_order : [];
+    for (const clave of clavesNecesarias) {
+      const tipo = clave.endsWith('_old') ? this.BLOQUE_RELEASIT_VIEJO : this.BLOQUE_RELEASIT_NUEVO;
+      if (!seccion.blocks[clave]) {
+        seccion.blocks[clave] = { type: tipo, settings: { product: '{{product}}' } };
+      }
+      if (!seccion.block_order.includes(clave)) {
+        seccion.block_order.push(clave);
+      }
+    }
+  }
+
   private limpiarSeccionesAjenas(plantilla: any): void {
     const secciones = plantilla?.sections;
     if (!secciones || typeof secciones !== 'object' || !Array.isArray(plantilla.order)) return;
@@ -1172,7 +1139,11 @@ export class ShopifyService {
   // limpias. Si algo falla acá (por ejemplo, el permiso de temas todavía no
   // está activo), no debe tumbar la publicación del producto — solo queda
   // sin la plantilla especial (o sin la reparación) por esta vez.
-  private async asegurarPlantillaLanding(credenciales: ShopifyCredenciales, avisos?: string[]): Promise<void> {
+  private async asegurarPlantillaLanding(
+    credenciales: ShopifyCredenciales,
+    clavesBotones: string[],
+    avisos?: string[],
+  ): Promise<void> {
     try {
       const temaId = await this.obtenerTemaActivoId(credenciales);
 
@@ -1205,6 +1176,7 @@ export class ShopifyService {
         base.sections['landing_imagenes_auto'] = { type: 'landing-imagenes' };
         base.order = ['landing_imagenes_auto', ...base.order.filter((k: string) => k !== 'landing_imagenes_auto')];
         this.limpiarSeccionesAjenas(base);
+        this.asegurarBloquesRealesReleasit(base, clavesBotones);
         await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(base, null, 2));
         this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" creada en el tema.`);
       } else {
@@ -1228,6 +1200,7 @@ export class ShopifyService {
             plantilla.order = ['landing_imagenes_auto', ...plantilla.order];
           }
           this.limpiarSeccionesAjenas(plantilla);
+          this.asegurarBloquesRealesReleasit(plantilla, clavesBotones);
           if (JSON.stringify(plantilla) !== antes) {
             await this.guardarAsset(credenciales, temaId, this.ARCHIVO_PLANTILLA_LANDING, JSON.stringify(plantilla, null, 2));
             this.logger.log(`Plantilla "${this.ARCHIVO_PLANTILLA_LANDING}" existente reparada.`);
@@ -1331,7 +1304,11 @@ export class ShopifyService {
 
     // Se asegura (una sola vez por tienda) de que el tema tenga la plantilla
     // alterna "landing" lista, antes de crear/actualizar el producto.
-    await this.asegurarPlantillaLanding(credenciales, avisos);
+    await this.asegurarPlantillaLanding(
+      credenciales,
+      this.clavesBloquesBotonesNecesarias(input.secuencia, input.botonFlotante),
+      avisos,
+    );
 
     const handle = `landing-${this.slugify(input.nombreProducto)}-${input.landingNum || 1}`;
     const titulo = `${input.nombreProducto} — Landing ${input.landingNum || 1}`;
