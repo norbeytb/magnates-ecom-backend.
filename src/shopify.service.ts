@@ -1020,6 +1020,23 @@ export class ShopifyService {
     return /product\.description/.test(String(block?.settings?.text || ''));
   }
 
+  // Pedido de Norbey (11/09, con captura real de esenciaselecta): además de
+  // la galería y la Descripción, la sección de producto de Shrine trae DOS
+  // bloques más con contenido de EJEMPLO del tema, no nuestro: uno "reviews"
+  // con un testimonio inventado (autor "Cristiano Ronaldo", texto "Este
+  // producto es una maravilla!!") y uno "rating_stars" con una cantidad de
+  // reseñas fija de demostración ("568 Reseñas") que no sale de ningún dato
+  // real. Como nuestras propias secciones de IA ya generan sus propios
+  // testimonios reales para el producto, cualquier bloque de este tipo dentro
+  // de la sección de producto nativa es puro contenido de relleno del tema
+  // — se detecta por tipo ("reviews", "rating_stars"/"rating-stars") o por
+  // substring ("review"/"rating"/"testimonial") para cubrir otros temas con
+  // nombres parecidos, no solo Shrine.
+  private esBloqueResenaDeEjemplo(block: any): boolean {
+    const t = String(block?.type || '').toLowerCase();
+    return t.includes('review') || t.includes('rating') || t.includes('testimonial');
+  }
+
   // Dentro de la sección de producto (product-information / main-product) de
   // la plantilla, APAGA (con "disabled": true — el mismo mecanismo que ya
   // usa el propio tema para sus otros bloques) el bloque de galería nativa y
@@ -1038,11 +1055,20 @@ export class ShopifyService {
     if (!secciones || typeof secciones !== 'object') return;
     for (const key of Object.keys(secciones)) {
       const seccion = secciones[key];
-      if (!seccion || !this.TIPOS_SECCION_PRODUCTO.includes(seccion.type) || !seccion.blocks) continue;
+      // Antes exigía que "seccion.type" estuviera en TIPOS_SECCION_PRODUCTO
+      // (nombres de Horizon) — ahora usa el mismo reconocimiento
+      // independiente del tema que ya usa limpiarSeccionesAjenas (ver
+      // esSeccionProductoNativa), así esta limpieza de bloques también
+      // funciona sin importar qué tema suba el estudiante.
+      if (!seccion || !this.esSeccionProductoNativa(seccion) || !seccion.blocks) continue;
       const apagados: string[] = [];
       this.recorrerBloques(seccion.blocks, (block) => {
         if (block.disabled === true) return;
-        if (this.esBloqueGaleriaNativa(block) || this.esBloqueDescripcionProducto(block)) {
+        if (
+          this.esBloqueGaleriaNativa(block) ||
+          this.esBloqueDescripcionProducto(block) ||
+          this.esBloqueResenaDeEjemplo(block)
+        ) {
           block.disabled = true;
           apagados.push(block.type || block.name || '?');
         }
