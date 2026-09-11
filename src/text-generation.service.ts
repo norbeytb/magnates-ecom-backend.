@@ -62,6 +62,49 @@ export interface GenerarAngulosResultado {
   angulos: string[];
 }
 
+// Pedido 11/09: sección "Testimonios" en modo Personalizada — a diferencia
+// de generarAngulos/generarCopy (que redactan publicidad desde cero), acá
+// el estudiante ya escribió el texto REAL que le mandó un cliente real, y
+// la IA solo lo adapta (pulir ortografía/redacción, nunca inventar
+// contenido nuevo) y le agrega un nombre + ciudad genéricos acordes al país
+// de venta. Ver adaptarResena() más abajo.
+export interface AdaptarResenaInput {
+  textoOriginal: string;
+  nombreProducto: string;
+  idioma?: string; // ver nota en GenerarCopyInput
+  pais?: string; // mismo país de logística/envío ya configurado, ver ShopifyService
+  // Nombres/ciudades ya usados en otras reseñas de esta misma landing, para
+  // que la IA no repita el mismo nombre o ciudad dos veces.
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+  falApiKey: string;
+}
+
+export interface AdaptarResenaResultado {
+  nombre: string;
+  ciudad: string;
+  estrellas: number; // 4 o 5 — nunca se publican reseñas negativas
+  texto: string;
+}
+
+// Pedido 11/09 (pivote): el estudiante ya no escribe ningún texto — sube
+// SOLO una foto real por reseña (puede subir varias de una) y la IA
+// redacta el texto completo mirando la foto (usa un modelo con visión, ver
+// llamarFalVision() más abajo). El estudiante confirmó explícitamente que
+// acepta que el texto sea una opinión creíble INVENTADA por la IA a partir
+// de lo que se ve en la imagen, nunca una cita textual de un cliente real.
+export interface GenerarResenaDesdeFotoInput {
+  fotoUrl: string;
+  nombreProducto: string;
+  idioma?: string; // ver nota en GenerarCopyInput
+  pais?: string; // mismo país de logística/envío ya configurado, ver ShopifyService
+  // Nombres/ciudades ya usados en otras reseñas de esta misma landing, para
+  // que la IA no repita el mismo nombre o ciudad dos veces.
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+  falApiKey: string;
+}
+
 // Modelo de Claude servido a través del router de fal.ai (fal-ai/any-llm) —
 // mismo modelo (Haiku) que se usaba antes llamando directo a la API de
 // Anthropic: alcanza de sobra para esta tarea (redactar texto corto y
@@ -78,6 +121,20 @@ const REGLA_CONTENIDO = `REGLA IMPORTANTE (especialmente para productos de belle
 // producto (no solo belleza/salud). Además de ser más profesional, este tipo de palabras
 // también puede hacer que Meta/TikTok Ads rechace el anuncio por publicidad engañosa.
 const REGLA_ANTIEXAGERACION = `REGLA DE HONESTIDAD: nunca prometas resultados exagerados, mágicos o sin respaldo — evitá palabras como "milagroso", "mágico", "instantáneo", "cura", "garantizado al 100%" o similares. Describe el beneficio real del producto de forma directa y creíble, sin promesas imposibles de cumplir.`;
+
+// Pedido 09/09 (bug reportado por Norbey, con captura del error real): un estudiante escribió en
+// "Detalles del producto" una instrucción tipo "investiga sobre el producto y traeme la
+// información" en vez de datos reales del producto. Este modelo NO tiene ningún buscador
+// conectado (ver llamarFal() más abajo: es una única llamada de texto, sin herramientas), así
+// que no podía "investigar" nada — y al no tener información real para trabajar, respondió con
+// una aclaración en texto libre (algo como "no tengo acceso a internet para investigar, pero...")
+// en vez del JSON estricto pedido. Eso rompió el JSON.parse() de llamarFal() y terminó en un 500
+// ("La respuesta de fal.ai no fue un JSON válido"), tirando al usuario al modo demo (simulado)
+// del frontend sin que quedara claro por qué. Ya existía la instrucción de "Responde ÚNICAMENTE
+// con un objeto JSON válido" en cada prompt, pero no alcanzó frente a un pedido que empuja al
+// modelo a priorizar la honestidad sobre el formato. Se agrega esta regla aparte, bien explícita,
+// para blindar el formato de salida pase lo que pase con lo que el usuario haya escrito.
+const REGLA_FORMATO_JSON = `REGLA DE FORMATO (no negociable, aplica siempre): no tenés acceso a internet ni a ningún buscador — no podés "investigar" el producto aunque te lo pidan, solo podés trabajar con el nombre del producto y el texto de "detalles del producto" que te dieron. Sin importar qué tan completa, vaga o inusual sea esa información — incluso si en vez de datos reales el texto es una instrucción como "investiga sobre el producto" o casi no dice nada — NUNCA respondas con una aclaración, disculpa, pregunta o cualquier texto libre explicando que no podés investigar o que falta información. Siempre devolvé ÚNICAMENTE el objeto JSON exacto que se pide más abajo, haciendo tu mejor esfuerzo posible con el nombre del producto y lo poco o mucho que te hayan dado. Romper el formato JSON no es una opción bajo ninguna circunstancia.`;
 
 // Pedido 09/09 (punto 4 de la misma lista): "País donde vas a vender" ya existía en el taller
 // pero solo se usaba para la nacionalidad del personaje en la imagen — nunca para adaptar el
@@ -135,7 +192,9 @@ Cada uno de los 3 elementos del array es el nombre corto de un ángulo de venta 
 
 ${REGLA_CONTENIDO}
 
-${REGLA_ANTIEXAGERACION}`;
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`;
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 
@@ -181,7 +240,9 @@ ${notaIdioma}${notaPais}
 
 ${REGLA_CONTENIDO}
 
-${REGLA_ANTIEXAGERACION}`
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`
       : `Eres un equipo experto compuesto por: especialista en eCommerce, copywriter senior de respuesta directa, especialista en Meta Ads y TikTok Ads, especialista en CRO (Conversion Rate Optimization), y diseñador de landing pages de alta conversión.
 
 Tu tarea es analizar la ficha técnica de un producto (de cualquier categoría: hogar, belleza, salud, fitness, mascotas, tecnología, moda, etc.) y construir una estrategia de marketing completa, específica para ese producto y nunca genérica.
@@ -200,7 +261,9 @@ ${notaIdioma}${notaPais}
 
 ${REGLA_CONTENIDO}
 
-${REGLA_ANTIEXAGERACION}`;
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`;
 
     const userMsg = `Nombre del producto: ${input.nombreProducto}\n\nFicha técnica / detalles del producto:\n${input.detallesProducto}`;
 
@@ -212,6 +275,132 @@ ${REGLA_ANTIEXAGERACION}`;
       return { angulo: anguloElegido, ...datos } as GenerarCopyResultado;
     }
     return datos as GenerarCopyResultado;
+  }
+
+  // Pedido 11/09: sección "Testimonios" en modo Personalizada. El estudiante
+  // sube una foto real y escribe el texto real que le mandó un cliente real
+  // — esta llamada NUNCA redacta una reseña desde cero, solo pule la que ya
+  // existe (ver la regla más importante del prompt, abajo) y le agrega un
+  // nombre + ciudad genéricos según el país donde se vende.
+  async adaptarResena(input: AdaptarResenaInput): Promise<AdaptarResenaResultado> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const notaIdioma =
+      idioma.toLowerCase() !== 'español'
+        ? ` IMPORTANTE: el estudiante vende en un país donde se habla ${idioma} — redactá el texto ya pulido de la reseña directamente en ${idioma}, no en español (el texto original que te paso puede venir en cualquier idioma).`
+        : '';
+
+    const paisLimpio = (input.pais || '').trim();
+    const notaPais =
+      paisLimpio && paisLimpio !== 'Selecciona el país'
+        ? ` El país donde se vende este producto es ${paisLimpio} — el nombre y la ciudad que inventes tienen que sonar realmente típicos de ${paisLimpio}, nunca genéricos ni de otro país.`
+        : ' No se especificó un país puntual para esta venta — usá un nombre y una ciudad neutros, comunes en Latinoamérica.';
+
+    const nombresUsados = (input.nombresUsados || []).filter((n) => n && n.trim());
+    const ciudadesUsadas = (input.ciudadesUsadas || []).filter((c) => c && c.trim());
+    const notaRepetidos =
+      (nombresUsados.length > 0 ? ` Nombres que YA se usaron en otras reseñas de esta misma landing y NO podés repetir: ${nombresUsados.join(', ')}.` : '') +
+      (ciudadesUsadas.length > 0 ? ` Ciudades que YA se usaron — tratá de variar: ${ciudadesUsadas.join(', ')}.` : '');
+
+    const systemPrompt = `Sos un editor de reseñas de clientes reales para una tienda de eCommerce.
+
+Vas a recibir el texto EXACTO que un cliente real escribió sobre el producto "${input.nombreProducto}" después de haberlo comprado y usado. Tu única tarea es PULIR ese texto (corregir ortografía y gramática, acortarlo si es muy largo o repetitivo, darle un tono natural y creíble de reseña real) y agregarle un nombre + inicial de apellido y una ciudad genéricos para mostrar junto a la reseña.
+
+REGLA MÁS IMPORTANTE DE TODAS (no negociable): NUNCA inventes ni agregues un resultado, beneficio, cifra, plazo o detalle que el cliente no haya mencionado en su texto original. Si el texto original es corto o simple, el resultado también puede quedar corto — es preferible una reseña corta y 100% real a una larga con contenido inventado. Sí está permitido: corregir ortografía/gramática, acortar si es repetitivo, reordenar mejor las ideas ya presentes. NO está permitido: agregar cifras, resultados, plazos o beneficios que el cliente no haya escrito.
+
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves:
+{"nombre":"...","ciudad":"...","estrellas":5,"texto":"..."}
+
+Significado de cada clave:
+- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (nunca el nombre completo del cliente real, por privacidad — este nombre es inventado).
+- ciudad: una ciudad real y conocida del país indicado.
+- estrellas: 5 la gran mayoría de las veces, o 4 si el texto original suena a una experiencia buena pero no perfecta (por ejemplo, si menciona alguna duda inicial). Nunca menos de 4 — no se publican reseñas negativas.
+- texto: el texto ya pulido, de 1 a 3 frases, tono cercano y natural, en primera persona, 100% coherente con lo que el cliente realmente escribió (ver la regla más importante, arriba).
+${notaIdioma}${notaPais}${notaRepetidos}
+
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`;
+
+    const userMsg = `Texto real que escribió el cliente:\n${input.textoOriginal}`;
+
+    const datos = await this.llamarFal(input.falApiKey, userMsg, systemPrompt);
+    const estrellasNum = Math.min(5, Math.max(4, Math.round(Number(datos?.estrellas) || 5)));
+    return {
+      nombre: String(datos?.nombre || '').trim() || 'Cliente V.',
+      ciudad: String(datos?.ciudad || '').trim(),
+      estrellas: estrellasNum,
+      texto: String(datos?.texto || input.textoOriginal || '').trim(),
+    };
+  }
+
+  // Pedido 11/09 (pivote): reemplaza en la práctica a adaptarResena() para
+  // el flujo nuevo — el estudiante solo sube una foto real de una persona,
+  // sin escribir ningún texto, y la IA "mira" la foto (modelo con visión,
+  // ver llamarFalVision()) y redacta una reseña creíble inspirada en lo que
+  // se ve. adaptarResena() queda en el código sin usar por si se necesita
+  // volver al flujo viejo, pero el taller ya no la llama.
+  async generarResenaDesdeFoto(input: GenerarResenaDesdeFotoInput): Promise<AdaptarResenaResultado> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+    if (!input.fotoUrl) {
+      throw new InternalServerErrorException('Falta la foto de la reseña.');
+    }
+
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const notaIdioma =
+      idioma.toLowerCase() !== 'español'
+        ? ` IMPORTANTE: el estudiante vende en un país donde se habla ${idioma} — redactá el texto de la reseña directamente en ${idioma}, no en español.`
+        : '';
+
+    const paisLimpio = (input.pais || '').trim();
+    const notaPais =
+      paisLimpio && paisLimpio !== 'Selecciona el país'
+        ? ` El país donde se vende este producto es ${paisLimpio} — el nombre y la ciudad que inventes tienen que sonar realmente típicos de ${paisLimpio}, nunca genéricos ni de otro país.`
+        : ' No se especificó un país puntual para esta venta — usá un nombre y una ciudad neutros, comunes en Latinoamérica.';
+
+    const nombresUsados = (input.nombresUsados || []).filter((n) => n && n.trim());
+    const ciudadesUsadas = (input.ciudadesUsadas || []).filter((c) => c && c.trim());
+    const notaRepetidos =
+      (nombresUsados.length > 0 ? ` Nombres que YA se usaron en otras reseñas de esta misma landing y NO podés repetir: ${nombresUsados.join(', ')}.` : '') +
+      (ciudadesUsadas.length > 0 ? ` Ciudades que YA se usaron — tratá de variar: ${ciudadesUsadas.join(', ')}.` : '');
+
+    const systemPrompt = `Sos un redactor de reseñas de clientes para una tienda de eCommerce.
+
+Vas a recibir UNA foto real de una persona (subida por el vendedor del producto "${input.nombreProducto}"). Tu tarea es imaginar que esa persona es clienta/cliente real que ya compró y usó el producto, y escribir en su nombre una reseña corta, natural y creíble, como si la hubiera escrito ella misma después de recibir el producto.
+
+REGLA MÁS IMPORTANTE DE TODAS (no negociable, es un tema de privacidad): NUNCA intentes reconocer, adivinar o mencionar la identidad real de la persona de la foto (no es una persona famosa para esta tarea, aunque se parezca a alguien) — el nombre que pongas siempre es inventado por vos, nunca una suposición sobre quién es realmente. Tampoco describas ni menciones la foto ni el aspecto físico de la persona dentro del texto de la reseña (la reseña habla del producto, no de la foto).
+
+Fijate también, con cuidado, en el contexto visible de la foto (por ejemplo: si se ve el producto en uso, el ambiente, la expresión de la persona, si parece una foto casera de celular) para que el tono y el contenido de la reseña se sientan coherentes con esa imagen — pero sin inventar resultados médicos, cifras exactas, plazos concretos o beneficios medibles que no se puedan justificar con una simple opinión de cliente contento.
+
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves:
+{"nombre":"...","ciudad":"...","estrellas":5,"texto":"..."}
+
+Significado de cada clave:
+- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (inventado, no un intento de adivinar el nombre real de la persona de la foto).
+- ciudad: una ciudad real y conocida del país indicado.
+- estrellas: 5 la gran mayoría de las veces, o 4 alguna vez para que no todas sean perfectas. Nunca menos de 4 — no se publican reseñas negativas.
+- texto: la reseña en primera persona, de 1 a 3 frases, tono cercano y natural de cliente real y contento, sin sonar a publicidad.
+${notaIdioma}${notaPais}${notaRepetidos}
+
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`;
+
+    const userMsg = `Escribí la reseña mirando la foto adjunta del producto "${input.nombreProducto}".`;
+
+    const datos = await this.llamarFalVision(input.falApiKey, input.fotoUrl, userMsg, systemPrompt);
+    const estrellasNum = Math.min(5, Math.max(4, Math.round(Number(datos?.estrellas) || 5)));
+    return {
+      nombre: String(datos?.nombre || '').trim() || 'Cliente V.',
+      ciudad: String(datos?.ciudad || '').trim(),
+      estrellas: estrellasNum,
+      texto: String(datos?.texto || '').trim(),
+    };
   }
 
   // Llamada compartida a fal.ai (fal-ai/any-llm) que arma el mensaje,
@@ -242,6 +431,46 @@ ${REGLA_ANTIEXAGERACION}`;
       throw new InternalServerErrorException('No se pudo contactar a fal.ai: ' + this.extraerDetalleError(error));
     }
 
+    return this.parsearRespuestaJson(resultado);
+  }
+
+  // Pedido 11/09: mismo patrón que llamarFal() pero contra el endpoint de
+  // fal.ai con VISIÓN ("openrouter/router/vision" — distinto del texto-solo
+  // "fal-ai/any-llm" de arriba), para poder mandarle una foto además del
+  // texto del prompt. Usa la misma clave de fal.ai del usuario y el mismo
+  // modelo (Claude vía OpenRouter) — no hace falta ninguna clave nueva.
+  private async llamarFalVision(falApiKey: string, imageUrl: string, userMsg: string, systemPrompt: string): Promise<any> {
+    const falClient = createFalClient({ credentials: falApiKey });
+
+    let resultado;
+    try {
+      resultado = await falClient.subscribe('openrouter/router/vision', {
+        input: {
+          model: MODELO_TEXTO,
+          prompt: userMsg,
+          system_prompt: systemPrompt,
+          image_urls: [imageUrl],
+          max_tokens: 500,
+          temperature: 0.9,
+        },
+        logs: false,
+      });
+    } catch (error) {
+      if (this.esErrorDeClaveFalInvalida(error)) {
+        throw new InternalServerErrorException(
+          'fal.ai rechazó tu clave — revisá que la hayas pegado completa en "Integraciones" y que tengas créditos cargados en tu cuenta de fal.ai.',
+        );
+      }
+      throw new InternalServerErrorException('No se pudo contactar a fal.ai: ' + this.extraerDetalleError(error));
+    }
+
+    return this.parsearRespuestaJson(resultado);
+  }
+
+  // Parte común a llamarFal() y llamarFalVision(): ambos endpoints de fal.ai
+  // devuelven el texto generado en la misma forma (resultado.data.output) —
+  // acá se limpia el posible cerco de markdown y se parsea el JSON.
+  private parsearRespuestaJson(resultado: any): any {
     const texto = (resultado?.data as any)?.output;
     if (!texto || typeof texto !== 'string') {
       throw new InternalServerErrorException('La respuesta de fal.ai no incluyó texto.');

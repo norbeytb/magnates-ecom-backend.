@@ -79,9 +79,34 @@ export interface ShopifyCredenciales {
 // mandó nada, cae al amarillo de Releasit por defecto. colorTexto lo calcula
 // el propio taller según el contraste del color elegido (para que el texto
 // nunca quede ilegible) — el backend solo lo usa tal cual viene.
+// Pedido 11/09: sección "Testimonios" en modo Personalizada — un único
+// marcador de posición dentro de la secuencia (como máximo uno por landing,
+// el taller no deja agregar dos). El contenido real de las reseñas viaja
+// aparte, en PublicarLandingInput.resenas — ver ResenaLanding más abajo.
 export type LandingSecuenciaPaso =
   | { tipo: 'imagen'; url: string }
-  | { tipo: 'boton_comprar'; texto?: string; color?: string; colorTexto?: string };
+  | { tipo: 'boton_comprar'; texto?: string; color?: string; colorTexto?: string }
+  | { tipo: 'resenas' };
+
+// Una reseña real cargada por el estudiante (foto + texto real de un
+// cliente real) ya adaptada por la IA (ver TextGenerationService.adaptarResena)
+// antes de llegar acá — este servicio no le pide nada a la IA, solo la
+// publica tal cual viene.
+export interface ResenaLanding {
+  // URL de la foto real (puede venir de fal.storage todavía sin subir a
+  // Shopify — publicarLanding() la sube a Shopify Files, igual que hace con
+  // las imágenes principales de la landing). Puede venir vacía: hay
+  // reseñas reales sin foto.
+  fotoUrl?: string;
+  nombre: string;
+  ciudad?: string;
+  estrellas: number;
+  texto: string;
+  // Fecha ISO de cuándo el estudiante cargó esta reseña en el taller — se
+  // usa para calcular "Hace X días/semanas/meses" en cada publicación (ver
+  // calcularTiempoRelativo), nunca se muestra tal cual.
+  fechaCarga?: string;
+}
 
 export interface PublicarLandingInput {
   nombreProducto: string;
@@ -137,6 +162,14 @@ export interface PublicarLandingInput {
   barraVelocidad?: number;
   precio?: string | number;
   precioComparacion?: string | number;
+  // Pedido 11/09: sección "Testimonios" en modo Personalizada — reseñas
+  // reales (foto + texto real de clientes reales) ya adaptadas por la IA.
+  // Sin límite desde la perspectiva del estudiante (ver
+  // construirSeccionesResenas: si se pasan las 50 que permite Shopify por
+  // sección, se reparten solas en varias secciones seguidas). Ausente o
+  // vacío = la landing no tiene sección de reseñas personalizadas (si el
+  // estudiante se quedó en modo "Plantilla", ni siquiera llega este campo).
+  resenas?: ResenaLanding[];
 }
 
 export interface PublicarLandingResultado {
@@ -1317,6 +1350,138 @@ export class ShopifyService {
     '',
   ].join('\n');
 
+  // Pedido 11/09: sección "Testimonios" en modo Personalizada — bloque real
+  // de reseñas (no una imagen generada por IA). Usa "blocks" de Shopify (el
+  // mismo mecanismo que ya usa la sección "apps" de Releasit con sus
+  // bloques "old"/"new"): cada reseña real que cargó el estudiante es UN
+  // bloque de tipo "resena" dentro de esta única sección. Es la única forma
+  // de lograr que todas las tarjetas compartan una sola caja con scroll —
+  // si cada reseña fuera su propia sección (como pasa con "landing-imagen"),
+  // Shopify las dibujaría una debajo de otra sin poder compartir un scroll
+  // común, porque cada sección se dibuja sola, sin saber de las demás.
+  //
+  // El resumen de arriba (promedio, total, barras por estrella) NO se
+  // calcula acá en Liquid — lo calcula el backend en TypeScript a partir de
+  // las estrellas reales de TODAS las reseñas de la landing (ver
+  // calcularResumenResenas) y se lo pasa ya hecho en los settings de esta
+  // sección. Esto importa sobre todo por el límite de Shopify de 50 bloques
+  // por sección (ver construirSeccionesResenas): si una landing llega a
+  // tener más de 50 reseñas reales, se reparten en varias secciones
+  // seguidas ("resenas", "resenas_2", ...) y cada una, calculando sola,
+  // solo vería SU PARTE de las reseñas — por eso el resumen se calcula una
+  // sola vez con la lista completa y solo se muestra en la primera parte
+  // (mostrar_resumen=true), las siguientes partes son solo más tarjetas.
+  private readonly seccionResenasLiquid = [
+    '{%- comment -%}',
+    '  Sección creada automáticamente por Ecom Magnates: bloque de RESEÑAS',
+    '  REALES (fotos y textos que subió el estudiante, pulidos por IA sin',
+    '  inventar contenido) — arriba el resumen ya calculado por el backend,',
+    '  abajo la lista de tarjetas dentro de una sola caja con scroll. No',
+    '  editar a mano, se sobrescribe si el backend la vuelve a necesitar.',
+    '{%- endcomment -%}',
+    '<div style="max-width:640px; margin:0 auto; padding:24px 16px; box-sizing:border-box;">',
+    '  {%- if section.settings.mostrar_resumen -%}',
+    '  <div style="text-align:center; margin-bottom:14px;">',
+    '    <div style="font-size:11px; font-weight:800; letter-spacing:0.06em; color:#7c3aed; text-transform:uppercase;">Lo que dicen nuestros clientes</div>',
+    '  </div>',
+    '  <div style="display:flex; gap:16px; align-items:center; border:1px solid #e7e3f5; border-radius:14px; padding:16px; margin-bottom:14px; background:#fff; box-sizing:border-box;">',
+    '    <div style="text-align:center; flex-shrink:0;">',
+    '      <div style="font-size:28px; font-weight:800; color:#1a1a1a; line-height:1;">{{ section.settings.promedio }}</div>',
+    '      <div style="color:#f0b90b; font-size:13px; margin:4px 0;">★★★★★</div>',
+    '      <div style="font-size:11px; color:#8a8a8a; white-space:nowrap;">{{ section.settings.total }} reseñas</div>',
+    '    </div>',
+    '    <div style="flex:1; display:flex; flex-direction:column; gap:5px; min-width:0;">',
+    '      <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#555;">',
+    '        <span style="width:9px; text-align:right;">5</span>',
+    '        <div style="flex:1; height:6px; background:#eee; border-radius:99px; overflow:hidden;"><div style="height:100%; width:{{ section.settings.pct5 }}%; background:#f0b90b;"></div></div>',
+    '        <span style="width:30px; color:#999;">{{ section.settings.pct5 }}%</span>',
+    '      </div>',
+    '      <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#555;">',
+    '        <span style="width:9px; text-align:right;">4</span>',
+    '        <div style="flex:1; height:6px; background:#eee; border-radius:99px; overflow:hidden;"><div style="height:100%; width:{{ section.settings.pct4 }}%; background:#f0b90b;"></div></div>',
+    '        <span style="width:30px; color:#999;">{{ section.settings.pct4 }}%</span>',
+    '      </div>',
+    '      <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#555;">',
+    '        <span style="width:9px; text-align:right;">3</span>',
+    '        <div style="flex:1; height:6px; background:#eee; border-radius:99px; overflow:hidden;"><div style="height:100%; width:{{ section.settings.pct3 }}%; background:#f0b90b;"></div></div>',
+    '        <span style="width:30px; color:#999;">{{ section.settings.pct3 }}%</span>',
+    '      </div>',
+    '      <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#555;">',
+    '        <span style="width:9px; text-align:right;">2</span>',
+    '        <div style="flex:1; height:6px; background:#eee; border-radius:99px; overflow:hidden;"><div style="height:100%; width:{{ section.settings.pct2 }}%; background:#f0b90b;"></div></div>',
+    '        <span style="width:30px; color:#999;">{{ section.settings.pct2 }}%</span>',
+    '      </div>',
+    '      <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#555;">',
+    '        <span style="width:9px; text-align:right;">1</span>',
+    '        <div style="flex:1; height:6px; background:#eee; border-radius:99px; overflow:hidden;"><div style="height:100%; width:{{ section.settings.pct1 }}%; background:#f0b90b;"></div></div>',
+    '        <span style="width:30px; color:#999;">{{ section.settings.pct1 }}%</span>',
+    '      </div>',
+    '    </div>',
+    '  </div>',
+    '  {%- endif -%}',
+    '  <div style="max-height:560px; overflow-y:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:10px;">',
+    '    {%- for block in section.blocks -%}',
+    '      {%- if block.type == "resena" -%}',
+    '      <div style="border:1px solid #ececec; border-radius:14px; padding:14px; background:#fff; box-sizing:border-box;" {{ block.shopify_attributes }}>',
+    '        <div style="display:flex; align-items:center; gap:10px;">',
+    '          {%- if block.settings.foto != blank -%}',
+    '          <img src="{{ block.settings.foto | escape }}" alt="" loading="lazy" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">',
+    '          {%- else -%}',
+    '          <div style="width:36px; height:36px; border-radius:50%; background:#7c3aed; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; flex-shrink:0;">{{ block.settings.nombre | slice: 0, 1 | upcase }}</div>',
+    '          {%- endif -%}',
+    '          <div style="flex:1; min-width:0;">',
+    '            <div style="font-weight:700; font-size:13px; color:#1a1a1a;">{{ block.settings.nombre | escape }}</div>',
+    '            {%- if block.settings.ciudad != blank -%}<div style="font-size:11.5px; color:#8a8a8a;">{{ block.settings.ciudad | escape }}</div>{%- endif -%}',
+    '          </div>',
+    '          <div style="flex-shrink:0; display:flex; align-items:center; gap:3px; background:#e9f9ee; color:#1a9e57; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:99px; white-space:nowrap;">✓ Verificada</div>',
+    '        </div>',
+    '        <div style="color:#f0b90b; font-size:13px; margin:8px 0 6px;">',
+    '          {%- assign estrellas_bloque = block.settings.estrellas | plus: 0 -%}',
+    '          {%- for i in (1..5) -%}{%- if i <= estrellas_bloque -%}★{%- else -%}☆{%- endif -%}{%- endfor -%}',
+    '        </div>',
+    '        <div style="font-size:13px; line-height:1.45; color:#2a2a2a;">{{ block.settings.texto | escape }}</div>',
+    '        {%- if block.settings.foto != blank -%}',
+    '        <img src="{{ block.settings.foto | escape }}" alt="" loading="lazy" style="display:block; max-width:200px; width:100%; border-radius:10px; margin-top:8px;">',
+    '        {%- endif -%}',
+    '        <div style="font-size:11px; color:#aaa; margin-top:8px;">{{ block.settings.tiempo | escape }}</div>',
+    '      </div>',
+    '      {%- endif -%}',
+    '    {%- endfor -%}',
+    '  </div>',
+    '</div>',
+    '{% schema %}',
+    '{',
+    '  "name": "Reseñas landing",',
+    '  "settings": [',
+    '    { "type": "checkbox", "id": "mostrar_resumen", "label": "Mostrar resumen", "default": true },',
+    '    { "type": "text", "id": "promedio", "label": "Promedio" },',
+    '    { "type": "text", "id": "total", "label": "Total" },',
+    '    { "type": "text", "id": "pct5", "label": "% 5 estrellas" },',
+    '    { "type": "text", "id": "pct4", "label": "% 4 estrellas" },',
+    '    { "type": "text", "id": "pct3", "label": "% 3 estrellas" },',
+    '    { "type": "text", "id": "pct2", "label": "% 2 estrellas" },',
+    '    { "type": "text", "id": "pct1", "label": "% 1 estrella" }',
+    '  ],',
+    '  "blocks": [',
+    '    {',
+    '      "type": "resena",',
+    '      "name": "Reseña",',
+    '      "settings": [',
+    '        { "type": "text", "id": "foto", "label": "Foto real" },',
+    '        { "type": "text", "id": "nombre", "label": "Nombre" },',
+    '        { "type": "text", "id": "ciudad", "label": "Ciudad" },',
+    '        { "type": "text", "id": "estrellas", "label": "Estrellas" },',
+    '        { "type": "text", "id": "texto", "label": "Texto" },',
+    '        { "type": "text", "id": "tiempo", "label": "Tiempo" }',
+    '      ]',
+    '    }',
+    '  ],',
+    '  "presets": [{ "name": "Reseñas landing" }]',
+    '}',
+    '{% endschema %}',
+    '',
+  ].join('\n');
+
   // Tipos de SECCIÓN (no de bloque) que en distintos temas corresponden a la
   // ficha de producto de siempre (título/precio/galería/comprar/descripción).
   // En Dawn y temas viejos se llama "main-product"; en Horizon se llama
@@ -1742,6 +1907,7 @@ export class ShopifyService {
       ['sections/landing-controlador.liquid', this.seccionControladorLiquid, 'controlador'],
       ['sections/landing-imagen.liquid', this.seccionImagenLiquid, 'imagen'],
       ['sections/landing-respaldo-boton.liquid', this.seccionRespaldoBotonLiquid, 'respaldo de botón'],
+      ['sections/landing-resenas.liquid', this.seccionResenasLiquid, 'reseñas'],
     ];
     for (const [archivo, contenido, nombreCorto] of archivos) {
       try {
@@ -1785,12 +1951,102 @@ export class ShopifyService {
   // "pos_2", ..., o "flotante"). "landing-controlador" es quien después, en
   // el navegador, decide cuál de las dos mostrar en cada posición (ver su
   // comentario grande, más arriba).
+  // "Hace X días/semanas/meses" — se recalcula en CADA publicación a partir
+  // de la fecha real en que el estudiante cargó la reseña (fechaCarga), así
+  // que nunca queda una reseña vieja diciendo "Hace 3 días" para siempre:
+  // si el estudiante vuelve a publicar meses después, el texto se actualiza
+  // solo. Nunca lo inventa la IA.
+  private calcularTiempoRelativo(fechaCargaIso: string | undefined): string {
+    const entonces = fechaCargaIso ? new Date(fechaCargaIso).getTime() : NaN;
+    if (!Number.isFinite(entonces)) return 'Hace poco';
+    const dias = Math.floor((Date.now() - entonces) / (1000 * 60 * 60 * 24));
+    if (dias <= 0) return 'Hoy';
+    if (dias === 1) return 'Hace 1 día';
+    if (dias < 7) return `Hace ${dias} días`;
+    const semanas = Math.floor(dias / 7);
+    if (semanas === 1) return 'Hace 1 semana';
+    if (semanas < 5) return `Hace ${semanas} semanas`;
+    const meses = Math.floor(dias / 30);
+    return meses <= 1 ? 'Hace 1 mes' : `Hace ${meses} meses`;
+  }
+
+  // Promedio, total y % por estrella — SIEMPRE calculado acá con la lista
+  // COMPLETA de reseñas de la landing (nunca en Liquid, ver el comentario
+  // grande sobre "seccionResenasLiquid" más arriba: en Liquid cada sección
+  // solo vería su propio grupo de hasta 50 bloques, no el total real).
+  private calcularResumenResenas(resenas: ResenaLanding[]): { promedio: string; total: string; pct: Record<number, string> } {
+    const total = resenas.length;
+    const conteos: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    let suma = 0;
+    for (const r of resenas) {
+      const estrellas = Math.min(5, Math.max(1, Math.round(Number(r.estrellas) || 5)));
+      conteos[estrellas]++;
+      suma += estrellas;
+    }
+    const pct: Record<number, string> = {} as any;
+    for (const k of [5, 4, 3, 2, 1]) {
+      pct[k] = total > 0 ? String(Math.round((conteos[k] / total) * 100)) : '0';
+    }
+    return { promedio: total > 0 ? (suma / total).toFixed(2) : '5.00', total: String(total), pct };
+  }
+
+  // Arma la(s) sección(es) "landing-resenas" a partir de la lista real de
+  // reseñas de la landing. Shopify no deja poner más de 50 bloques en una
+  // misma sección — si el estudiante llegó a cargar más de 50 reseñas
+  // reales (algo muy poco común), esto las reparte solo en varias secciones
+  // seguidas ("resenas", "resenas_2", "resenas_3", ...) sin que el
+  // estudiante tenga que hacer nada: cada una es su propia caja con scroll,
+  // pero al no tener separación entre ellas se ven como una sola lista
+  // continua. Devuelve vacío si no hay ninguna reseña.
+  private construirSeccionesResenas(resenas: ResenaLanding[] | undefined): { sections: Record<string, any>; order: string[] } {
+    const sections: Record<string, any> = {};
+    const order: string[] = [];
+    if (!resenas || resenas.length === 0) return { sections, order };
+
+    const { promedio, total, pct } = this.calcularResumenResenas(resenas);
+    const TAMANO_MAXIMO_BLOQUE = 50; // límite real de Shopify: máximo 50 bloques por sección
+
+    for (let inicio = 0, parte = 1; inicio < resenas.length; inicio += TAMANO_MAXIMO_BLOQUE, parte++) {
+      const grupo = resenas.slice(inicio, inicio + TAMANO_MAXIMO_BLOQUE);
+      const clave = parte === 1 ? 'resenas' : `resenas_${parte}`;
+      const blocks: Record<string, any> = {};
+      const blockOrder: string[] = [];
+      grupo.forEach((r, i) => {
+        const idBloque = `r${inicio + i + 1}`;
+        blocks[idBloque] = {
+          type: 'resena',
+          settings: {
+            foto: r.fotoUrl || '',
+            nombre: r.nombre || 'Cliente V.',
+            ciudad: r.ciudad || '',
+            estrellas: String(Math.min(5, Math.max(1, Math.round(Number(r.estrellas) || 5)))),
+            texto: r.texto || '',
+            tiempo: this.calcularTiempoRelativo(r.fechaCarga),
+          },
+        };
+        blockOrder.push(idBloque);
+      });
+      sections[clave] = {
+        type: 'landing-resenas',
+        blocks,
+        block_order: blockOrder,
+        settings:
+          parte === 1
+            ? { mostrar_resumen: true, promedio, total, pct5: pct[5], pct4: pct[4], pct3: pct[3], pct2: pct[2], pct1: pct[1] }
+            : { mostrar_resumen: false },
+      };
+      order.push(clave);
+    }
+    return { sections, order };
+  }
+
   private construirPlantillaLandingProducto(
     secuencia: LandingSecuenciaPaso[],
     botonFlotante: boolean | undefined,
     botonFlotanteTexto: string | undefined,
     botonFlotanteColor: string | undefined,
     botonFlotanteColorTexto: string | undefined,
+    resenas?: ResenaLanding[],
   ): { sections: Record<string, any>; order: string[] } {
     const sections: Record<string, any> = {
       controlador: { type: 'landing-controlador', settings: {} },
@@ -1827,6 +2083,10 @@ export class ShopifyService {
           },
         };
         order.push(claveApps, claveRespaldo);
+      } else if (paso.tipo === 'resenas') {
+        const { sections: seccionesResenas, order: ordenResenas } = this.construirSeccionesResenas(resenas);
+        Object.assign(sections, seccionesResenas);
+        order.push(...ordenResenas);
       } else {
         idxImagen++;
         const claveImagen = `imagen_${idxImagen}`;
@@ -2092,12 +2352,15 @@ export class ShopifyService {
     // Shopify (ver comentario arriba) — tanto para dibujarla directo en la
     // plantilla nueva (construirPlantillaLandingProducto, más abajo) como
     // para guardarla en el metafield de respaldo. Los pasos "boton_comprar"
-    // no tienen url, se dejan tal cual.
+    // y "resenas" no tienen url, se dejan tal cual (antes de que existiera
+    // "resenas" esto asumía que "todo lo que no es botón, es imagen" — con
+    // el marcador de reseñas ya no alcanza, hay que pedir "imagen"
+    // explícitamente o el índice de imagenesShopify se desalinea).
     let secuenciaFinal: LandingSecuenciaPaso[] = input.secuencia && input.secuencia.length > 0 ? input.secuencia : [];
     if (secuenciaFinal.length > 0) {
       let idxImagen = 0;
       secuenciaFinal = secuenciaFinal.map((paso) => {
-        if (paso.tipo === 'boton_comprar') return paso;
+        if (paso.tipo !== 'imagen') return paso;
         const nuevaUrl = imagenesShopify[idxImagen] ?? paso.url;
         idxImagen++;
         return { ...paso, url: nuevaUrl };
@@ -2109,6 +2372,23 @@ export class ShopifyService {
       // flotante, si está prendido) — así construirPlantillaLandingProducto
       // siempre tiene algo con qué armar la plantilla.
       secuenciaFinal = imagenesShopify.map((url) => ({ tipo: 'imagen', url }));
+    }
+
+    // Pedido 11/09: sección "Testimonios" en modo Personalizada — las fotos
+    // reales de las reseñas todavía están en fal.storage (temporal, igual
+    // que pasaba antes con las fotos principales de la landing) y hay que
+    // subirlas a la biblioteca de Archivos de Shopify para que queden
+    // alojadas para siempre. Se suben solo las que tienen foto (hay reseñas
+    // reales sin foto, quedan igual con fotoUrl vacío).
+    let resenasFinal: ResenaLanding[] | undefined;
+    if (input.resenas && input.resenas.length > 0) {
+      const conFoto = input.resenas
+        .map((r, i) => ({ r, i }))
+        .filter(({ r }) => !!r.fotoUrl && r.fotoUrl.trim() !== '');
+      const fotosSubidas = await this.subirImagenesComoArchivos(credenciales, conFoto.map(({ r }) => r.fotoUrl as string));
+      const fotoPorIndice = new Map<number, string>();
+      conFoto.forEach(({ i }, idx) => fotoPorIndice.set(i, fotosSubidas[idx]));
+      resenasFinal = input.resenas.map((r, i) => ({ ...r, fotoUrl: fotoPorIndice.get(i) || '' }));
     }
 
     // Arma, desde cero, la plantilla EXCLUSIVA de este producto: una sección
@@ -2123,6 +2403,7 @@ export class ShopifyService {
       input.botonFlotanteTexto,
       input.botonFlotanteColor,
       input.botonFlotanteColorTexto,
+      resenasFinal,
     );
     const sufijoPlantilla = this.sufijoPlantillaProducto(json.product.id);
     try {

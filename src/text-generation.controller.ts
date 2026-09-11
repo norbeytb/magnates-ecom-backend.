@@ -7,7 +7,7 @@
 // integraciones.service.ts.
 
 import { Body, Controller, HttpException, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { TextGenerationService, GenerarCopyResultado, GenerarAngulosResultado } from './text-generation.service';
+import { TextGenerationService, GenerarCopyResultado, GenerarAngulosResultado, AdaptarResenaResultado } from './text-generation.service';
 import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 import { IntegracionesService } from './integraciones.service';
 
@@ -32,6 +32,31 @@ interface GenerarAngulosDto {
   detallesProducto: string;
   idioma?: string;
   pais?: string;
+}
+
+// Pedido 11/09: sección "Testimonios" en modo Personalizada — ver
+// AdaptarResenaInput en el service. Queda sin usar desde el frontend tras el
+// pivote a foto-únicamente (ver GenerarResenaDesdeFotoDto abajo), pero se
+// deja el endpoint funcionando por si hace falta volver a este flujo.
+interface AdaptarResenaDto {
+  textoOriginal: string;
+  nombreProducto: string;
+  idioma?: string;
+  pais?: string;
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+}
+
+// Pedido 11/09 (pivote): el estudiante ya no escribe texto — sube solo una
+// foto real y la IA redacta la reseña completa mirando esa foto. Ver
+// GenerarResenaDesdeFotoInput en el service.
+interface GenerarResenaDesdeFotoDto {
+  fotoUrl: string;
+  nombreProducto: string;
+  idioma?: string;
+  pais?: string;
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
 }
 
 @Controller('ia/texto')
@@ -78,6 +103,42 @@ export class TextGenerationController {
       anguloElegido: dto.anguloElegido,
       idioma: dto.idioma,
       pais: dto.pais,
+      falApiKey,
+    });
+  }
+
+  // Sección "Testimonios" en modo Personalizada: adapta una reseña real
+  // (foto + texto que subió el estudiante) sin inventar contenido nuevo.
+  @Post('adaptar-resena')
+  async adaptarResena(@Body() dto: AdaptarResenaDto, @UsuarioActual() usuario: UsuarioAutenticado): Promise<AdaptarResenaResultado> {
+    const falApiKey = await this.exigirClaveFal(usuario.id);
+    return this.textGenerationService.adaptarResena({
+      textoOriginal: dto.textoOriginal,
+      nombreProducto: dto.nombreProducto,
+      idioma: dto.idioma,
+      pais: dto.pais,
+      nombresUsados: dto.nombresUsados,
+      ciudadesUsadas: dto.ciudadesUsadas,
+      falApiKey,
+    });
+  }
+
+  // Sección "Testimonios" en modo Personalizada (flujo actual): el
+  // estudiante sube solo una foto real por reseña y la IA redacta el texto
+  // completo mirando esa foto (nunca a partir de un texto real del cliente).
+  @Post('generar-resena-foto')
+  async generarResenaDesdeFoto(
+    @Body() dto: GenerarResenaDesdeFotoDto,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ): Promise<AdaptarResenaResultado> {
+    const falApiKey = await this.exigirClaveFal(usuario.id);
+    return this.textGenerationService.generarResenaDesdeFoto({
+      fotoUrl: dto.fotoUrl,
+      nombreProducto: dto.nombreProducto,
+      idioma: dto.idioma,
+      pais: dto.pais,
+      nombresUsados: dto.nombresUsados,
+      ciudadesUsadas: dto.ciudadesUsadas,
       falApiKey,
     });
   }

@@ -37,6 +37,14 @@ export class ProductosService implements OnModuleInit {
           actualizado_en TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // Pedido 11/09: sección "Testimonios" en modo Personalizada — las
+      // reseñas reales (foto + texto real de clientes reales, ya adaptadas
+      // por IA) son del PRODUCTO, no de una landing puntual: un mismo
+      // producto puede tener varias landings (landingNum 1, 2, 3...) y todas
+      // comparten las mismas reseñas reales que se subieron una sola vez acá.
+      // 'plantilla' (default, sin cambios) o 'personalizada'.
+      await this.pool.query(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS testimonios_modo TEXT;`);
+      await this.pool.query(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS resenas_json JSONB;`);
       // Sin FK a "usuarios" a propósito: los distintos *.service.ts abren su
       // propio Pool y crean su tabla en onModuleInit cada uno por su lado, sin
       // garantía de orden entre ellos — una FK podría fallar si esta tabla se
@@ -86,10 +94,28 @@ export class ProductosService implements OnModuleInit {
   async listarFotos(usuarioId: number): Promise<any[]> {
     if (!this.pool) return [];
     const resultado = await this.pool.query(
-      `SELECT nombre_producto, fotos_producto_json FROM productos WHERE usuario_id = $1`,
+      `SELECT nombre_producto, fotos_producto_json, testimonios_modo, resenas_json FROM productos WHERE usuario_id = $1`,
       [usuarioId],
     );
     return resultado.rows;
+  }
+
+  // Pedido 11/09: guarda (o actualiza) el modo de Testimonios ('plantilla' |
+  // 'personalizada') y la lista completa de reseñas reales de un producto —
+  // el frontend manda siempre el arreglo completo, igual que guardarFotos().
+  async guardarResenas(usuarioId: number, nombreProducto: string, testimoniosModo: string, resenas: any[]): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        `INSERT INTO productos (nombre_producto, usuario_id, testimonios_modo, resenas_json, actualizado_en)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (usuario_id, nombre_producto)
+         DO UPDATE SET testimonios_modo = $3, resenas_json = $4, actualizado_en = now()`,
+        [nombreProducto, usuarioId, testimoniosModo || 'plantilla', JSON.stringify(resenas || [])],
+      );
+    } catch (error) {
+      this.logger.error('No se pudieron guardar las reseñas del producto: ' + (error as Error).message);
+    }
   }
 
   async eliminar(usuarioId: number, nombreProducto: string): Promise<void> {

@@ -24,6 +24,17 @@ export class ProductosController {
     return { ok: true };
   }
 
+  // Pedido 11/09: sección "Testimonios" en modo Personalizada — ver la nota
+  // grande en productos.service.ts sobre por qué esto vive a nivel producto.
+  @Post('resenas')
+  async guardarResenas(
+    @Body() body: { nombreProducto: string; testimoniosModo: string; resenas: any[] },
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ) {
+    await this.productosService.guardarResenas(usuario.id, body.nombreProducto, body.testimoniosModo, body.resenas);
+    return { ok: true };
+  }
+
   @Delete(':nombre')
   async eliminar(@Param('nombre') nombre: string, @UsuarioActual() usuario: UsuarioAutenticado) {
     await this.productosService.eliminar(usuario.id, decodeURIComponent(nombre));
