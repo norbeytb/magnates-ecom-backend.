@@ -105,6 +105,23 @@ export interface GenerarResenaDesdeFotoInput {
   falApiKey: string;
 }
 
+// Pedido 11/09 (versión final, confirmada con Norbey): la foto que sube el
+// estudiante se publica TAL CUAL (nunca se le pide nada a la IA sobre esa
+// foto — ni que la mire, ni que la edite) y el avatar es una imagen aparte
+// generada por ImageEditService.generarAvatarResena(). Esta llamada de acá
+// es SOLO TEXTO: inventa nombre/ciudad/estrellas/texto de una reseña
+// creíble para el producto, sin mirar ninguna imagen — reemplaza en la
+// práctica a generarResenaDesdeFoto() (que queda sin usar, ver arriba) y ya
+// no depende del endpoint de visión de fal.ai que venía fallando.
+export interface GenerarTextoResenaInput {
+  nombreProducto: string;
+  idioma?: string; // ver nota en GenerarCopyInput
+  pais?: string; // mismo país de logística/envío ya configurado, ver ShopifyService
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+  falApiKey: string;
+}
+
 // Modelo de Claude servido a través del router de fal.ai (fal-ai/any-llm) —
 // mismo modelo (Haiku) que se usaba antes llamando directo a la API de
 // Anthropic: alcanza de sobra para esta tarea (redactar texto corto y
@@ -394,6 +411,64 @@ ${REGLA_FORMATO_JSON}`;
     const userMsg = `Escribí la reseña mirando la foto adjunta del producto "${input.nombreProducto}".`;
 
     const datos = await this.llamarFalVision(input.falApiKey, input.fotoUrl, userMsg, systemPrompt);
+    const estrellasNum = Math.min(5, Math.max(4, Math.round(Number(datos?.estrellas) || 5)));
+    return {
+      nombre: String(datos?.nombre || '').trim() || 'Cliente V.',
+      ciudad: String(datos?.ciudad || '').trim(),
+      estrellas: estrellasNum,
+      texto: String(datos?.texto || '').trim(),
+    };
+  }
+
+  // Pedido 11/09 (versión final): reemplaza en la práctica a
+  // generarResenaDesdeFoto() — ya no mira ninguna foto, solo inventa una
+  // reseña creíble de texto a partir del nombre del producto, el país y el
+  // idioma. El avatar y la foto de la reseña se resuelven aparte (ver la
+  // nota grande en GenerarTextoResenaInput, arriba).
+  async generarTextoResena(input: GenerarTextoResenaInput): Promise<AdaptarResenaResultado> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const notaIdioma =
+      idioma.toLowerCase() !== 'español'
+        ? ` IMPORTANTE: el estudiante vende en un país donde se habla ${idioma} — redactá el texto de la reseña directamente en ${idioma}, no en español.`
+        : '';
+
+    const paisLimpio = (input.pais || '').trim();
+    const notaPais =
+      paisLimpio && paisLimpio !== 'Selecciona el país'
+        ? ` El país donde se vende este producto es ${paisLimpio} — el nombre y la ciudad que inventes tienen que sonar realmente típicos de ${paisLimpio}, nunca genéricos ni de otro país.`
+        : ' No se especificó un país puntual para esta venta — usá un nombre y una ciudad neutros, comunes en Latinoamérica.';
+
+    const nombresUsados = (input.nombresUsados || []).filter((n) => n && n.trim());
+    const ciudadesUsadas = (input.ciudadesUsadas || []).filter((c) => c && c.trim());
+    const notaRepetidos =
+      (nombresUsados.length > 0 ? ` Nombres que YA se usaron en otras reseñas de esta misma landing y NO podés repetir: ${nombresUsados.join(', ')}.` : '') +
+      (ciudadesUsadas.length > 0 ? ` Ciudades que YA se usaron — tratá de variar: ${ciudadesUsadas.join(', ')}.` : '');
+
+    const systemPrompt = `Sos un redactor de reseñas de clientes para una tienda de eCommerce.
+
+Tu tarea es inventar una reseña corta, natural y creíble de un cliente contento que ya compró y usó el producto "${input.nombreProducto}" — como si la hubiera escrito él mismo después de recibirlo.
+
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves:
+{"nombre":"...","ciudad":"...","estrellas":5,"texto":"..."}
+
+Significado de cada clave:
+- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (inventado).
+- ciudad: una ciudad real y conocida del país indicado.
+- estrellas: 5 la gran mayoría de las veces, o 4 alguna vez para que no todas sean perfectas. Nunca menos de 4 — no se publican reseñas negativas.
+- texto: la reseña en primera persona, de 1 a 3 frases, tono cercano y natural de cliente real y contento, sin sonar a publicidad ni repetir siempre la misma estructura de frase que otras reseñas.
+${notaIdioma}${notaPais}${notaRepetidos}
+
+${REGLA_ANTIEXAGERACION}
+
+${REGLA_FORMATO_JSON}`;
+
+    const userMsg = `Inventá la reseña para el producto "${input.nombreProducto}".`;
+
+    const datos = await this.llamarFal(input.falApiKey, userMsg, systemPrompt);
     const estrellasNum = Math.min(5, Math.max(4, Math.round(Number(datos?.estrellas) || 5)));
     return {
       nombre: String(datos?.nombre || '').trim() || 'Cliente V.',

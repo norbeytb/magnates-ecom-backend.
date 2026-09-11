@@ -47,11 +47,24 @@ interface AdaptarResenaDto {
   ciudadesUsadas?: string[];
 }
 
-// Pedido 11/09 (pivote): el estudiante ya no escribe texto — sube solo una
-// foto real y la IA redacta la reseña completa mirando esa foto. Ver
-// GenerarResenaDesdeFotoInput en el service.
+// Pedido 11/09 (pivote intermedio, ya sin usar desde el frontend — ver
+// GenerarTextoResenaDto más abajo, que es la versión final): el estudiante
+// ya no escribe texto — sube solo una foto real y la IA redacta la reseña
+// completa mirando esa foto. Ver GenerarResenaDesdeFotoInput en el service.
 interface GenerarResenaDesdeFotoDto {
   fotoUrl: string;
+  nombreProducto: string;
+  idioma?: string;
+  pais?: string;
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+}
+
+// Pedido 11/09 (versión final, confirmada con Norbey): la IA ya no mira
+// ninguna foto — solo inventa el nombre/ciudad/estrellas/texto de la
+// reseña a partir del producto, país e idioma. Ver GenerarTextoResenaInput
+// en el service.
+interface GenerarTextoResenaDto {
   nombreProducto: string;
   idioma?: string;
   pais?: string;
@@ -134,6 +147,26 @@ export class TextGenerationController {
     const falApiKey = await this.exigirClaveFal(usuario.id);
     return this.textGenerationService.generarResenaDesdeFoto({
       fotoUrl: dto.fotoUrl,
+      nombreProducto: dto.nombreProducto,
+      idioma: dto.idioma,
+      pais: dto.pais,
+      nombresUsados: dto.nombresUsados,
+      ciudadesUsadas: dto.ciudadesUsadas,
+      falApiKey,
+    });
+  }
+
+  // Sección "Testimonios" en modo Personalizada (versión final): la IA
+  // inventa la reseña de texto sin mirar ninguna foto — el avatar se genera
+  // aparte (ver ImageEditController.generarAvatarResena) y la foto de la
+  // reseña es la que subió el estudiante, tal cual, sin pasar por la IA.
+  @Post('generar-texto-resena')
+  async generarTextoResena(
+    @Body() dto: GenerarTextoResenaDto,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ): Promise<AdaptarResenaResultado> {
+    const falApiKey = await this.exigirClaveFal(usuario.id);
+    return this.textGenerationService.generarTextoResena({
       nombreProducto: dto.nombreProducto,
       idioma: dto.idioma,
       pais: dto.pais,

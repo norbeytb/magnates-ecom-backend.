@@ -98,6 +98,12 @@ export interface ResenaLanding {
   // las imágenes principales de la landing). Puede venir vacía: hay
   // reseñas reales sin foto.
   fotoUrl?: string;
+  // Pedido 11/09 (versión final): avatar circular generado por IA (ver
+  // ImageEditService.generarAvatarResena) — NO tiene relación con fotoUrl
+  // de arriba (esa es la foto real que subió el estudiante, tal cual, sin
+  // tocar). Mismo tratamiento: puede venir todavía alojada en fal.storage,
+  // publicarLanding() la sube a Shopify Files igual que a fotoUrl.
+  avatarUrl?: string;
   nombre: string;
   ciudad?: string;
   estrellas: number;
@@ -1424,8 +1430,8 @@ export class ShopifyService {
     '      {%- if block.type == "resena" -%}',
     '      <div style="border:1px solid #ececec; border-radius:14px; padding:14px; background:#fff; box-sizing:border-box;" {{ block.shopify_attributes }}>',
     '        <div style="display:flex; align-items:center; gap:10px;">',
-    '          {%- if block.settings.foto != blank -%}',
-    '          <img src="{{ block.settings.foto | escape }}" alt="" loading="lazy" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">',
+    '          {%- if block.settings.avatar != blank -%}',
+    '          <img src="{{ block.settings.avatar | escape }}" alt="" loading="lazy" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">',
     '          {%- else -%}',
     '          <div style="width:36px; height:36px; border-radius:50%; background:#7c3aed; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; flex-shrink:0;">{{ block.settings.nombre | slice: 0, 1 | upcase }}</div>',
     '          {%- endif -%}',
@@ -1468,6 +1474,7 @@ export class ShopifyService {
     '      "name": "Reseña",',
     '      "settings": [',
     '        { "type": "text", "id": "foto", "label": "Foto real" },',
+    '        { "type": "text", "id": "avatar", "label": "Avatar (IA)" },',
     '        { "type": "text", "id": "nombre", "label": "Nombre" },',
     '        { "type": "text", "id": "ciudad", "label": "Ciudad" },',
     '        { "type": "text", "id": "estrellas", "label": "Estrellas" },',
@@ -2017,6 +2024,7 @@ export class ShopifyService {
           type: 'resena',
           settings: {
             foto: r.fotoUrl || '',
+            avatar: r.avatarUrl || '',
             nombre: r.nombre || 'Cliente V.',
             ciudad: r.ciudad || '',
             estrellas: String(Math.min(5, Math.max(1, Math.round(Number(r.estrellas) || 5)))),
@@ -2374,21 +2382,34 @@ export class ShopifyService {
       secuenciaFinal = imagenesShopify.map((url) => ({ tipo: 'imagen', url }));
     }
 
-    // Pedido 11/09: sección "Testimonios" en modo Personalizada — las fotos
-    // reales de las reseñas todavía están en fal.storage (temporal, igual
-    // que pasaba antes con las fotos principales de la landing) y hay que
-    // subirlas a la biblioteca de Archivos de Shopify para que queden
-    // alojadas para siempre. Se suben solo las que tienen foto (hay reseñas
-    // reales sin foto, quedan igual con fotoUrl vacío).
+    // Pedido 11/09: sección "Testimonios" en modo Personalizada — tanto la
+    // foto real que subió el estudiante como el avatar generado por IA
+    // todavía están en fal.storage (temporal, igual que pasaba antes con
+    // las fotos principales de la landing) y hay que subirlas a la
+    // biblioteca de Archivos de Shopify para que queden alojadas para
+    // siempre. Se suben aparte (son dos imágenes distintas por reseña) y
+    // solo las que efectivamente tienen algo cargado.
     let resenasFinal: ResenaLanding[] | undefined;
     if (input.resenas && input.resenas.length > 0) {
       const conFoto = input.resenas
         .map((r, i) => ({ r, i }))
         .filter(({ r }) => !!r.fotoUrl && r.fotoUrl.trim() !== '');
-      const fotosSubidas = await this.subirImagenesComoArchivos(credenciales, conFoto.map(({ r }) => r.fotoUrl as string));
+      const conAvatar = input.resenas
+        .map((r, i) => ({ r, i }))
+        .filter(({ r }) => !!r.avatarUrl && r.avatarUrl.trim() !== '');
+      const [fotosSubidas, avataresSubidos] = await Promise.all([
+        this.subirImagenesComoArchivos(credenciales, conFoto.map(({ r }) => r.fotoUrl as string)),
+        this.subirImagenesComoArchivos(credenciales, conAvatar.map(({ r }) => r.avatarUrl as string)),
+      ]);
       const fotoPorIndice = new Map<number, string>();
       conFoto.forEach(({ i }, idx) => fotoPorIndice.set(i, fotosSubidas[idx]));
-      resenasFinal = input.resenas.map((r, i) => ({ ...r, fotoUrl: fotoPorIndice.get(i) || '' }));
+      const avatarPorIndice = new Map<number, string>();
+      conAvatar.forEach(({ i }, idx) => avatarPorIndice.set(i, avataresSubidos[idx]));
+      resenasFinal = input.resenas.map((r, i) => ({
+        ...r,
+        fotoUrl: fotoPorIndice.get(i) || '',
+        avatarUrl: avatarPorIndice.get(i) || '',
+      }));
     }
 
     // Arma, desde cero, la plantilla EXCLUSIVA de este producto: una sección

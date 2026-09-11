@@ -82,6 +82,18 @@ export interface GenerarSeccionResultado {
   costoEstimadoUsd: number;
 }
 
+// Pedido 11/09: sección "Testimonios" en modo Personalizada — ver
+// generarAvatarResena() más abajo.
+export interface GenerarAvatarResenaInput {
+  falApiKey: string;
+  personajes?: {
+    nacionalidad?: string;
+    sexo?: string;
+    edadDesde?: string;
+    edadHasta?: string;
+  };
+}
+
 @Injectable()
 export class ImageEditService {
   constructor(private readonly historialService: HistorialService) {}
@@ -353,6 +365,83 @@ export class ImageEditService {
       throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
     }
     return this.resolverImagenUrl(this.clienteFal(falApiKey), dataUri);
+  }
+
+  // Pedido 11/09: sección "Testimonios" en modo Personalizada (versión
+  // final) — el estudiante sube la foto de la reseña TAL CUAL (nunca se
+  // toca, ver shopify.service.ts), pero el avatar circular (la carita) lo
+  // genera la IA de cero, a partir del mismo "Personaje" (nacionalidad,
+  // sexo, edad) que ya se usa para las demás secciones — no tiene relación
+  // con la foto que subió el estudiante. Por eso NO usa
+  // 'openai/gpt-image-2/edit' (que necesita una imagen de referencia): usa
+  // el modelo puro texto→imagen 'openai/gpt-image-2' (sin "/edit").
+  async generarAvatarResena(input: GenerarAvatarResenaInput): Promise<{ avatarUrl: string }> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+    const falClient = this.clienteFal(input.falApiKey);
+    const prompt = this.construirPromptAvatarResena(input.personajes);
+    try {
+      const imagenesUrl = await this.llamarFalAvatarConReintentos(falClient, prompt);
+      return { avatarUrl: imagenesUrl[0] };
+    } catch (error) {
+      if (this.esErrorDeContentChecker(error)) {
+        throw new InternalServerErrorException(
+          'El filtro de contenido de OpenAI bloqueó la generación del avatar de la reseña — probá de nuevo en unos minutos.',
+        );
+      }
+      if (this.esErrorDeClaveFalInvalida(error)) {
+        throw new InternalServerErrorException(
+          'fal.ai rechazó tu clave — revisá que la hayas pegado completa en "Integraciones" y que tengas créditos cargados en tu cuenta de fal.ai.',
+        );
+      }
+      throw new InternalServerErrorException('No se pudo generar el avatar de la reseña: ' + this.extraerDetalleError(error));
+    }
+  }
+
+  private construirPromptAvatarResena(personajes?: { nacionalidad?: string; sexo?: string; edadDesde?: string; edadHasta?: string }): string {
+    const rasgos = [
+      personajes?.nacionalidad && personajes.nacionalidad !== 'Seleccionar...' ? `nacionalidad ${personajes.nacionalidad}` : null,
+      personajes?.sexo && personajes.sexo !== 'Seleccionar...' ? personajes.sexo.toLowerCase() : null,
+      personajes?.edadDesde && personajes?.edadHasta ? `entre ${personajes.edadDesde} y ${personajes.edadHasta} años` : null,
+    ].filter(Boolean);
+    const descripcionPersona = rasgos.length ? rasgos.join(', ') : 'una persona latina, de cualquier edad adulta';
+    return `Foto realista, estilo selfie casera tomada con un celular, de UNA sola persona con estas características: ${descripcionPersona}. Primer plano de la cara, mirando de frente a la cámara, sonrisa natural y cálida, buena luz natural, fondo simple de una casa (desenfocado). Foto tipo cliente real, NO estilo publicitario ni de modelo profesional posando, sin logos ni texto ni marcas de agua en la imagen, sin ningún producto visible.`;
+  }
+
+  private async llamarFalAvatar(falClient: FalClient, prompt: string): Promise<string[]> {
+    const resultado = await falClient.subscribe('openai/gpt-image-2', {
+      input: {
+        prompt,
+        num_images: 1,
+        quality: 'low',
+        image_size: 'square_hd', // cuadrada — Shopify la recorta a círculo con CSS (object-fit:cover)
+        output_format: 'jpeg',
+      },
+      logs: false,
+    });
+    return (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+  }
+
+  // Mismo criterio de reintento que llamarFalConReintentos (arriba) — se
+  // duplica en vez de generalizar para no arriesgar el método que ya está
+  // funcionando en producción con la generación de secciones.
+  private async llamarFalAvatarConReintentos(falClient: FalClient, prompt: string): Promise<string[]> {
+    const intentosMax = 3;
+    let ultimoError: unknown;
+    for (let intento = 1; intento <= intentosMax; intento++) {
+      try {
+        return await this.llamarFalAvatar(falClient, prompt);
+      } catch (error) {
+        ultimoError = error;
+        const esUltimoIntento = intento === intentosMax;
+        if (esUltimoIntento || !this.esErrorTransitorioDeProveedor(error)) {
+          throw error;
+        }
+        await this.esperar(intento * 1500);
+      }
+    }
+    throw ultimoError;
   }
 
   private costoPorCalidad(calidad: 'low' | 'medium' | 'high'): number {

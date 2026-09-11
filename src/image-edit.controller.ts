@@ -30,6 +30,13 @@ interface LogisticaDto {
   metodoPago?: string;
 }
 
+// Pedido 11/09: sección "Testimonios" en modo Personalizada — ver el
+// endpoint "generar-avatar-resena" más abajo y generarAvatarResena() en
+// image-edit.service.ts.
+interface GenerarAvatarResenaDto {
+  personajes?: PersonajesDto;
+}
+
 interface GenerarSeccionDto {
   seccion: string;
   imagenProductoUrl: string;
@@ -109,6 +116,18 @@ export class ImageEditController {
         logistica: dto.logistica,
       },
     });
+  }
+
+  // Sección "Testimonios" en modo Personalizada: genera el avatar circular
+  // de una reseña (una persona, según el "Personaje" del producto) — no usa
+  // la foto que subió el estudiante para nada, es una imagen aparte.
+  @Post('generar-avatar-resena')
+  async generarAvatarResena(
+    @Body() dto: GenerarAvatarResenaDto,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ): Promise<{ avatarUrl: string }> {
+    const falApiKey = await this.exigirClaveFal(usuario.id);
+    return this.imageEditService.generarAvatarResena({ falApiKey, personajes: dto.personajes });
   }
 
   // Sube (a fal.storage) la foto que el usuario acaba de poner en un slot de
