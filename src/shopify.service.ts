@@ -108,9 +108,11 @@ export interface ResenaLanding {
   ciudad?: string;
   estrellas: number;
   texto: string;
-  // Fecha ISO de cuándo el estudiante cargó esta reseña en el taller — se
-  // usa para calcular "Hace X días/semanas/meses" en cada publicación (ver
-  // calcularTiempoRelativo), nunca se muestra tal cual.
+  // Fecha ISO de cuándo el estudiante cargó esta reseña en el taller —
+  // queda guardada como dato informativo, pero YA NO se usa para calcular
+  // "Hace X días/semanas/meses" (ver calcularTiempoRelativo: pedido 12/09,
+  // ahora es una secuencia fija según el orden de las reseñas, no la fecha
+  // real de carga). Nunca se muestra tal cual.
   fechaCarga?: string;
 }
 
@@ -1958,22 +1960,31 @@ export class ShopifyService {
   // "pos_2", ..., o "flotante"). "landing-controlador" es quien después, en
   // el navegador, decide cuál de las dos mostrar en cada posición (ver su
   // comentario grande, más arriba).
-  // "Hace X días/semanas/meses" — se recalcula en CADA publicación a partir
-  // de la fecha real en que el estudiante cargó la reseña (fechaCarga), así
-  // que nunca queda una reseña vieja diciendo "Hace 3 días" para siempre:
-  // si el estudiante vuelve a publicar meses después, el texto se actualiza
-  // solo. Nunca lo inventa la IA.
-  private calcularTiempoRelativo(fechaCargaIso: string | undefined): string {
-    const entonces = fechaCargaIso ? new Date(fechaCargaIso).getTime() : NaN;
-    if (!Number.isFinite(entonces)) return 'Hace poco';
-    const dias = Math.floor((Date.now() - entonces) / (1000 * 60 * 60 * 24));
-    if (dias <= 0) return 'Hoy';
-    if (dias === 1) return 'Hace 1 día';
-    if (dias < 7) return `Hace ${dias} días`;
-    const semanas = Math.floor(dias / 7);
-    if (semanas === 1) return 'Hace 1 semana';
-    if (semanas < 5) return `Hace ${semanas} semanas`;
-    const meses = Math.floor(dias / 30);
+  // "Hace X días/semanas/meses" — Pedido 12/09: antes esto se calculaba a
+  // partir de la fecha real en que el estudiante cargó la foto (fechaCarga).
+  // El problema: como normalmente se suben TODAS las fotos de las reseñas
+  // juntas, de una sola vez, casi siempre terminaban todas diciendo "Hoy" —
+  // se veía poco natural para una sección de testimonios reales (reseñas de
+  // verdad no llegan todas el mismo día). Ahora se arma con una secuencia
+  // FIJA según el ORDEN de las reseñas en la lista (índice, no fecha real):
+  // la primera reseña de la lista es la "más reciente" (Hace 1 día) y las
+  // siguientes van quedando progresivamente más viejas (días → semanas →
+  // meses), así la sección se ve repartida en el tiempo sin depender de
+  // cuándo se subió cada foto de verdad. Nunca lo inventa la IA — es un
+  // cálculo fijo acá mismo, siempre el mismo orden para las mismas reseñas.
+  private calcularTiempoRelativo(indice: number): string {
+    const dias = [1, 3, 5];
+    if (indice < dias.length) {
+      const d = dias[indice];
+      return d === 1 ? 'Hace 1 día' : `Hace ${d} días`;
+    }
+    const semanas = [1, 2, 3];
+    const idxSemana = indice - dias.length;
+    if (idxSemana < semanas.length) {
+      const s = semanas[idxSemana];
+      return s === 1 ? 'Hace 1 semana' : `Hace ${s} semanas`;
+    }
+    const meses = indice - dias.length - semanas.length + 1;
     return meses <= 1 ? 'Hace 1 mes' : `Hace ${meses} meses`;
   }
 
@@ -2029,7 +2040,7 @@ export class ShopifyService {
             ciudad: r.ciudad || '',
             estrellas: String(Math.min(5, Math.max(1, Math.round(Number(r.estrellas) || 5)))),
             texto: r.texto || '',
-            tiempo: this.calcularTiempoRelativo(r.fechaCarga),
+            tiempo: this.calcularTiempoRelativo(inicio + i),
           },
         };
         blockOrder.push(idBloque);
