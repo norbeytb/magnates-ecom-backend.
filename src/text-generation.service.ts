@@ -127,6 +127,16 @@ export interface GenerarTextoResenaInput {
   // ENFOQUES_RESENA, más abajo.
   textosUsados?: string[];
   indice?: number;
+  // Pedido 12/09 (bug reportado por Norbey, con captura: avatar de un hombre
+  // publicado con el nombre "Catalina V."): el avatar (la foto/carita) y el
+  // nombre de la reseña se generan en dos llamadas separadas (esta y
+  // ImageEditService.generarAvatarResena) que antes no se comunicaban entre
+  // sí — si el "Sexo" del Personaje no estaba fijo en un solo valor, cada
+  // llamada elegía uno al azar por su cuenta y podían no coincidir. Ahora el
+  // frontend decide UN solo sexo por reseña y se lo manda a las dos — este
+  // campo ("Hombre" o "Mujer") es ese valor, y se usa para que el nombre
+  // inventado acá sea siempre acorde al avatar.
+  sexo?: string;
   falApiKey: string;
 }
 
@@ -492,6 +502,19 @@ ${REGLA_FORMATO_JSON}`;
         ? `\n\nEstos son los textos EXACTOS de otras reseñas que YA se escribieron para este mismo producto — tu reseña nueva tiene que ser CLARAMENTE distinta a todas estas, no solo cambiando un par de palabras sueltas dentro de la misma frase: tiene que tener una idea, un arranque y una forma de contarlo diferente.\n${textosUsados.map((t, i) => `${i + 1}. "${t}"`).join('\n')}`
         : '';
 
+    // Pedido 12/09 (bug reportado por Norbey): el avatar (la foto/carita) de
+    // esta MISMA reseña ya se generó como una persona de este sexo puntual —
+    // el nombre que invente el modelo tiene que ser inequívocamente de ese
+    // mismo sexo, nunca ambiguo ni del otro, para que no quede una foto de
+    // hombre con nombre de mujer (o al revés).
+    const sexoLimpio = (input.sexo || '').trim();
+    const notaSexo =
+      sexoLimpio === 'Hombre'
+        ? ' El nombre que inventes tiene que ser un nombre de HOMBRE, inequívocamente masculino (nunca un nombre de mujer ni un nombre unisex/ambiguo).'
+        : sexoLimpio === 'Mujer'
+          ? ' El nombre que inventes tiene que ser un nombre de MUJER, inequívocamente femenino (nunca un nombre de hombre ni un nombre unisex/ambiguo).'
+          : '';
+
     const systemPrompt = `Sos un redactor de reseñas de clientes para una tienda de eCommerce.
 
 Tu tarea es inventar una reseña corta, natural y creíble de un cliente contento que ya compró y usó el producto "${input.nombreProducto}" — como si la hubiera escrito él mismo después de recibirlo.
@@ -502,7 +525,7 @@ Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni de
 {"nombre":"...","ciudad":"...","estrellas":5,"texto":"..."}
 
 Significado de cada clave:
-- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (inventado).
+- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (inventado).${notaSexo}
 - ciudad: una ciudad real y conocida del país indicado.
 - estrellas: 5 la gran mayoría de las veces, o 4 alguna vez para que no todas sean perfectas. Nunca menos de 4 — no se publican reseñas negativas.
 - texto: la reseña en primera persona, de 1 a 3 frases, tono cercano y natural de cliente real y contento, sin sonar a publicidad, siguiendo el enfoque asignado arriba.

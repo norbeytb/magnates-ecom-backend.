@@ -75,6 +75,11 @@ interface GenerarTextoResenaDto {
   // producto salgan con la misma estructura de frase.
   textosUsados?: string[];
   indice?: number;
+  // Pedido 12/09 (bug reportado por Norbey, con captura: avatar de un hombre
+  // con nombre de mujer): "Hombre" o "Mujer" — el mismo sexo que el frontend
+  // ya le mandó a /ia/imagenes/generar-avatar-resena para ESTA reseña, para
+  // que el nombre inventado acá sea siempre acorde a la foto del avatar.
+  sexo?: string;
 }
 
 @Controller('ia/texto')
@@ -179,6 +184,7 @@ export class TextGenerationController {
       ciudadesUsadas: dto.ciudadesUsadas,
       textosUsados: dto.textosUsados,
       indice: dto.indice,
+      sexo: dto.sexo,
       falApiKey,
     });
   }
