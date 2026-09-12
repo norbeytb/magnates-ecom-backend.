@@ -70,6 +70,11 @@ interface GenerarTextoResenaDto {
   pais?: string;
   nombresUsados?: string[];
   ciudadesUsadas?: string[];
+  // Pedido 12/09: ver el comentario grande junto a ENFOQUES_RESENA en
+  // text-generation.service.ts — evita que todas las reseñas de un mismo
+  // producto salgan con la misma estructura de frase.
+  textosUsados?: string[];
+  indice?: number;
 }
 
 @Controller('ia/texto')
@@ -172,6 +177,8 @@ export class TextGenerationController {
       pais: dto.pais,
       nombresUsados: dto.nombresUsados,
       ciudadesUsadas: dto.ciudadesUsadas,
+      textosUsados: dto.textosUsados,
+      indice: dto.indice,
       falApiKey,
     });
   }

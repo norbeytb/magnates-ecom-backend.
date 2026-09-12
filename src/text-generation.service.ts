@@ -119,8 +119,41 @@ export interface GenerarTextoResenaInput {
   pais?: string; // mismo país de logística/envío ya configurado, ver ShopifyService
   nombresUsados?: string[];
   ciudadesUsadas?: string[];
+  // Pedido 12/09 (bug reportado por Norbey, con captura: 3 reseñas seguidas
+  // con la misma estructura de frase — "Llevo X tiempo usando/tomando el
+  // producto y la verdad es que..." — solo cambiaban un par de palabras
+  // sueltas, algo que delata al toque que son reseñas fabricadas). Estos dos
+  // campos son la forma de resolverlo — ver el comentario grande junto a
+  // ENFOQUES_RESENA, más abajo.
+  textosUsados?: string[];
+  indice?: number;
   falApiKey: string;
 }
+
+// Pedido 12/09: cada reseña se genera con una llamada INDEPENDIENTE al
+// modelo, que no tiene memoria de lo que escribió en las reseñas
+// anteriores — dejado solo, el modelo tiende a converger siempre a la misma
+// plantilla "segura" para un mismo producto (ej. "Llevo tres semanas usando
+// el Shilajit Ultra y la verdad es que me siento con más energía durante el
+// día..."), cambiando apenas un par de palabras entre una reseña y la
+// siguiente. Pedirle "no repitas la estructura" en texto libre no alcanzó
+// (ver la nota vieja en el prompt, más abajo) porque el modelo no tiene
+// ninguna referencia concreta de qué estructura ya usó. La solución: asignar
+// a CADA reseña, según su posición en la lista (índice), un ángulo/enfoque
+// distinto de esta lista fija — así la variedad de contenido queda
+// garantizada por diseño, no librada a que al modelo "se le ocurra" variar
+// solo. Se combina con mandarle los textos ya usados (textosUsados) como
+// referencia negativa explícita.
+const ENFOQUES_RESENA: string[] = [
+  'Contá un resultado o cambio concreto y específico que notaste usándolo — no algo genérico como "más energía", sino algo puntual (qué pudiste hacer, qué dejó de pasar, qué mejoró).',
+  'Contá cómo lo metiste en tu rutina diaria: en qué momento del día lo usás y cómo se volvió parte de tu día a día.',
+  'Compará cómo era tu situación ANTES de tenerlo con cómo es AHORA — el contraste entre un momento y otro.',
+  'Contá que se lo recomendaste, regalaste o mostraste a alguien cercano (un familiar, un amigo, un compañero de trabajo) y por qué.',
+  'Hablá de algo puntual del producto en sí — la calidad, el empaque, lo fácil que es de usar, o el sabor/textura si aplica — más que del resultado.',
+  'Contá una anécdota corta y bien específica: un momento, un día o una situación puntual donde te diste cuenta de la diferencia.',
+  'Hablá de la relación precio-calidad: por qué sentiste que valió la pena la compra frente a otras opciones.',
+  'Escribila corta y directa, sin mucha explicación — como alguien que no tiene tiempo de escribir mucho pero quiere dejar su opinión de todas formas.',
+];
 
 // Modelo de Claude servido a través del router de fal.ai (fal-ai/any-llm) —
 // mismo modelo (Haiku) que se usaba antes llamando directo a la API de
@@ -444,13 +477,26 @@ ${REGLA_FORMATO_JSON}`;
 
     const nombresUsados = (input.nombresUsados || []).filter((n) => n && n.trim());
     const ciudadesUsadas = (input.ciudadesUsadas || []).filter((c) => c && c.trim());
+    const textosUsados = (input.textosUsados || []).filter((t) => t && t.trim());
     const notaRepetidos =
       (nombresUsados.length > 0 ? ` Nombres que YA se usaron en otras reseñas de esta misma landing y NO podés repetir: ${nombresUsados.join(', ')}.` : '') +
       (ciudadesUsadas.length > 0 ? ` Ciudades que YA se usaron — tratá de variar: ${ciudadesUsadas.join(', ')}.` : '');
 
+    // Ver el comentario grande junto a ENFOQUES_RESENA (arriba): la variedad
+    // de contenido entre reseñas queda garantizada asignando un enfoque fijo
+    // según la posición de esta reseña en la lista, no dejada al azar.
+    const indice = Number.isInteger(input.indice) && (input.indice as number) >= 0 ? (input.indice as number) : 0;
+    const enfoque = ENFOQUES_RESENA[indice % ENFOQUES_RESENA.length];
+    const notaTextosUsados =
+      textosUsados.length > 0
+        ? `\n\nEstos son los textos EXACTOS de otras reseñas que YA se escribieron para este mismo producto — tu reseña nueva tiene que ser CLARAMENTE distinta a todas estas, no solo cambiando un par de palabras sueltas dentro de la misma frase: tiene que tener una idea, un arranque y una forma de contarlo diferente.\n${textosUsados.map((t, i) => `${i + 1}. "${t}"`).join('\n')}`
+        : '';
+
     const systemPrompt = `Sos un redactor de reseñas de clientes para una tienda de eCommerce.
 
 Tu tarea es inventar una reseña corta, natural y creíble de un cliente contento que ya compró y usó el producto "${input.nombreProducto}" — como si la hubiera escrito él mismo después de recibirlo.
+
+REGLA DE VARIEDAD (no negociable, es la parte más importante de esta tarea): las reseñas de una misma landing NUNCA pueden sonar como la misma plantilla con palabras cambiadas — eso delata al toque que son fabricadas. Para ESTA reseña puntual, el enfoque/ángulo tiene que ser este: ${enfoque} No empieces la frase con "Llevo [tiempo] usando/tomando..." salvo que sea realmente el único enfoque que tenga sentido — variá también cómo arranca cada reseña (con el resultado, con una anécdota, con la persona, con una comparación, etc., según el enfoque de arriba).${notaTextosUsados}
 
 Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves:
 {"nombre":"...","ciudad":"...","estrellas":5,"texto":"..."}
@@ -459,7 +505,7 @@ Significado de cada clave:
 - nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." (inventado).
 - ciudad: una ciudad real y conocida del país indicado.
 - estrellas: 5 la gran mayoría de las veces, o 4 alguna vez para que no todas sean perfectas. Nunca menos de 4 — no se publican reseñas negativas.
-- texto: la reseña en primera persona, de 1 a 3 frases, tono cercano y natural de cliente real y contento, sin sonar a publicidad ni repetir siempre la misma estructura de frase que otras reseñas.
+- texto: la reseña en primera persona, de 1 a 3 frases, tono cercano y natural de cliente real y contento, sin sonar a publicidad, siguiendo el enfoque asignado arriba.
 ${notaIdioma}${notaPais}${notaRepetidos}
 
 ${REGLA_ANTIEXAGERACION}
