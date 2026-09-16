@@ -1,4 +1,3 @@
-// app.module.ts
 // Módulo raíz: le dice a NestJS qué controladores y servicios existen.
 
 import { Module } from '@nestjs/common';
@@ -22,9 +21,11 @@ import { IntegracionesController } from './integraciones.controller';
 import { IntegracionesService } from './integraciones.service';
 import { PlantillasGuardadasController } from './plantillas-guardadas.controller';
 import { PlantillasGuardadasService } from './plantillas-guardadas.service';
+import { ImportarProductoController } from './importar-producto.controller';
+import { ImportarProductoService } from './importar-producto.service';
 
 @Module({
-  controllers: [AuthController, AdminController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController, IntegracionesController, PlantillasGuardadasController],
-  providers: [AuthService, JwtAuthGuard, ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService, IntegracionesService, PlantillasGuardadasService],
+  controllers: [AuthController, AdminController, ImageEditController, TextGenerationController, HistorialController, ShopifyController, LandingsController, ProductosController, IntegracionesController, PlantillasGuardadasController, ImportarProductoController],
+  providers: [AuthService, JwtAuthGuard, ImageEditService, TextGenerationService, HistorialService, ShopifyService, LandingsService, ProductosService, IntegracionesService, PlantillasGuardadasService, ImportarProductoService],
 })
 export class AppModule {}
