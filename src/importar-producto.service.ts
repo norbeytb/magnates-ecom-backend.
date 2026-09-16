@@ -155,8 +155,17 @@ export class ImportarProductoService {
   // no depender de que ese CDN externo siga sirviendo esa URL más adelante.
   private async descargarYSubirAFal(falClient: FalClient, urlExterna: string): Promise<string> {
     const buffer = await this.descargarBytes(urlExterna, 'la foto del producto');
-    const blob = new Blob([buffer], { type: 'image/jpeg' });
-    return falClient.storage.upload(blob);
+    return falClient.storage.upload(this.bufferABlob(buffer, 'image/jpeg'));
+  }
+
+  // Envuelve un Buffer de Node en un Blob de forma compatible con distintas
+  // versiones de @types/node/TypeScript: en algunas, el tipo de Buffer
+  // (Buffer<ArrayBufferLike>) no matchea exactamente el ArrayBufferView que
+  // pide el constructor de Blob (pide ArrayBufferView<ArrayBuffer>, más
+  // estricto). Copiarlo a un Uint8Array nuevo evita ese choque de tipos sin
+  // cambiar el contenido de los bytes.
+  private bufferABlob(buffer: Buffer, tipo: string): Blob {
+    return new Blob([new Uint8Array(buffer)], { type: tipo });
   }
 
   // Descarga cruda de bytes desde una URL externa (sitio de origen) — la
@@ -426,8 +435,7 @@ export class ImportarProductoService {
             resenasReales,
           );
           costoEstimadoUsd += costoTestimonios;
-          const blob = new Blob([buffer], { type: 'image/jpeg' });
-          const imagenUrl = await falClient.storage.upload(blob);
+          const imagenUrl = await falClient.storage.upload(this.bufferABlob(buffer, 'image/jpeg'));
           seccionesOk.push(seccion);
           items.push({
             id: `${seccion}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
