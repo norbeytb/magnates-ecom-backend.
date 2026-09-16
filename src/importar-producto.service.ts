@@ -300,6 +300,9 @@ export class ImportarProductoService {
     nombreProducto: string,
     resenas: ResenaOrigen[],
   ): Promise<{ buffer: Buffer; costoEstimadoUsd: number }> {
+    // El filtrado a "solo positivas" (>= 4 estrellas) ya se hizo antes de
+    // llegar acá (ver pilotoAutomatico → resenasReales) — acá solo se
+    // recorta a la cantidad máxima a mostrar en la imagen.
     const usadas = resenas
       .filter((r) => r.texto && r.texto.trim().length > 0)
       .slice(0, this.MAX_RESENAS_REALES);
@@ -369,7 +372,19 @@ export class ImportarProductoService {
     // Reseñas reales tal como las trajo el scraper — ver ResenaOrigen arriba.
     // Si el sitio de origen no tenía reseñas visibles en el momento de
     // scrapear, esto llega vacío y Testimonios se arma como antes (con IA).
-    const resenasReales = (input.resenas || []).filter((r) => r && r.texto && r.texto.trim().length > 5);
+    // Pedido de Norbey (16/09): la landing debe mostrar solo reseñas
+    // POSITIVAS — se descartan las que sí trajeron una calificación
+    // detectada y es menor a 4 estrellas (si no se pudo detectar la
+    // calificación, se deja pasar: mejor mostrarla sin la estrellita exacta
+    // que perder una reseña real válida por un dato que no se pudo leer).
+    // Se ordenan las de 5 estrellas primero. Si después de filtrar no queda
+    // NINGUNA, resenasReales queda vacío y Testimonios cae al comportamiento
+    // viejo (inventado por IA) más abajo — nunca se genera una imagen con 0
+    // reseñas.
+    const resenasReales = (input.resenas || [])
+      .filter((r) => r && r.texto && r.texto.trim().length > 5)
+      .filter((r) => r.calificacion === undefined || r.calificacion >= 4)
+      .sort((a, b) => (b.calificacion ?? 4) - (a.calificacion ?? 4));
 
     const falClient = this.clienteFal(falApiKey);
 
