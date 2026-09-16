@@ -7,7 +7,7 @@
 // piloto automático.
 
 import { Body, Controller, HttpException, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { ImportarProductoService, ImportarProductoResultado, PlataformaOrigen } from './importar-producto.service';
+import { ImportarProductoService, ImportarProductoResultado, PlataformaOrigen, ResenaOrigen } from './importar-producto.service';
 import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 import { IntegracionesService } from './integraciones.service';
 
@@ -19,6 +19,9 @@ interface PilotoAutomaticoDto {
   fotos: string[];
   precioOriginal?: number;
   moneda?: string;
+  // Reseñas reales scrapeadas de la página de origen (16/09, ver
+  // importar-producto.service.ts) — opcional.
+  resenas?: ResenaOrigen[];
 }
 
 @Controller('importar-producto')
@@ -54,6 +57,7 @@ export class ImportarProductoController {
       fotos: dto?.fotos || [],
       precioOriginal: dto?.precioOriginal,
       moneda: dto?.moneda,
+      resenas: dto?.resenas || [],
     });
   }
 }
