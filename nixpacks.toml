@@ -1,0 +1,26 @@
+# nixpacks.toml
+#
+# Archivo NUEVO — va en la RAÍZ del repo (al lado de package.json, NO dentro
+# de src/). Railway arma el contenedor del backend con Nixpacks (detecta que
+# es un proyecto Node solo, sin este archivo) y por defecto esa imagen NO
+# trae ninguna fuente de letra instalada ni el paquete "fontconfig" que las
+# administra.
+#
+# Por qué hace falta esto (17/09): la sección de Testimonios con reseñas
+# reales arma una imagen con la librería "sharp" dibujando texto (nombre,
+# estrellas, el comentario) directo sobre un SVG. Sin ninguna fuente
+# instalada en el contenedor, ese texto sale invisible o como cuadraditos
+# vacíos ("tofu") en vez de letras — exactamente lo que Norbey vio en sus
+# capturas. En la máquina donde se probó y verificó el código antes de
+# entregarlo SÍ había fuentes instaladas de por sí, por eso ahí se veía
+# perfecto y solo se notó el problema ya en producción (Railway).
+#
+# Esto le pide a Railway que, al armar el contenedor, instale con apt-get
+# (aptPkgs = paquetes de Debian/Ubuntu, lo que usa Nixpacks por debajo) el
+# manejador de fuentes (fontconfig) más dos familias de fuentes gratuitas y
+# de uso libre: DejaVu (la que se usó para probar este mismo fix) y
+# Liberation (métricamente compatible con Arial, que es la fuente que pide
+# el código de Testimonios). Con cualquiera de las dos alcanza para que el
+# texto se dibuje bien — se instalan las dos por las dudas.
+[phases.setup]
+aptPkgs = ["fontconfig", "fonts-dejavu-core", "fonts-liberation"]
