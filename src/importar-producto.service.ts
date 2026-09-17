@@ -119,7 +119,9 @@ export class ImportarProductoService {
 
   // Combo estándar de secciones para el piloto automático — ver nota grande
   // arriba del archivo sobre por qué estas 5 y no las 10 disponibles.
-  private readonly SECCIONES_AUTOMATICAS: string[] = ['hero', 'beneficios', 'oferta', 'testimonios', 'faq'];
+  // Orden (pedido explícito de Norbey 17/09): Testimonios va AL FINAL,
+  // después de Preguntas Frecuentes — antes quedaba entre Oferta y FAQ.
+  private readonly SECCIONES_AUTOMATICAS: string[] = ['hero', 'beneficios', 'oferta', 'faq', 'testimonios'];
 
   private readonly ETIQUETAS_SECCION: Record<string, string> = {
     hero: 'Hero (portada / titular principal)',
@@ -480,7 +482,11 @@ export class ImportarProductoService {
             sectionLabel: this.ETIQUETAS_SECCION[seccion] || seccion,
             templateId: null,
           });
-          items.push({ id: `boton-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, tipo: 'boton_comprar' });
+          // OJO: ya no se intercala un botón acá — Testimonios ahora es
+          // siempre la ÚLTIMA sección del combo automático (ver
+          // SECCIONES_AUTOMATICAS arriba), así que el botón final que se
+          // agrega más abajo (después de este for) ya queda justo debajo,
+          // sin repetirlo dos veces seguidas.
           continue;
         }
 
