@@ -309,26 +309,46 @@ export class ImportarProductoService {
 
     const ANCHO = 1024;
     const ALTO_HEADER = 190;
-    const ALTO_TARJETA = 420;
     const ESPACIO = 24;
     const MARGEN_INFERIOR = 40;
-    const ALTO = ALTO_HEADER + usadas.length * ALTO_TARJETA + (usadas.length - 1) * ESPACIO + MARGEN_INFERIOR;
+    // Alto de tarjeta MÍNIMO fijo (nombre + estrellas + avatar) + un extra
+    // por cada línea de más que ocupe el texto de la reseña — antes esto
+    // era un alto fijo de 420px para todas las tarjetas, lo que dejaba un
+    // hueco enorme en blanco debajo de reseñas cortas (reportado 16/09 por
+    // Norbey: "el texto no se veía" en la vista previa chica del teléfono —
+    // en realidad SÍ estaba, solo que perdido en todo ese espacio vacío).
+    const ALTO_TARJETA_BASE = 250;
+    const ALTO_POR_LINEA_EXTRA = 36;
+    const PADDING_INFERIOR_TARJETA = 40;
 
     const TAMANO_AVATAR = 120;
     let costoEstimadoUsd = 0;
     const capas: sharp.OverlayOptions[] = [];
 
-    for (let i = 0; i < usadas.length; i++) {
-      const resena = usadas[i];
-      const yTarjeta = ALTO_HEADER + i * (ALTO_TARJETA + ESPACIO);
-      const nombreMostrado = resena.autor?.trim() || `Comprador verificado`;
+    // Primera pasada: envuelve el texto de cada reseña y calcula el alto que
+    // le corresponde a su tarjeta según cuántas líneas ocupe.
+    const tarjetas = usadas.map((resena) => {
       const lineasTexto = this.envolverTexto(resena.texto, 44, 6);
+      const altoTarjeta =
+        ALTO_TARJETA_BASE + Math.max(0, lineasTexto.length - 1) * ALTO_POR_LINEA_EXTRA + PADDING_INFERIOR_TARJETA;
+      return { resena, lineasTexto, altoTarjeta };
+    });
+
+    const ALTO =
+      ALTO_HEADER +
+      tarjetas.reduce((acc, t) => acc + t.altoTarjeta, 0) +
+      Math.max(0, tarjetas.length - 1) * ESPACIO +
+      MARGEN_INFERIOR;
+
+    let yTarjeta = ALTO_HEADER;
+    for (const { resena, lineasTexto, altoTarjeta } of tarjetas) {
+      const nombreMostrado = resena.autor?.trim() || `Comprador verificado`;
       const tspans = lineasTexto
         .map((linea, idx) => `<tspan x="64" dy="${idx === 0 ? 0 : 36}">${this.escaparXml(linea)}</tspan>`)
         .join('');
 
-      const tarjetaSvg = Buffer.from(`<svg width="${ANCHO}" height="${ALTO_TARJETA}">
-        <rect x="20" y="0" width="${ANCHO - 40}" height="${ALTO_TARJETA - 20}" rx="28" fill="#ffffff" stroke="#ece6dc" stroke-width="2"/>
+      const tarjetaSvg = Buffer.from(`<svg width="${ANCHO}" height="${altoTarjeta}">
+        <rect x="20" y="0" width="${ANCHO - 40}" height="${altoTarjeta - 20}" rx="28" fill="#ffffff" stroke="#ece6dc" stroke-width="2"/>
         <text x="184" y="70" font-size="30" font-family="Arial, sans-serif" font-weight="bold" fill="#232323">${this.escaparXml(nombreMostrado)}</text>
         <text x="184" y="108" font-size="30" fill="#f5a623">${this.estrellas(resena.calificacion)}</text>
         <text font-size="26" font-family="Arial, sans-serif" fill="#3d3d3d" y="168">${tspans}</text>
@@ -343,6 +363,7 @@ export class ImportarProductoService {
 
       capas.push({ input: tarjetaSvg, left: 0, top: yTarjeta });
       capas.push({ input: avatarBuffer, left: 44, top: yTarjeta + 34 });
+      yTarjeta += altoTarjeta + ESPACIO;
     }
 
     const encabezadoSvg = Buffer.from(`<svg width="${ANCHO}" height="${ALTO_HEADER}">
