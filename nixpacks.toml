@@ -22,5 +22,22 @@
 # Liberation (métricamente compatible con Arial, que es la fuente que pide
 # el código de Testimonios). Con cualquiera de las dos alcanza para que el
 # texto se dibuje bien — se instalan las dos por las dudas.
+#
+# Ronda 2 (mismo día, tras probar en Railway): instalar el paquete NO fue
+# suficiente — en los logs apareció "Fontconfig error: Cannot load default
+# config file: No such file: (null)". Nixpacks arma el contenedor con Nix
+# (no con Debian puro), y ahí el fontconfig que trae Node por Nix no
+# encuentra sola la ruta de configuración de fuentes que dejó el apt-get de
+# arriba. Se agregan dos cosas más para forzarlo:
+#  1) fc-cache -f: reconstruye a mano el índice de fuentes después de
+#     instalarlas (a veces no se genera solo).
+#  2) FONTCONFIG_PATH=/etc/fonts: le dice explícitamente a cualquier
+#     programa (incluida la librería que usa "sharp" para dibujar texto)
+#     dónde está la configuración real de fuentes, en vez de dejar que lo
+#     adivine y encuentre "(null)".
 [phases.setup]
 aptPkgs = ["fontconfig", "fonts-dejavu-core", "fonts-liberation"]
+cmds = ["fc-cache -f -v"]
+
+[variables]
+FONTCONFIG_PATH = "/etc/fonts"
