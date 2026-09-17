@@ -63,10 +63,16 @@ import { createFalClient, FalClient } from '@fal-ai/client';
 // "import sharp from 'sharp'" TypeScript trae el valor pero no el
 // namespace de tipos (sharp.OverlayOptions, etc.), por eso se importa así.
 import sharp = require('sharp');
+// opentype.js: convierte texto en dibujos vectoriales (paths) usando una
+// fuente que traemos NOSOTROS (ver fuentes-liberation.ts) en vez de pedirle
+// al sistema operativo del servidor que dibuje el texto con SU fuente — ver
+// la nota grande "Actualización 17/09 (fuentes)" más abajo para el porqué.
+import opentype = require('opentype.js');
 import { ImageEditService, FichaTecnica } from './image-edit.service';
 import { TextGenerationService } from './text-generation.service';
 import { ProductosService } from './productos.service';
 import { LandingsService, ItemLanding } from './landings.service';
+import { LIBERATION_SANS_REGULAR_BASE64, LIBERATION_SANS_BOLD_BASE64 } from './fuentes-liberation';
 
 export type PlataformaOrigen = 'aliexpress' | 'amazon' | 'temu';
 
@@ -201,30 +207,68 @@ export class ImportarProductoService {
   // reales (ver nota grande "Actualización 16/09" arriba del archivo).
   // No usa IA de imagen: arma un JPEG con sharp pegando texto real + fotos
   // reales (o avatares de respaldo) — así el contenido nunca se "alucina".
-  // ---------------------------------------------------------------------
+  //
+  // Actualización 17/09 (fuentes): las primeras dos versiones de esto
+  // dibujaban el texto con elementos <text> de SVG, pidiéndole a sharp (por
+  // debajo, a la librería librsvg) que lo escriba con la fuente "Arial" del
+  // SISTEMA OPERATIVO del servidor. En Railway ese servidor no tiene NINGUNA
+  // fuente instalada — se probaron dos rondas de fix instalando fuentes vía
+  // nixpacks.toml (aptPkgs con fontconfig+fuentes, después agregando
+  // fc-cache y la variable FONTCONFIG_PATH) y el error de Fontconfig seguía
+  // apareciendo en los logs de Railway (Nixpacks arma el contenedor con Nix
+  // por debajo, que trae su propio fontconfig aparte del que se instala con
+  // apt, y no se pudo hacer que apunten al mismo lugar).
+  //
+  // Se abandonó ese enfoque: en vez de depender de que el servidor tenga
+  // fuentes, ahora el texto se convierte acá mismo en dibujos vectoriales
+  // (paths SVG) usando "opentype.js" + la fuente Liberation Sans que
+  // TRAEMOS NOSOTROS embebida en fuentes-liberation.ts (ver ese archivo).
+  // sharp/librsvg ya no tiene que "escribir" nada — solo dibuja las figuras
+  // que le mandamos ya calculadas, así que no le hace falta ninguna fuente
+  // del sistema. Probado a propósito simulando un servidor con CERO fuentes
+  // instaladas (variable FONTCONFIG_FILE apuntando a una config vacía): el
+  // texto se sigue viendo perfecto. Los símbolos de estrella (★/☆) también
+  // se dibujan como polígonos (puntoEstrella/estrellasSvg) en vez de como
+  // texto, porque Liberation Sans ni siquiera trae esos símbolos.
 
-  private escaparXml(texto: string): string {
-    return String(texto)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+  private fuentesCache: { regular: opentype.Font; bold: opentype.Font } | null = null;
+
+  private cargarFuentes(): { regular: opentype.Font; bold: opentype.Font } {
+    if (!this.fuentesCache) {
+      const aBuffer = (base64: string) => {
+        const buf = Buffer.from(base64, 'base64');
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      };
+      this.fuentesCache = {
+        regular: opentype.parse(aBuffer(LIBERATION_SANS_REGULAR_BASE64)),
+        bold: opentype.parse(aBuffer(LIBERATION_SANS_BOLD_BASE64)),
+      };
+    }
+    return this.fuentesCache;
   }
 
-  // Corta el texto de la reseña en líneas de ancho parecido para que entre
-  // prolijo dentro de la tarjeta — es un cálculo aproximado por cantidad de
-  // caracteres (no mide el ancho real de cada letra), suficiente para este
-  // tamaño de fuente/tarjeta. Si el texto es muy largo, se corta con "…" en
-  // vez de desbordar la tarjeta.
-  private envolverTexto(texto: string, maxCaracteresPorLinea: number, maxLineas: number): string[] {
+  // Dibuja un string como un <path> de SVG (contorno vectorial de cada
+  // letra) en vez de como texto — ver nota grande de arriba.
+  private textoAPath(texto: string, x: number, y: number, tamano: number, negrita: boolean, color: string): string {
+    const { regular, bold } = this.cargarFuentes();
+    const fuente = negrita ? bold : regular;
+    const d = fuente.getPath(texto, x, y, tamano).toPathData(2);
+    return `<path d="${d}" fill="${color}"/>`;
+  }
+
+  // Corta el texto de la reseña en líneas que realmente entren en el ancho
+  // disponible — usa el ancho REAL de cada palabra según la fuente
+  // (font.getAdvanceWidth), no un conteo aproximado de caracteres. Si el
+  // texto es muy largo, se corta con "…" en vez de desbordar la tarjeta.
+  private envolverTexto(texto: string, tamanoFuente: number, anchoMaximoPx: number, maxLineas: number): string[] {
+    const { regular } = this.cargarFuentes();
     const palabras = texto.trim().split(/\s+/);
     const lineas: string[] = [];
     let actual = '';
     for (const palabra of palabras) {
       const propuesta = actual ? `${actual} ${palabra}` : palabra;
-      if (propuesta.length > maxCaracteresPorLinea) {
-        if (actual) lineas.push(actual);
+      if (regular.getAdvanceWidth(propuesta, tamanoFuente) > anchoMaximoPx && actual) {
+        lineas.push(actual);
         actual = palabra;
       } else {
         actual = propuesta;
@@ -241,9 +285,33 @@ export class ImportarProductoService {
     return lineas;
   }
 
-  private estrellas(calificacion?: number): string {
+  // Un solo pico de estrella, como polígono (no como carácter de fuente —
+  // Liberation Sans no trae el símbolo ★, y tampoco haría falta si lo
+  // trajera: dibujarla nosotros la deja del mismo tamaño/forma siempre).
+  private estrellaPath(cx: number, cy: number, radioExterior: number): string {
+    const radioInterior = radioExterior * 0.5;
+    const puntos: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? radioExterior : radioInterior;
+      const angulo = (-90 + i * 36) * (Math.PI / 180);
+      puntos.push(`${(cx + r * Math.cos(angulo)).toFixed(2)},${(cy + r * Math.sin(angulo)).toFixed(2)}`);
+    }
+    return `M${puntos.join('L')}Z`;
+  }
+
+  // Fila de 5 estrellas — las primeras `calificacion` rellenas de color, el
+  // resto en gris claro (equivalente a la estrella "vacía" ☆ de antes).
+  private estrellasSvg(calificacion: number | undefined, x: number, yCentro: number, tamano: number): string {
     const n = Math.max(0, Math.min(5, Math.round(calificacion ?? 5)));
-    return '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n);
+    const radio = tamano / 2;
+    const espacio = tamano * 1.3;
+    let svg = '';
+    for (let i = 0; i < 5; i++) {
+      const cx = x + radio + i * espacio;
+      const relleno = i < n ? '#f5a623' : '#e4e0d8';
+      svg += `<path d="${this.estrellaPath(cx, yCentro, radio)}" fill="${relleno}"/>`;
+    }
+    return svg;
   }
 
   // Descarga la foto real adjunta a la reseña y la recorta en círculo. Si
@@ -327,10 +395,14 @@ export class ImportarProductoService {
     let costoEstimadoUsd = 0;
     const capas: sharp.OverlayOptions[] = [];
 
-    // Primera pasada: envuelve el texto de cada reseña y calcula el alto que
-    // le corresponde a su tarjeta según cuántas líneas ocupe.
+    // Primera pasada: envuelve el texto de cada reseña (ancho real en
+    // píxeles según la fuente, no un conteo de caracteres — ver
+    // envolverTexto) y calcula el alto que le corresponde a su tarjeta
+    // según cuántas líneas ocupe.
+    const ANCHO_TEXTO_PX = 780;
+    const TAMANO_LETRA_TEXTO = 26;
     const tarjetas = usadas.map((resena) => {
-      const lineasTexto = this.envolverTexto(resena.texto, 44, 6);
+      const lineasTexto = this.envolverTexto(resena.texto, TAMANO_LETRA_TEXTO, ANCHO_TEXTO_PX, 6);
       const altoTarjeta =
         ALTO_TARJETA_BASE + Math.max(0, lineasTexto.length - 1) * ALTO_POR_LINEA_EXTRA + PADDING_INFERIOR_TARJETA;
       return { resena, lineasTexto, altoTarjeta };
@@ -345,15 +417,15 @@ export class ImportarProductoService {
     let yTarjeta = ALTO_HEADER;
     for (const { resena, lineasTexto, altoTarjeta } of tarjetas) {
       const nombreMostrado = resena.autor?.trim() || `Comprador verificado`;
-      const tspans = lineasTexto
-        .map((linea, idx) => `<tspan x="64" dy="${idx === 0 ? 0 : 36}">${this.escaparXml(linea)}</tspan>`)
+      const cuerpoTexto = lineasTexto
+        .map((linea, idx) => this.textoAPath(linea, 64, 168 + idx * 36, TAMANO_LETRA_TEXTO, false, '#3d3d3d'))
         .join('');
 
       const tarjetaSvg = Buffer.from(`<svg width="${ANCHO}" height="${altoTarjeta}">
         <rect x="20" y="0" width="${ANCHO - 40}" height="${altoTarjeta - 20}" rx="28" fill="#ffffff" stroke="#ece6dc" stroke-width="2"/>
-        <text x="184" y="70" font-size="30" font-family="Arial, sans-serif" font-weight="bold" fill="#232323">${this.escaparXml(nombreMostrado)}</text>
-        <text x="184" y="108" font-size="30" fill="#f5a623">${this.estrellas(resena.calificacion)}</text>
-        <text font-size="26" font-family="Arial, sans-serif" fill="#3d3d3d" y="168">${tspans}</text>
+        ${this.textoAPath(nombreMostrado, 184, 70, 30, true, '#232323')}
+        ${this.estrellasSvg(resena.calificacion, 184, 108, 26)}
+        ${cuerpoTexto}
       </svg>`);
 
       const { buffer: avatarBuffer, costoEstimadoUsd: costoAvatar } = await this.avatarCircularParaResena(
@@ -368,9 +440,16 @@ export class ImportarProductoService {
       yTarjeta += altoTarjeta + ESPACIO;
     }
 
+    // text-anchor="middle" no existe con paths — se calcula el ancho real
+    // del texto (con la misma fuente embebida) y se centra a mano.
+    const { regular: fuenteRegular, bold: fuenteBold } = this.cargarFuentes();
+    const tituloHeader = 'Lo que dicen nuestros clientes';
+    const subtituloHeader = `Reseñas reales de ${nombreProducto}`.slice(0, 70);
+    const xTitulo = (ANCHO - fuenteBold.getAdvanceWidth(tituloHeader, 46)) / 2;
+    const xSubtitulo = (ANCHO - fuenteRegular.getAdvanceWidth(subtituloHeader, 26)) / 2;
     const encabezadoSvg = Buffer.from(`<svg width="${ANCHO}" height="${ALTO_HEADER}">
-      <text x="${ANCHO / 2}" y="90" font-size="46" font-family="Arial, sans-serif" font-weight="bold" fill="#232323" text-anchor="middle">Lo que dicen nuestros clientes</text>
-      <text x="${ANCHO / 2}" y="140" font-size="26" font-family="Arial, sans-serif" fill="#6b6b6b" text-anchor="middle">${this.escaparXml(`Reseñas reales de ${nombreProducto}`.slice(0, 70))}</text>
+      ${this.textoAPath(tituloHeader, xTitulo, 90, 46, true, '#232323')}
+      ${this.textoAPath(subtituloHeader, xSubtitulo, 140, 26, false, '#6b6b6b')}
     </svg>`);
 
     const fondo = sharp({ create: { width: ANCHO, height: ALTO, channels: 3, background: { r: 250, g: 247, b: 242 } } });
