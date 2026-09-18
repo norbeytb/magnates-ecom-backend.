@@ -18,7 +18,10 @@
 //     mostrando una barra de progreso mientras se queda mirando): /por-link
 //     devuelve un id al toque y arranca el trabajo en segundo plano;
 //     /estado/:id se consulta cada pocos segundos (polling) para saber en
-//     qué va.
+//     qué va. Si el link trajo reseñas reales, el trabajo se PAUSA en
+//     'revisando_resenas' (pedido 18/09) hasta que el taller llame a
+//     POST /resenas/:id/confirmar con los nombres que el estudiante haya
+//     editado (los que vinieron "Anónimo") — recién ahí sigue y genera.
 
 import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
 import {
@@ -148,5 +151,16 @@ export class ImportarProductoController {
       throw new HttpException('No se encontró esa importación (puede que el servidor se haya reiniciado mientras tanto).', HttpStatus.NOT_FOUND);
     }
     return estado;
+  }
+
+  // Paso 2.5 (pedido 18/09, solo cuando GET /estado/:id devolvió
+  // 'revisando_resenas'): el taller manda de vuelta los nombres, en el
+  // MISMO orden que resenasParaRevisar — uno vacío o repetido deja el autor
+  // tal como vino de la página de origen (incluido "Anónimo"). Recién acá
+  // arranca la parte pesada (generar las secciones).
+  @Post('resenas/:id/confirmar')
+  async confirmarResenas(@Param('id') id: string, @Body() dto: { autores?: (string | undefined)[] }): Promise<{ ok: true }> {
+    await this.importarProductoService.confirmarResenasYGenerar(id, dto?.autores || []);
+    return { ok: true };
   }
 }

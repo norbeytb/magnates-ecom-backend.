@@ -82,8 +82,15 @@ export type PlataformaOrigen = 'aliexpress' | 'amazon' | 'temu';
 export interface ResenaOrigen {
   texto: string;
   calificacion?: number; // 1 a 5 — si no viene, se muestran 5 estrellas por defecto
-  autor?: string; // nombre/alias visible en la reseña de origen
-  fotoUrl?: string; // foto que el comprador adjuntó a SU reseña (no su avatar de perfil) — URL externa del sitio de origen
+  autor?: string; // nombre/alias visible en la reseña de origen ("Anónimo" si el comprador no puso nombre)
+  // Fotos que el comprador adjuntó a SU reseña (no su avatar de perfil, casi
+  // siempre son fotos del producto recibido) — URLs externas del sitio de
+  // origen. fotoUrl queda por compatibilidad con la extensión (que solo
+  // manda una) — si viene, se trata como la primera de "fotos". Pedido
+  // 18/09: estas fotos se muestran DEBAJO del texto de la reseña, nunca como
+  // avatar (ver componerImagenTestimoniosReales).
+  fotoUrl?: string;
+  fotos?: string[];
 }
 
 export interface ImportarProductoInput {
@@ -164,13 +171,37 @@ export interface ImportarProductoResultado {
 // pierde (el estudiante tendría que pegar el link de nuevo). Si esto
 // resulta ser un problema real en la práctica, se puede mover a una tabla
 // de Postgres más adelante, mismo patrón que "historial"/"generaciones".
-export type EstadoImportacionPorLinkTipo = 'leyendo_pagina' | 'generando_secciones' | 'listo' | 'error';
+// Pedido 18/09: antes de generar, si se encontraron reseñas reales, el
+// trabajo se PAUSA en 'revisando_resenas' — el taller le muestra al
+// estudiante exactamente las reseñas que se van a usar (algunas "Anónimo",
+// otras con nombre real) para que pueda cambiarle el nombre a las anónimas
+// antes de seguir. Si no hay ninguna reseña real, este paso se salta
+// directo a 'generando_secciones' (nada que revisar).
+export type EstadoImportacionPorLinkTipo =
+  | 'leyendo_pagina'
+  | 'revisando_resenas'
+  | 'generando_secciones'
+  | 'listo'
+  | 'error';
+
+// Una reseña real tal como se le muestra al estudiante para revisar/editar
+// ANTES de generar — ver EstadoImportacionPorLink.resenasParaRevisar.
+export interface ResenaParaRevisar {
+  autor: string; // "Anónimo" si no vino nombre real de la página de origen
+  esAnonimo: boolean;
+  calificacion?: number;
+  texto: string;
+  fotos: string[];
+}
 
 export interface EstadoImportacionPorLink {
   id: string;
   estado: EstadoImportacionPorLinkTipo;
   error?: string;
   resultado?: ImportarProductoResultado;
+  // Solo presente en estado 'revisando_resenas' — mismo orden en que hay
+  // que mandar de vuelta los nombres editados a confirmarResenasYGenerar().
+  resenasParaRevisar?: ResenaParaRevisar[];
 }
 
 // Overrides opcionales del formulario de Product Marker (pedido 18/09) —
@@ -220,15 +251,32 @@ export class ImportarProductoService {
   // hace la imagen más alta, no rompe el diseño.
   private readonly MAX_RESENAS_REALES = 10;
 
-  // Estimado de costo de generar UN avatar de respaldo por IA (mismo valor
-  // que costoPorCalidad('low') en ImageEditService — se duplica acá porque
-  // generarAvatarResena() no devuelve costo propio y no queremos modificar
-  // ese método compartido con el taller manual solo por esto).
-  private readonly COSTO_AVATAR_RESPALDO_USD = 0.018;
-
   // Estado de cada importación por link en curso — ver nota grande arriba
-  // del archivo ("Módulo Product Marker DENTRO del taller").
+  // del archivo ("Módulo Product Marker DENTRO del taller"). Esto es lo
+  // único que GET /estado/:id devuelve — nunca debe guardarse acá nada
+  // sensible (la clave de fal.ai, por ejemplo).
   private readonly trabajosImportacion = new Map<string, EstadoImportacionPorLink>();
+
+  // Contexto INTERNO de un trabajo pausado en 'revisando_resenas' — todo lo
+  // que hace falta para retomar y terminar de generar una vez el estudiante
+  // confirme/edite los nombres (ver confirmarResenasYGenerar). A propósito
+  // en un Map aparte del de arriba: este SÍ tiene la clave de fal.ai del
+  // estudiante, y nunca tiene que poder leerse por la API — se borra apenas
+  // se usa (o si el trabajo se descarta sin confirmar, simplemente queda
+  // huérfano hasta el próximo reinicio del servidor, mismo límite ya
+  // conocido de guardar todo esto en memoria y no en base de datos).
+  private readonly contextoPendienteResenas = new Map<
+    string,
+    {
+      usuarioId: number;
+      falApiKey: string;
+      url: string;
+      plataforma: PlataformaOrigen;
+      opciones?: ImportarPorLinkOpciones;
+      datos: { titulo: string; descripcion: string; fotos: string[]; precioOriginal?: number; moneda: string };
+      resenas: ResenaOrigen[];
+    }
+  >();
 
   constructor(
     private readonly textGenerationService: TextGenerationService,
@@ -397,57 +445,88 @@ export class ImportarProductoService {
     return svg;
   }
 
-  // Descarga la foto real adjunta a la reseña y la recorta en círculo. Si
-  // falla la descarga (URL vencida, hotlink bloqueado, etc.) o la reseña no
-  // trae foto, cae a un avatar genérico generado por IA (generarAvatarResena,
-  // el mismo mecanismo que usa el taller manual en modo Personalizada) — y
-  // si hasta ESO falla, cae a un círculo de color liso para que la landing
-  // no se caiga completa por una sola foto de reseña problemática.
-  private async avatarCircularParaResena(
-    falApiKey: string,
-    resena: ResenaOrigen,
-    tamano: number,
-  ): Promise<{ buffer: Buffer; costoEstimadoUsd: number; esFotoReal: boolean }> {
-    const mascara = Buffer.from(
-      `<svg width="${tamano}" height="${tamano}"><circle cx="${tamano / 2}" cy="${tamano / 2}" r="${tamano / 2}" fill="#fff"/></svg>`,
-    );
+  // Hash chico y determinístico solo para elegir un color de fondo — no
+  // necesita ser criptográfico, solo repetible para la misma reseña.
+  private hashTexto(texto: string): number {
+    let h = 0;
+    for (let i = 0; i < texto.length; i++) h = (h * 31 + texto.charCodeAt(i)) >>> 0;
+    return h;
+  }
 
-    if (resena.fotoUrl) {
+  // Avatar GENÉRICO y GRATIS para reseñas reales (pedido 18/09, después de
+  // que Norbey mostró cómo se ve una reseña real de AliExpress: el
+  // comprador casi siempre queda como "Anónimo" con un ícono genérico, no
+  // con una foto de perfil real). Antes esto usaba la foto adjunta a la
+  // reseña como avatar circular, y si no había, generaba una por IA (con
+  // costo) — pedido explícito: la foto real ahora se muestra APARTE, debajo
+  // del texto de la reseña (ver armarFilaFotosResena más abajo), así que acá
+  // ya no hace falta ni descargar nada ni pagar por generar una cara falsa:
+  // un círculo de color suave con una silueta simple de persona alcanza, y
+  // es justo lo que se ve de verdad en AliExpress para compradores anónimos.
+  private avatarGenericoResena(tamano: number, semilla: string): Buffer {
+    const colores = ['#e8ddce', '#dce6dd', '#e3dbe8', '#e8d9dc', '#d9e3e8', '#f0e2c8'];
+    const color = colores[this.hashTexto(semilla) % colores.length];
+    const r = tamano / 2;
+    const svg = `<svg width="${tamano}" height="${tamano}">
+      <defs><clipPath id="clipAvatar"><circle cx="${r}" cy="${r}" r="${r}"/></clipPath></defs>
+      <g clip-path="url(#clipAvatar)">
+        <rect width="${tamano}" height="${tamano}" fill="${color}"/>
+        <circle cx="${r}" cy="${tamano * 0.38}" r="${tamano * 0.16}" fill="#ffffff" fill-opacity="0.85"/>
+        <ellipse cx="${r}" cy="${tamano * 0.97}" rx="${tamano * 0.32}" ry="${tamano * 0.3}" fill="#ffffff" fill-opacity="0.85"/>
+      </g>
+    </svg>`;
+    return Buffer.from(svg);
+  }
+
+  // Descarga hasta 3 de las fotos que el comprador adjuntó a la reseña
+  // (pedido 18/09: se muestran debajo del texto, no como avatar) y las
+  // recorta cuadradas en fila. Si alguna URL puntual falla (vencida,
+  // hotlink bloqueado), se la salta en vez de romper toda la tarjeta — y si
+  // hay más de 3, la última trae un "+N" superpuesto, mismo patrón que
+  // muestra AliExpress cuando una reseña trae varias fotos.
+  private async armarFilaFotosResena(
+    fotos: string[],
+    tamano: number,
+  ): Promise<{ buffers: Buffer[]; totalReales: number }> {
+    const MAX_MOSTRADAS = 3;
+    const buffers: Buffer[] = [];
+    const aIntentar = fotos.slice(0, MAX_MOSTRADAS);
+    for (let i = 0; i < aIntentar.length; i++) {
       try {
-        const bytes = await this.descargarBytes(resena.fotoUrl, 'la foto de una reseña');
-        const redondo = await sharp(bytes)
-          .resize(tamano, tamano, { fit: 'cover' })
-          .composite([{ input: mascara, blend: 'dest-in' }])
+        const bytes = await this.descargarBytes(aIntentar[i], 'una foto adjunta a una reseña');
+        const esUltimaConMas = i === aIntentar.length - 1 && fotos.length > MAX_MOSTRADAS;
+        const restantes = fotos.length - MAX_MOSTRADAS;
+        let img = sharp(bytes).resize(tamano, tamano, { fit: 'cover' });
+        if (esUltimaConMas) {
+          const overlay = Buffer.from(`<svg width="${tamano}" height="${tamano}">
+            <rect width="${tamano}" height="${tamano}" fill="#000000" fill-opacity="0.45"/>
+            <text x="50%" y="54%" text-anchor="middle" font-family="sans-serif" font-size="${Math.round(tamano * 0.32)}" font-weight="bold" fill="#ffffff">+${restantes}</text>
+          </svg>`);
+          img = img.composite([{ input: overlay }]);
+        }
+        const cuadrada = await img
+          .composite([
+            {
+              input: Buffer.from(`<svg width="${tamano}" height="${tamano}"><rect width="${tamano}" height="${tamano}" rx="12" fill="#fff"/></svg>`),
+              blend: 'dest-in',
+            },
+          ])
           .png()
           .toBuffer();
-        return { buffer: redondo, costoEstimadoUsd: 0, esFotoReal: true };
+        buffers.push(cuadrada);
       } catch (error) {
-        this.logger.warn(`No se pudo usar la foto real de una reseña, se cae a avatar genérico: ${(error as Error).message}`);
+        this.logger.warn(`No se pudo usar una foto adjunta a una reseña, se la salta: ${(error as Error).message}`);
       }
     }
-
-    try {
-      const { avatarUrl } = await this.imageEditService.generarAvatarResena({ falApiKey });
-      const bytes = await this.descargarBytes(avatarUrl, 'el avatar generado para una reseña');
-      const redondo = await sharp(bytes)
-        .resize(tamano, tamano, { fit: 'cover' })
-        .composite([{ input: mascara, blend: 'dest-in' }])
-        .png()
-        .toBuffer();
-      return { buffer: redondo, costoEstimadoUsd: this.COSTO_AVATAR_RESPALDO_USD, esFotoReal: false };
-    } catch (error) {
-      this.logger.warn(`No se pudo generar un avatar de respaldo para una reseña, se usa un círculo liso: ${(error as Error).message}`);
-      const liso = await sharp({ create: { width: tamano, height: tamano, channels: 3, background: { r: 210, g: 205, b: 198 } } })
-        .composite([{ input: mascara, blend: 'dest-in' }])
-        .png()
-        .toBuffer();
-      return { buffer: liso, costoEstimadoUsd: 0, esFotoReal: false };
-    }
+    return { buffers, totalReales: buffers.length };
   }
 
   // Arma el JPEG final con hasta MAX_RESENAS_REALES tarjetas de reseña
-  // apiladas verticalmente, cada una con foto (real o de respaldo),
-  // nombre, estrellas y el texto REAL de la reseña.
+  // apiladas verticalmente: avatar genérico + nombre + estrellas + el texto
+  // REAL de la reseña + (pedido 18/09) las fotos reales que el comprador
+  // adjuntó, en una fila DEBAJO del texto — así se ve igual que en
+  // AliExpress (la foto de un producto recibido no queda rara puesta como
+  // si fuera la cara de la persona).
   private async componerImagenTestimoniosReales(
     falApiKey: string,
     nombreProducto: string,
@@ -475,21 +554,32 @@ export class ImportarProductoService {
     const PADDING_INFERIOR_TARJETA = 40;
 
     const TAMANO_AVATAR = 120;
+    const TAMANO_FOTO_ADJUNTA = 100;
+    const ESPACIO_ENTRE_FOTOS = 14;
+    // Alto extra que ocupa la fila de fotos adjuntas cuando la reseña trae —
+    // foto + aire arriba para separarla del texto.
+    const ALTO_FILA_FOTOS = TAMANO_FOTO_ADJUNTA + 28;
     let costoEstimadoUsd = 0;
     const capas: sharp.OverlayOptions[] = [];
 
     // Primera pasada: envuelve el texto de cada reseña (ancho real en
     // píxeles según la fuente, no un conteo de caracteres — ver
-    // envolverTexto) y calcula el alto que le corresponde a su tarjeta
-    // según cuántas líneas ocupe.
+    // envolverTexto), resuelve sus fotos adjuntas, y calcula el alto que le
+    // corresponde a su tarjeta según cuántas líneas de texto y si trae fotos.
     const ANCHO_TEXTO_PX = 780;
     const TAMANO_LETRA_TEXTO = 26;
-    const tarjetas = usadas.map((resena) => {
+    const tarjetas = [];
+    for (const resena of usadas) {
       const lineasTexto = this.envolverTexto(resena.texto, TAMANO_LETRA_TEXTO, ANCHO_TEXTO_PX, 6);
+      const fotosOrigen = resena.fotos && resena.fotos.length > 0 ? resena.fotos : resena.fotoUrl ? [resena.fotoUrl] : [];
+      const { buffers: fotosBuffers } = await this.armarFilaFotosResena(fotosOrigen, TAMANO_FOTO_ADJUNTA);
       const altoTarjeta =
-        ALTO_TARJETA_BASE + Math.max(0, lineasTexto.length - 1) * ALTO_POR_LINEA_EXTRA + PADDING_INFERIOR_TARJETA;
-      return { resena, lineasTexto, altoTarjeta };
-    });
+        ALTO_TARJETA_BASE +
+        Math.max(0, lineasTexto.length - 1) * ALTO_POR_LINEA_EXTRA +
+        PADDING_INFERIOR_TARJETA +
+        (fotosBuffers.length > 0 ? ALTO_FILA_FOTOS : 0);
+      tarjetas.push({ resena, lineasTexto, fotosBuffers, altoTarjeta });
+    }
 
     const ALTO =
       ALTO_HEADER +
@@ -498,8 +588,12 @@ export class ImportarProductoService {
       MARGEN_INFERIOR;
 
     let yTarjeta = ALTO_HEADER;
-    for (const { resena, lineasTexto, altoTarjeta } of tarjetas) {
+    for (const { resena, lineasTexto, fotosBuffers, altoTarjeta } of tarjetas) {
+      // Casi siempre va a venir "Anónimo" tal cual como lo muestra AliExpress
+      // (pedido 18/09) — "Comprador verificado" queda solo como respaldo
+      // para el caso raro de una reseña sin ningún nombre detectado.
       const nombreMostrado = resena.autor?.trim() || `Comprador verificado`;
+      const yUltimaLinea = 168 + (lineasTexto.length - 1) * 36;
       const cuerpoTexto = lineasTexto
         .map((linea, idx) => this.textoAPath(linea, 64, 168 + idx * 36, TAMANO_LETRA_TEXTO, false, '#3d3d3d'))
         .join('');
@@ -511,15 +605,19 @@ export class ImportarProductoService {
         ${cuerpoTexto}
       </svg>`);
 
-      const { buffer: avatarBuffer, costoEstimadoUsd: costoAvatar } = await this.avatarCircularParaResena(
-        falApiKey,
-        resena,
-        TAMANO_AVATAR,
-      );
-      costoEstimadoUsd += costoAvatar;
+      const avatarBuffer = this.avatarGenericoResena(TAMANO_AVATAR, resena.autor || resena.texto);
 
       capas.push({ input: tarjetaSvg, left: 0, top: yTarjeta });
       capas.push({ input: avatarBuffer, left: 44, top: yTarjeta + 34 });
+
+      // Fotos reales adjuntas a la reseña, DEBAJO del texto (pedido 18/09).
+      if (fotosBuffers.length > 0) {
+        const yFotos = yTarjeta + yUltimaLinea + 30;
+        fotosBuffers.forEach((buf, idx) => {
+          capas.push({ input: buf, left: 64 + idx * (TAMANO_FOTO_ADJUNTA + ESPACIO_ENTRE_FOTOS), top: yFotos });
+        });
+      }
+
       yTarjeta += altoTarjeta + ESPACIO;
     }
 
@@ -593,7 +691,90 @@ export class ImportarProductoService {
     // Reseñas reales (pedido 18/09) — best-effort, ver
     // scrapearResenasAliExpressPorLink más arriba sobre por qué esto puede
     // volver vacío en cualquier momento sin que sea un error real.
-    const resenas = plataforma === 'aliexpress' ? await this.scrapearResenasAliExpressPorLink(url) : [];
+    const resenasCrudas = plataforma === 'aliexpress' ? await this.scrapearResenasAliExpressPorLink(url) : [];
+    // Mismo filtro/orden que se le va a aplicar en pilotoAutomatico — se
+    // hace ACÁ también para que lo que el estudiante vea para revisar sea
+    // EXACTO a lo que se va a usar (ni una reseña de más ni de menos), y
+    // recortado al máximo a mostrar.
+    const resenasPositivas = this.filtrarYOrdenarResenasPositivas(resenasCrudas).slice(0, this.MAX_RESENAS_REALES);
+
+    if (resenasPositivas.length === 0) {
+      // Sin reseñas reales que revisar — sigue de largo como siempre (IA
+      // inventa el contenido de Testimonios).
+      await this.continuarConGeneracion(id, usuarioId, falApiKey, url, plataforma, datos, [], opciones);
+      return;
+    }
+
+    // Pausa acá (pedido 18/09): el estudiante tiene que ver y, si quiere,
+    // editarle el nombre a las que vinieron "Anónimo" antes de seguir. El
+    // contexto completo para retomar queda guardado aparte (nunca se expone
+    // por /estado/:id) — ver confirmarResenasYGenerar().
+    this.contextoPendienteResenas.set(id, { usuarioId, falApiKey, url, plataforma, opciones, datos, resenas: resenasPositivas });
+    this.trabajosImportacion.set(id, {
+      id,
+      estado: 'revisando_resenas',
+      resenasParaRevisar: resenasPositivas.map((r) => {
+        const autorOriginal = r.autor?.trim() || '';
+        const esAnonimo = !autorOriginal || /^an[oó]nimo$/i.test(autorOriginal);
+        return {
+          autor: esAnonimo ? 'Anónimo' : autorOriginal,
+          esAnonimo,
+          calificacion: r.calificacion,
+          texto: r.texto,
+          fotos: r.fotos && r.fotos.length > 0 ? r.fotos : r.fotoUrl ? [r.fotoUrl] : [],
+        };
+      }),
+    });
+  }
+
+  // Paso intermedio del módulo Product Marker (pedido 18/09): el taller
+  // llama esto cuando el estudiante confirma la lista de reseñas — con los
+  // nombres que haya editado para las que vinieron "Anónimo" — y recién ahí
+  // se genera la landing de verdad. `autoresEditados` viene en el MISMO
+  // orden que resenasParaRevisar del estado 'revisando_resenas'.
+  async confirmarResenasYGenerar(id: string, autoresEditados: (string | undefined)[]): Promise<void> {
+    const contexto = this.contextoPendienteResenas.get(id);
+    if (!contexto) {
+      throw new InternalServerErrorException(
+        'No se encontró esa importación para confirmar (puede que el servidor se haya reiniciado, o que ya se haya confirmado antes).',
+      );
+    }
+    this.contextoPendienteResenas.delete(id);
+
+    const resenasFinales = contexto.resenas.map((r, i) => {
+      const editado = (autoresEditados?.[i] || '').trim();
+      // Si el estudiante dejó el campo vacío o sin tocar, se respeta el
+      // autor tal como vino de la página de origen (incluido "Anónimo").
+      return editado ? { ...r, autor: editado } : r;
+    });
+
+    // A propósito NO se espera (sin "await") — mismo patrón que
+    // iniciarImportacionPorLink: el controller ya le contestó al taller que
+    // se confirmó, y el trabajo pesado sigue solo en segundo plano.
+    this.continuarConGeneracion(
+      id,
+      contexto.usuarioId,
+      contexto.falApiKey,
+      contexto.url,
+      contexto.plataforma,
+      contexto.datos,
+      resenasFinales,
+      contexto.opciones,
+    ).catch((error) => {
+      this.trabajosImportacion.set(id, { id, estado: 'error', error: error?.message || String(error) });
+    });
+  }
+
+  private async continuarConGeneracion(
+    id: string,
+    usuarioId: number,
+    falApiKey: string,
+    url: string,
+    plataforma: PlataformaOrigen,
+    datos: { titulo: string; descripcion: string; fotos: string[]; precioOriginal?: number; moneda: string },
+    resenas: ResenaOrigen[],
+    opciones?: ImportarPorLinkOpciones,
+  ): Promise<void> {
     this.trabajosImportacion.set(id, { id, estado: 'generando_secciones' });
     // Título personalizado (pedido 18/09): si el estudiante escribió uno en
     // el formulario, reemplaza al título scrapeado de la página de origen
@@ -784,11 +965,13 @@ export class ImportarProductoService {
         .map((item: any): ResenaOrigen | null => {
           const texto = String(item?.buyerTranslationFeedback || item?.buyerFeedback || '').trim();
           if (!texto) return null;
+          const fotos = this.todasLasFotosDeResenaAliExpress(item);
           return {
             texto,
             calificacion: this.normalizarCalificacionResena(item?.buyerEval),
             autor: item?.buyerName ? String(item.buyerName).trim().slice(0, 60) : undefined,
-            fotoUrl: this.primeraFotoDeResenaAliExpress(item),
+            fotoUrl: fotos[0],
+            fotos,
           };
         })
         .filter((r: ResenaOrigen | null): r is ResenaOrigen => !!r);
@@ -820,20 +1003,34 @@ export class ImportarProductoService {
   // El nombre exacto del campo con las fotos que el comprador adjuntó a su
   // reseña varió entre versiones del sitio en lo que se pudo confirmar por
   // fuera — se prueban varios nombres conocidos, tanto arreglos de URLs
-  // sueltas como de objetos con la URL adentro.
-  private primeraFotoDeResenaAliExpress(item: any): string | undefined {
+  // sueltas como de objetos con la URL adentro. Pedido 18/09: se traen TODAS
+  // (hasta un tope razonable), no solo la primera, porque ahora se muestran
+  // como una fila de fotos debajo del texto (ver componerImagenTestimoniosReales).
+  private todasLasFotosDeResenaAliExpress(item: any): string[] {
     const candidatos = [item?.images, item?.imageList, item?.additionalReviewImages, item?.reviewImages];
     for (const arr of candidatos) {
       if (Array.isArray(arr) && arr.length > 0) {
-        const primera = arr[0];
-        if (typeof primera === 'string' && primera) return primera;
-        if (primera && typeof primera === 'object') {
-          const posible = primera.url || primera.imageUrl || primera.src;
-          if (typeof posible === 'string' && posible) return posible;
-        }
+        const urls = arr
+          .map((el: any) => (typeof el === 'string' ? el : el?.url || el?.imageUrl || el?.src))
+          .filter((u: unknown): u is string => typeof u === 'string' && !!u);
+        if (urls.length > 0) return urls.slice(0, 5);
       }
     }
-    return undefined;
+    return [];
+  }
+
+  // Filtro/orden compartido: lo usa tanto pilotoAutomatico() al armar la
+  // landing como el módulo Product Marker del taller al mostrarle al
+  // estudiante, ANTES de generar, exactamente las reseñas que se van a usar
+  // (pedido 18/09) — mismo criterio de siempre (16/09): solo positivas (se
+  // descartan las que sí trajeron una calificación detectada y es menor a 4
+  // estrellas; si no se pudo detectar la calificación, se deja pasar),
+  // ordenadas de mejor a peor.
+  private filtrarYOrdenarResenasPositivas(resenas: ResenaOrigen[]): ResenaOrigen[] {
+    return (resenas || [])
+      .filter((r) => r && r.texto && r.texto.trim().length > 5)
+      .filter((r) => r.calificacion === undefined || r.calificacion >= 4)
+      .sort((a, b) => (b.calificacion ?? 4) - (a.calificacion ?? 4));
   }
 
   async pilotoAutomatico(usuarioId: number, falApiKey: string, input: ImportarProductoInput): Promise<ImportarProductoResultado> {
@@ -858,10 +1055,7 @@ export class ImportarProductoService {
     // NINGUNA, resenasReales queda vacío y Testimonios cae al comportamiento
     // viejo (inventado por IA) más abajo — nunca se genera una imagen con 0
     // reseñas.
-    const resenasReales = (input.resenas || [])
-      .filter((r) => r && r.texto && r.texto.trim().length > 5)
-      .filter((r) => r.calificacion === undefined || r.calificacion >= 4)
-      .sort((a, b) => (b.calificacion ?? 4) - (a.calificacion ?? 4));
+    const resenasReales = this.filtrarYOrdenarResenasPositivas(input.resenas || []);
 
     const falClient = this.clienteFal(falApiKey);
 
