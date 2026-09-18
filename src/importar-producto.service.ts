@@ -100,9 +100,11 @@ export interface ImportarProductoInput {
   // si no viene, se arma la landing igual pero sin sección de Oferta.
   precioOriginal?: number;
   moneda?: string; // por defecto 'USD'
-  // Reseñas reales scrapeadas de la página de origen (hasta 3, ver
-  // content-aliexpress.js) — opcional: si no vienen, Testimonios se arma
-  // igual que antes (inventado por IA a partir del resultado del producto).
+  // Reseñas reales scrapeadas de la página de origen — por la extensión
+  // (content-aliexpress.js) o por scrapearResenasAliExpressPorLink() más
+  // abajo (módulo Product Marker del taller) — opcional: si no vienen,
+  // Testimonios se arma igual que antes (inventado por IA a partir del
+  // resultado del producto). Se muestran hasta MAX_RESENAS_REALES.
   resenas?: ResenaOrigen[];
   // Pedido 18/09 (módulo "Product Marker" del taller): el estudiante puede
   // completar a mano el precio de venta y de comparación de cada combo (1/2/3
@@ -210,9 +212,13 @@ export class ImportarProductoService {
     faq: 'Preguntas Frecuentes',
   };
 
-  // Máximo de reseñas reales que se componen en la imagen de Testimonios —
-  // decisión de Norbey (16/09): 3 alcanza y mantiene la imagen legible.
-  private readonly MAX_RESENAS_REALES = 3;
+  // Máximo de reseñas reales que se componen en la imagen de Testimonios.
+  // Empezó en 3 (16/09, alcanzaba y mantenía la imagen legible); Norbey pidió
+  // (18/09) subirlo a por lo menos 10 para el módulo Product Marker del
+  // taller — componerImagenTestimoniosReales ya arma la imagen apilando
+  // tarjetas una debajo de otra sin ningún límite fijo, así que esto solo
+  // hace la imagen más alta, no rompe el diseño.
+  private readonly MAX_RESENAS_REALES = 10;
 
   // Estimado de costo de generar UN avatar de respaldo por IA (mismo valor
   // que costoPorCalidad('low') en ImageEditService — se duplica acá porque
@@ -584,6 +590,10 @@ export class ImportarProductoService {
     opciones?: ImportarPorLinkOpciones,
   ): Promise<void> {
     const datos = await this.scrapearUrlProducto(url);
+    // Reseñas reales (pedido 18/09) — best-effort, ver
+    // scrapearResenasAliExpressPorLink más arriba sobre por qué esto puede
+    // volver vacío en cualquier momento sin que sea un error real.
+    const resenas = plataforma === 'aliexpress' ? await this.scrapearResenasAliExpressPorLink(url) : [];
     this.trabajosImportacion.set(id, { id, estado: 'generando_secciones' });
     // Título personalizado (pedido 18/09): si el estudiante escribió uno en
     // el formulario, reemplaza al título scrapeado de la página de origen
@@ -599,7 +609,7 @@ export class ImportarProductoService {
       fotos: datos.fotos,
       precioOriginal: datos.precioOriginal,
       moneda: datos.moneda,
-      resenas: [], // ver nota grande arriba: no se pueden sacar reseñas reales de un pedido simple del servidor
+      resenas,
       ofertaManual: opciones?.ofertaManual,
     });
     this.trabajosImportacion.set(id, { id, estado: 'listo', resultado });
@@ -719,6 +729,111 @@ export class ImportarProductoService {
     const valor = parseFloat(match[2].replace(',', '.'));
     const moneda = match[1].includes('€') ? 'EUR' : 'USD';
     return { valor, moneda };
+  }
+
+  // Reseñas reales para el módulo "Product Marker" del taller (pedido 18/09,
+  // tras confirmar con Norbey que el HTML plano de scrapearUrlProducto() de
+  // arriba NUNCA trae reseñas — AliExpress las carga por JavaScript después
+  // de que la página termina de cargar). En vez de sumar un navegador
+  // headless (mucho más pesado de correr en Railway), se usa un endpoint
+  // JSON de AliExpress que devuelve las reseñas directo, sin necesitar
+  // ejecutar nada de JS ni haber iniciado sesión — feedback.aliexpress.com,
+  // el mismo que usan varios scrapers de código abierto. OJO: no es una API
+  // oficial ni documentada por AliExpress — puede cambiar de forma o
+  // bloquear pedidos desde IPs de datacenter (como las de Railway) sin
+  // aviso. Por eso esto es "mejor esfuerzo": cualquier error acá se traga y
+  // devuelve un arreglo vacío — Testimonios simplemente cae al
+  // comportamiento de siempre (IA inventa el contenido), nunca rompe la
+  // importación completa por esto.
+  private async scrapearResenasAliExpressPorLink(url: string): Promise<ResenaOrigen[]> {
+    const idMatch = url.match(/\/item\/(\d+)\.html/i);
+    if (!idMatch) return [];
+    const productId = idMatch[1];
+    try {
+      const params = new URLSearchParams({
+        productId,
+        lang: 'es_ES',
+        country: 'US',
+        page: '1',
+        // De más a propósito: pilotoAutomatico() filtra después a solo
+        // positivas (>= 4 estrellas) y recorta a MAX_RESENAS_REALES — pedir
+        // de más acá compensa las que se descarten en ese filtro.
+        pageSize: '30',
+        filter: 'all',
+        sort: 'complex_default',
+      });
+      const resp = await fetch(`https://feedback.aliexpress.com/pc/searchEvaluation.do?${params.toString()}`, {
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          origin: 'https://www.aliexpress.com',
+          referer: 'https://www.aliexpress.com/',
+          'user-agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        },
+      });
+      if (!resp.ok) {
+        this.logger.warn(
+          `Product Marker: el endpoint de reseñas de AliExpress respondió ${resp.status} para el producto ${productId} — Testimonios va a usar reseñas inventadas por IA.`,
+        );
+        return [];
+      }
+      const data = await resp.json().catch(() => null);
+      const lista = data?.data?.evaViewList;
+      if (!Array.isArray(lista)) return [];
+      return lista
+        .map((item: any): ResenaOrigen | null => {
+          const texto = String(item?.buyerTranslationFeedback || item?.buyerFeedback || '').trim();
+          if (!texto) return null;
+          return {
+            texto,
+            calificacion: this.normalizarCalificacionResena(item?.buyerEval),
+            autor: item?.buyerName ? String(item.buyerName).trim().slice(0, 60) : undefined,
+            fotoUrl: this.primeraFotoDeResenaAliExpress(item),
+          };
+        })
+        .filter((r: ResenaOrigen | null): r is ResenaOrigen => !!r);
+    } catch (error) {
+      this.logger.warn(
+        `Product Marker: no se pudieron leer las reseñas reales de AliExpress (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+      );
+      return [];
+    }
+  }
+
+  // El campo de calificación de este endpoint no está documentado — a veces
+  // viene 1-5 directo, a veces en otras escalas según la versión del sitio.
+  // Se normaliza a 1-5 con una heurística simple; si no se puede interpretar
+  // con confianza, se deja sin calificación (estrellasSvg ya sabe mostrar 5
+  // estrellas por defecto cuando calificacion viene undefined).
+  private normalizarCalificacionResena(raw: unknown): number | undefined {
+    const n = typeof raw === 'number' ? raw : parseFloat(String(raw));
+    if (!Number.isFinite(n)) return undefined;
+    if (n >= 1 && n <= 5) return Math.round(n);
+    // Escala de 100 (20/40/60/80/100 ≈ 1-5 estrellas) — un número chico como
+    // 6 o 7 no encaja con confianza en ninguna escala conocida, así que se
+    // deja sin calificación en vez de arriesgar un redondeo sin sentido
+    // (7/20 redondearía a 0 estrellas, que ni siquiera es un valor válido).
+    if (n >= 20 && n <= 100) return Math.round(n / 20);
+    return undefined;
+  }
+
+  // El nombre exacto del campo con las fotos que el comprador adjuntó a su
+  // reseña varió entre versiones del sitio en lo que se pudo confirmar por
+  // fuera — se prueban varios nombres conocidos, tanto arreglos de URLs
+  // sueltas como de objetos con la URL adentro.
+  private primeraFotoDeResenaAliExpress(item: any): string | undefined {
+    const candidatos = [item?.images, item?.imageList, item?.additionalReviewImages, item?.reviewImages];
+    for (const arr of candidatos) {
+      if (Array.isArray(arr) && arr.length > 0) {
+        const primera = arr[0];
+        if (typeof primera === 'string' && primera) return primera;
+        if (primera && typeof primera === 'object') {
+          const posible = primera.url || primera.imageUrl || primera.src;
+          if (typeof posible === 'string' && posible) return posible;
+        }
+      }
+    }
+    return undefined;
   }
 
   async pilotoAutomatico(usuarioId: number, falApiKey: string, input: ImportarProductoInput): Promise<ImportarProductoResultado> {
