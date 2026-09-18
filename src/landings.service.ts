@@ -17,7 +17,15 @@ import { Pool } from 'pg';
 
 export interface ItemLanding {
   id: string;
-  tipo?: 'boton_comprar';
+  // 'resenas' (18/09): marcador de la sección de reseñas reales — no lleva
+  // "image" propia, el frontend/Shopify la arman con la lista completa de
+  // reseñas guardadas del producto (ver ProductosService.guardarResenas /
+  // ImportarProductoService.armarResenasLandingDesdeReales). Antes solo el
+  // estudiante podía agregar este marcador a mano desde "Ensamblar
+  // landing" — ahora el piloto automático también lo usa cuando el link
+  // trajo reseñas reales, en vez de una imagen fija con las reseñas
+  // dibujadas adentro (esa imagen no dejaba abrir cada foto por separado).
+  tipo?: 'boton_comprar' | 'resenas';
   image?: string;
   sectionKey?: string;
   sectionLabel?: string;

@@ -98,6 +98,15 @@ export interface ResenaLanding {
   // las imágenes principales de la landing). Puede venir vacía: hay
   // reseñas reales sin foto.
   fotoUrl?: string;
+  // Pedido 18/09 (2): hasta 3 fotos reales adjuntas a la MISMA reseña (antes
+  // solo se guardaba una, en fotoUrl) — ver construirSeccionesResenas más
+  // abajo, que las manda a los 3 settings fijos "foto"/"foto2"/"foto3" del
+  // bloque (los ajustes de un bloque de sección de Shopify no soportan un
+  // arreglo de tamaño libre, así que el tope de 3 es fijo, igual que ya
+  // hacía armarFilaFotosResena del lado de la imagen compuesta). Si viene
+  // vacío o ausente, se cae a usar solo fotoUrl como única foto (compatible
+  // con reseñas guardadas antes de este cambio).
+  fotos?: string[];
   // Pedido 11/09 (versión final): avatar circular generado por IA (ver
   // ImageEditService.generarAvatarResena) — NO tiene relación con fotoUrl
   // de arriba (esa es la foto real que subió el estudiante, tal cual, sin
@@ -1448,8 +1457,22 @@ export class ShopifyService {
     '          {%- for i in (1..5) -%}{%- if i <= estrellas_bloque -%}★{%- else -%}☆{%- endif -%}{%- endfor -%}',
     '        </div>',
     '        <div style="font-size:13px; line-height:1.45; color:#2a2a2a;">{{ block.settings.texto | escape }}</div>',
-    '        {%- if block.settings.foto != blank -%}',
-    '        <img src="{{ block.settings.foto | escape }}" alt="" loading="lazy" style="display:block; max-width:200px; width:100%; border-radius:10px; margin-top:8px;">',
+    // Pedido 18/09 (2): hasta 3 fotos reales debajo del texto, cada una
+    // clicable — abren en grande en el lightbox de más abajo (antes era una
+    // sola <img> sin poder ampliarla). data-ecom-resena-foto guarda la URL
+    // grande; el <script> del final delega el clic sobre estos botones.
+    '        {%- if block.settings.foto != blank or block.settings.foto2 != blank or block.settings.foto3 != blank -%}',
+    '        <div style="display:flex; gap:8px; margin-top:8px;">',
+    '          {%- if block.settings.foto != blank -%}',
+    '          <button type="button" class="ecom-resena-foto-btn" data-ecom-resena-foto="{{ block.settings.foto | escape }}" style="padding:0; border:none; background:none; cursor:zoom-in; width:72px; height:72px; border-radius:10px; overflow:hidden; flex-shrink:0;" aria-label="Ver foto en grande"><img src="{{ block.settings.foto | escape }}" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover; display:block;"></button>',
+    '          {%- endif -%}',
+    '          {%- if block.settings.foto2 != blank -%}',
+    '          <button type="button" class="ecom-resena-foto-btn" data-ecom-resena-foto="{{ block.settings.foto2 | escape }}" style="padding:0; border:none; background:none; cursor:zoom-in; width:72px; height:72px; border-radius:10px; overflow:hidden; flex-shrink:0;" aria-label="Ver foto en grande"><img src="{{ block.settings.foto2 | escape }}" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover; display:block;"></button>',
+    '          {%- endif -%}',
+    '          {%- if block.settings.foto3 != blank -%}',
+    '          <button type="button" class="ecom-resena-foto-btn" data-ecom-resena-foto="{{ block.settings.foto3 | escape }}" style="padding:0; border:none; background:none; cursor:zoom-in; width:72px; height:72px; border-radius:10px; overflow:hidden; flex-shrink:0;" aria-label="Ver foto en grande"><img src="{{ block.settings.foto3 | escape }}" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover; display:block;"></button>',
+    '          {%- endif -%}',
+    '        </div>',
     '        {%- endif -%}',
     '        <div style="font-size:11px; color:#aaa; margin-top:8px;">{{ block.settings.tiempo | escape }}</div>',
     '      </div>',
@@ -1457,6 +1480,33 @@ export class ShopifyService {
     '    {%- endfor -%}',
     '  </div>',
     '</div>',
+    // Lightbox compartido por esta instancia de la sección (pedido 18/09,
+    // 2): overlay oculto por defecto, ocupa toda la pantalla; un clic en
+    // cualquier foto de arriba le cambia el src y lo muestra; un clic en
+    // cualquier parte del overlay (incluida la foto) lo cierra de nuevo.
+    // Escapado por sección con "shopify-section-{{ section.id }}" para que
+    // conviva sin pisarse con otras instancias de esta misma sección en la
+    // misma página (ej. "resenas" y "resenas_2" cuando hay más de 50
+    // reseñas — ver construirSeccionesResenas en shopify.service.ts).
+    '<div id="ecom-resena-lightbox-{{ section.id }}" style="display:none; position:fixed; inset:0; background:rgba(10,10,10,0.9); z-index:99999; align-items:center; justify-content:center; padding:28px; box-sizing:border-box; cursor:zoom-out;">',
+    '  <img src="" alt="" style="max-width:100%; max-height:100%; border-radius:10px; object-fit:contain; box-shadow:0 8px 30px rgba(0,0,0,0.5);">',
+    '</div>',
+    '<script>',
+    '(function(){',
+    '  var raiz = document.getElementById("shopify-section-{{ section.id }}");',
+    '  var lightbox = document.getElementById("ecom-resena-lightbox-{{ section.id }}");',
+    '  if(!raiz || !lightbox) return;',
+    '  var imgGrande = lightbox.querySelector("img");',
+    '  lightbox.addEventListener("click", function(){ lightbox.style.display = "none"; imgGrande.src = ""; });',
+    '  raiz.querySelectorAll(".ecom-resena-foto-btn").forEach(function(boton){',
+    '    boton.addEventListener("click", function(e){',
+    '      e.stopPropagation();',
+    '      imgGrande.src = boton.getAttribute("data-ecom-resena-foto");',
+    '      lightbox.style.display = "flex";',
+    '    });',
+    '  });',
+    '})();',
+    '</script>',
     '{% schema %}',
     '{',
     '  "name": "Reseñas landing",',
@@ -1476,6 +1526,8 @@ export class ShopifyService {
     '      "name": "Reseña",',
     '      "settings": [',
     '        { "type": "text", "id": "foto", "label": "Foto real" },',
+    '        { "type": "text", "id": "foto2", "label": "Foto real 2" },',
+    '        { "type": "text", "id": "foto3", "label": "Foto real 3" },',
     '        { "type": "text", "id": "avatar", "label": "Avatar (IA)" },',
     '        { "type": "text", "id": "nombre", "label": "Nombre" },',
     '        { "type": "text", "id": "ciudad", "label": "Ciudad" },',
@@ -2031,10 +2083,17 @@ export class ShopifyService {
       const blockOrder: string[] = [];
       grupo.forEach((r, i) => {
         const idBloque = `r${inicio + i + 1}`;
+        // Pedido 18/09 (2): hasta 3 fotos por reseña, cada una a su propio
+        // setting fijo (ver la nota grande de ResenaLanding.fotos sobre por
+        // qué no es un arreglo). Si "fotos" viene vacío/ausente, se cae a
+        // fotoUrl como única foto — compatible con reseñas viejas.
+        const fotosBloque = r.fotos && r.fotos.length > 0 ? r.fotos.slice(0, 3) : r.fotoUrl ? [r.fotoUrl] : [];
         blocks[idBloque] = {
           type: 'resena',
           settings: {
-            foto: r.fotoUrl || '',
+            foto: fotosBloque[0] || '',
+            foto2: fotosBloque[1] || '',
+            foto3: fotosBloque[2] || '',
             avatar: r.avatarUrl || '',
             nombre: r.nombre || 'Cliente V.',
             ciudad: r.ciudad || '',
@@ -2393,34 +2452,52 @@ export class ShopifyService {
       secuenciaFinal = imagenesShopify.map((url) => ({ tipo: 'imagen', url }));
     }
 
-    // Pedido 11/09: sección "Testimonios" en modo Personalizada — tanto la
-    // foto real que subió el estudiante como el avatar generado por IA
+    // Pedido 11/09: sección "Testimonios" en modo Personalizada — tanto las
+    // fotos reales que subió el estudiante como el avatar generado por IA
     // todavía están en fal.storage (temporal, igual que pasaba antes con
     // las fotos principales de la landing) y hay que subirlas a la
     // biblioteca de Archivos de Shopify para que queden alojadas para
-    // siempre. Se suben aparte (son dos imágenes distintas por reseña) y
-    // solo las que efectivamente tienen algo cargado.
+    // siempre. Se suben aparte (son imágenes distintas por reseña) y solo
+    // las que efectivamente tienen algo cargado.
+    //
+    // Pedido 18/09 (2): cada reseña puede traer hasta 3 fotos (antes solo
+    // una, fotoUrl) — se juntan TODAS las fotos de TODAS las reseñas en un
+    // solo batch para subir (una sola tanda a la API de Shopify en vez de
+    // una por reseña) y después se reparten de vuelta, cada una a su
+    // reseña y su posición original (fotosPorResena).
     let resenasFinal: ResenaLanding[] | undefined;
     if (input.resenas && input.resenas.length > 0) {
-      const conFoto = input.resenas
-        .map((r, i) => ({ r, i }))
-        .filter(({ r }) => !!r.fotoUrl && r.fotoUrl.trim() !== '');
+      const fotosAPedir: { indiceResena: number; slot: number; url: string }[] = [];
+      input.resenas.forEach((r, i) => {
+        const fotos = r.fotos && r.fotos.length > 0 ? r.fotos.slice(0, 3) : r.fotoUrl ? [r.fotoUrl] : [];
+        fotos.forEach((url, slot) => {
+          if (url && url.trim() !== '') fotosAPedir.push({ indiceResena: i, slot, url });
+        });
+      });
       const conAvatar = input.resenas
         .map((r, i) => ({ r, i }))
         .filter(({ r }) => !!r.avatarUrl && r.avatarUrl.trim() !== '');
       const [fotosSubidas, avataresSubidos] = await Promise.all([
-        this.subirImagenesComoArchivos(credenciales, conFoto.map(({ r }) => r.fotoUrl as string)),
+        this.subirImagenesComoArchivos(credenciales, fotosAPedir.map((f) => f.url)),
         this.subirImagenesComoArchivos(credenciales, conAvatar.map(({ r }) => r.avatarUrl as string)),
       ]);
-      const fotoPorIndice = new Map<number, string>();
-      conFoto.forEach(({ i }, idx) => fotoPorIndice.set(i, fotosSubidas[idx]));
+      const fotosPorResena = new Map<number, string[]>();
+      fotosAPedir.forEach((f, idx) => {
+        const lista = fotosPorResena.get(f.indiceResena) || [];
+        lista[f.slot] = fotosSubidas[idx];
+        fotosPorResena.set(f.indiceResena, lista);
+      });
       const avatarPorIndice = new Map<number, string>();
       conAvatar.forEach(({ i }, idx) => avatarPorIndice.set(i, avataresSubidos[idx]));
-      resenasFinal = input.resenas.map((r, i) => ({
-        ...r,
-        fotoUrl: fotoPorIndice.get(i) || '',
-        avatarUrl: avatarPorIndice.get(i) || '',
-      }));
+      resenasFinal = input.resenas.map((r, i) => {
+        const fotosSubidas = (fotosPorResena.get(i) || []).filter((url): url is string => !!url);
+        return {
+          ...r,
+          fotoUrl: fotosSubidas[0] || '',
+          fotos: fotosSubidas,
+          avatarUrl: avatarPorIndice.get(i) || '',
+        };
+      });
     }
 
     // Arma, desde cero, la plantilla EXCLUSIVA de este producto: una sección

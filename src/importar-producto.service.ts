@@ -231,9 +231,13 @@ export class ImportarProductoService {
 
   // Combo estándar de secciones para el piloto automático — ver nota grande
   // arriba del archivo sobre por qué estas 5 y no las 10 disponibles.
-  // Orden (pedido explícito de Norbey 17/09): Testimonios va AL FINAL,
-  // después de Preguntas Frecuentes — antes quedaba entre Oferta y FAQ.
-  private readonly SECCIONES_AUTOMATICAS: string[] = ['hero', 'beneficios', 'oferta', 'faq', 'testimonios'];
+  // Orden: Testimonios va AL FINAL, después de Preguntas Frecuentes (pedido
+  // explícito de Norbey 17/09 — antes quedaba entre Oferta y FAQ). Oferta va
+  // SIEMPRE PRIMERO, antes que Hero (pedido explícito 18/09, con captura de
+  // una landing real donde Oferta había quedado en el medio) — el botón de
+  // comprar que se intercala justo después de Oferta (ver más abajo en el
+  // for) queda entonces como lo primero que ve el cliente, apenas entra.
+  private readonly SECCIONES_AUTOMATICAS: string[] = ['oferta', 'hero', 'beneficios', 'faq', 'testimonios'];
 
   private readonly ETIQUETAS_SECCION: Record<string, string> = {
     hero: 'Hero (portada / titular principal)',
@@ -521,12 +525,66 @@ export class ImportarProductoService {
     return { buffers, totalReales: buffers.length };
   }
 
+  // Pedido 18/09 (2): antes, cuando el link traía reseñas reales, se armaba
+  // una sola IMAGEN fija con todas las tarjetas dibujadas adentro (ver
+  // componerImagenTestimoniosReales más abajo) — el estudiante pidió poder
+  // abrir cada foto de una reseña por separado, algo imposible con una
+  // imagen ya compuesta (las fotos quedan pegadas al dibujo, son solo
+  // píxeles). La solución real: en vez de esa imagen, estas reseñas ahora
+  // se guardan como reseñas de VERDAD del producto — el mismo mecanismo que
+  // usa el estudiante cuando las carga a mano en "Personalizada" (ver
+  // ProductosService.guardarResenas y el campo st.resenas del taller) — y
+  // se intercala un marcador {tipo:'resenas'} en vez de una imagen. La
+  // sección real de Shopify (seccionResenasLiquid, en shopify.service.ts)
+  // ya sabe dibujar cada reseña con sus fotos reales como <img> de verdad,
+  // cada una abrible en grande con un clic (lightbox). El avatar sigue
+  // siendo la silueta genérica gratis (avatarGenericoResena) — acá se
+  // rasteriza a PNG y se sube, porque esta vez hace falta una URL real de
+  // imagen (no un buffer para componer con sharp localmente).
+  private async armarResenasLandingDesdeReales(falClient: FalClient, resenas: ResenaOrigen[]): Promise<any[]> {
+    const usadas = resenas.filter((r) => r.texto && r.texto.trim().length > 0).slice(0, this.MAX_RESENAS_REALES);
+    const resultado: any[] = [];
+    for (const resena of usadas) {
+      let avatarUrl = '';
+      try {
+        const avatarSvg = this.avatarGenericoResena(96, resena.autor || resena.texto);
+        const avatarPng = await sharp(avatarSvg).png().toBuffer();
+        avatarUrl = await falClient.storage.upload(this.bufferABlob(avatarPng, 'image/png'));
+      } catch (error) {
+        this.logger.warn(`No se pudo generar/subir el avatar genérico de una reseña real — se publica sin avatar: ${(error as Error).message}`);
+      }
+      const fotos = (resena.fotos && resena.fotos.length > 0 ? resena.fotos : resena.fotoUrl ? [resena.fotoUrl] : []).slice(0, 3);
+      resultado.push({
+        id: `resena-real-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        fotoUrl: fotos[0] || '',
+        fotos,
+        avatarUrl,
+        // Casi siempre viene "Anónimo" tal cual como lo muestra AliExpress
+        // (pedido 18/09, mismo criterio que componerImagenTestimoniosReales).
+        nombre: resena.autor?.trim() || 'Anónimo',
+        ciudad: '',
+        estrellas: resena.calificacion ?? 5,
+        texto: resena.texto,
+        pendiente: false,
+        fechaCarga: new Date().toISOString(),
+      });
+    }
+    return resultado;
+  }
+
   // Arma el JPEG final con hasta MAX_RESENAS_REALES tarjetas de reseña
   // apiladas verticalmente: avatar genérico + nombre + estrellas + el texto
   // REAL de la reseña + (pedido 18/09) las fotos reales que el comprador
   // adjuntó, en una fila DEBAJO del texto — así se ve igual que en
   // AliExpress (la foto de un producto recibido no queda rara puesta como
   // si fuera la cara de la persona).
+  //
+  // NOTA (18/09, 2): esta función YA NO se usa para el piloto automático
+  // cuando hay reseñas reales (ver armarResenasLandingDesdeReales arriba,
+  // que la reemplazó ahí) — queda tal cual porque el modo "Personalizada"
+  // manual del taller no la usa (arma su propia vista previa en el
+  // frontend), pero SÍ podría volver a hacer falta si en algún momento se
+  // quisiera ofrecer "Testimonios como imagen" como alternativa a mano.
   private async componerImagenTestimoniosReales(
     falApiKey: string,
     nombreProducto: string,
@@ -1130,26 +1188,20 @@ export class ImportarProductoService {
 
     for (const seccion of this.SECCIONES_AUTOMATICAS) {
       try {
-        // Testimonios con reseñas reales: se compone con sharp (ver nota
-        // grande "Actualización 16/09"), NO se le pide a la IA de imagen
-        // que invente el contenido — así el texto y (si vino) la foto de
-        // cada reseña son exactamente los reales del producto.
+        // Testimonios con reseñas reales (pedido 18/09, 2): en vez de una
+        // imagen fija, se guardan como reseñas de VERDAD del producto y se
+        // intercala el marcador {tipo:'resenas'} — ver la nota grande de
+        // armarResenasLandingDesdeReales arriba sobre por qué (cada foto
+        // ahora se puede abrir en grande con un clic, algo imposible con
+        // una imagen ya compuesta). NO se le pide a la IA de imagen que
+        // invente nada acá — texto, calificación y fotos son las reales.
         if (seccion === 'testimonios' && resenasReales.length > 0) {
-          const { buffer, costoEstimadoUsd: costoTestimonios } = await this.componerImagenTestimoniosReales(
-            falApiKey,
-            nombreProducto,
-            resenasReales,
-          );
-          costoEstimadoUsd += costoTestimonios;
-          const imagenUrl = await falClient.storage.upload(this.bufferABlob(buffer, 'image/jpeg'));
-          seccionesOk.push(seccion);
-          items.push({
-            id: `${seccion}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            image: imagenUrl,
-            sectionKey: seccion,
-            sectionLabel: this.ETIQUETAS_SECCION[seccion] || seccion,
-            templateId: null,
-          });
+          const resenasLanding = await this.armarResenasLandingDesdeReales(falClient, resenasReales);
+          if (resenasLanding.length > 0) {
+            await this.productosService.guardarResenas(usuarioId, nombreProducto, 'personalizada', resenasLanding);
+            seccionesOk.push(seccion);
+            items.push({ id: `resenas-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, tipo: 'resenas' });
+          }
           // OJO: ya no se intercala un botón acá — Testimonios ahora es
           // siempre la ÚLTIMA sección del combo automático (ver
           // SECCIONES_AUTOMATICAS arriba), así que el botón final que se
