@@ -58,6 +58,7 @@
 // para que la landing igual quede completa.
 
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { createFalClient, FalClient } from '@fal-ai/client';
 // sharp se exporta con "export =" (estilo CommonJS clásico) — con
 // "import sharp from 'sharp'" TypeScript trae el valor pero no el
@@ -114,6 +115,60 @@ export interface ImportarProductoResultado {
   landingGuardada: boolean;
 }
 
+// ---------------------------------------------------------------------
+// Módulo "Product Marker" DENTRO del taller (pedido 17/09): Norbey ya no
+// quiere que dependa de una extensión de navegador — el estudiante pega el
+// link directo en la web de la Creadora de Landing, sin instalar nada. Acá
+// el que lee la página es el PROPIO SERVIDOR (scrapearUrlProducto más
+// abajo), no un content script en el navegador del estudiante como antes.
+//
+// Dos diferencias importantes con el camino de la extensión, avisadas a
+// Norbey de antemano:
+//  1) Reseñas reales: NO se pueden sacar así. En AliExpress (y la mayoría
+//     de tiendas) los comentarios se cargan con JavaScript después de que
+//     el servidor ya respondió — acá solo tenemos el HTML crudo tal cual lo
+//     manda el sitio de origen, antes de que un navegador ejecute nada de
+//     JS. Por eso las landings armadas por este camino van a caer siempre
+//     al comportamiento de Testimonios inventado por IA (ver pilotoAutomatico
+//     más abajo, resenasReales sale vacío).
+//  2) Puede que algunos sitios bloqueen o devuelvan una versión reducida de
+//     la página a un pedido "simple" del servidor (sin ejecutar JS, sin las
+//     cookies/comportamiento de un navegador real) — se empezó por la
+//     versión más simple (pedido directo + JSON-LD/meta og:, el mismo
+//     truco que ya usa content-aliexpress.js) a propósito, decisión de
+//     Norbey de "empezar simple" y escalar a un navegador headless o un
+//     servicio de scraping de pago más adelante SI hace falta, en vez de
+//     construir esa complejidad de entrada sin haber confirmado que no
+//     alcanza con lo simple.
+//
+// Es asíncrono a propósito (pedido explícito de Norbey: que la landing se
+// siga armando en el servidor aunque el estudiante cierre la pestaña o
+// navegue a otro lado, mientras el taller le muestra una barra de progreso
+// si se queda mirando). El estado de cada importación se guarda en un Map
+// EN MEMORIA (no en la base de datos) — sencillo a propósito para la
+// primera versión; la única contra es que si Railway reinicia el servidor
+// justo en medio de una importación en curso, ese trabajo puntual se
+// pierde (el estudiante tendría que pegar el link de nuevo). Si esto
+// resulta ser un problema real en la práctica, se puede mover a una tabla
+// de Postgres más adelante, mismo patrón que "historial"/"generaciones".
+export type EstadoImportacionPorLinkTipo = 'leyendo_pagina' | 'generando_secciones' | 'listo' | 'error';
+
+export interface EstadoImportacionPorLink {
+  id: string;
+  estado: EstadoImportacionPorLinkTipo;
+  error?: string;
+  resultado?: ImportarProductoResultado;
+}
+
+// Plataformas soportadas para "pegá el link" (mismo criterio ya elegido
+// para la extensión — Norbey prefirió tiendas conocidas en vez de
+// cualquier página de internet: fuera de una tienda que ya conocemos a
+// fondo ni el precio/fotos salen confiables). Cuando se sumen Amazon/Temu,
+// se agregan acá.
+const PATRONES_PLATAFORMA_SOPORTADA: { regex: RegExp; plataforma: PlataformaOrigen }[] = [
+  { regex: /^https:\/\/([a-z]{2,3}\.)?aliexpress\.com\/item\//i, plataforma: 'aliexpress' },
+];
+
 @Injectable()
 export class ImportarProductoService {
   private readonly logger = new Logger(ImportarProductoService.name);
@@ -146,6 +201,10 @@ export class ImportarProductoService {
   // generarAvatarResena() no devuelve costo propio y no queremos modificar
   // ese método compartido con el taller manual solo por esto).
   private readonly COSTO_AVATAR_RESPALDO_USD = 0.018;
+
+  // Estado de cada importación por link en curso — ver nota grande arriba
+  // del archivo ("Módulo Product Marker DENTRO del taller").
+  private readonly trabajosImportacion = new Map<string, EstadoImportacionPorLink>();
 
   constructor(
     private readonly textGenerationService: TextGenerationService,
@@ -459,6 +518,183 @@ export class ImportarProductoService {
       .toBuffer();
 
     return { buffer: resultado, costoEstimadoUsd };
+  }
+
+  // ---------------------------------------------------------------------
+  // Module "Product Marker" dentro del taller — pegar un link, sin
+  // extensión. Ver la nota grande arriba del archivo para el detalle
+  // completo y las limitaciones (reseñas reales, sitios que bloquean).
+  // ---------------------------------------------------------------------
+
+  // Paso 1: arranca el trabajo en segundo plano y devuelve un id al toque
+  // — el controller responde con ese id sin esperar a que termine.
+  iniciarImportacionPorLink(usuarioId: number, falApiKey: string, url: string): string {
+    const soportada = PATRONES_PLATAFORMA_SOPORTADA.find((p) => p.regex.test(url));
+    if (!soportada) {
+      throw new InternalServerErrorException(
+        'Ese link no es de una tienda soportada todavía (por ahora: AliExpress). Pegá el link de la página del producto.',
+      );
+    }
+
+    const id = randomUUID();
+    this.trabajosImportacion.set(id, { id, estado: 'leyendo_pagina' });
+
+    // A propósito NO se espera (sin "await") — el trabajo sigue solo en
+    // segundo plano mientras el controller ya le contestó al taller con el
+    // id. Cualquier error acá se guarda en el estado del trabajo, no
+    // rompe nada más.
+    this.procesarImportacionPorLink(id, usuarioId, falApiKey, url, soportada.plataforma).catch((error) => {
+      this.trabajosImportacion.set(id, { id, estado: 'error', error: error?.message || String(error) });
+    });
+
+    return id;
+  }
+
+  // Paso 2: lo consulta el taller cada pocos segundos (polling) para
+  // actualizar la barra de progreso — devuelve undefined si el id no existe
+  // (nunca existió, o el servidor se reinició mientras tanto).
+  obtenerEstadoImportacion(id: string): EstadoImportacionPorLink | undefined {
+    return this.trabajosImportacion.get(id);
+  }
+
+  private async procesarImportacionPorLink(
+    id: string,
+    usuarioId: number,
+    falApiKey: string,
+    url: string,
+    plataforma: PlataformaOrigen,
+  ): Promise<void> {
+    const datos = await this.scrapearUrlProducto(url);
+    this.trabajosImportacion.set(id, { id, estado: 'generando_secciones' });
+    const resultado = await this.pilotoAutomatico(usuarioId, falApiKey, {
+      usuarioId,
+      falApiKey,
+      url,
+      plataforma,
+      titulo: datos.titulo,
+      descripcion: datos.descripcion,
+      fotos: datos.fotos,
+      precioOriginal: datos.precioOriginal,
+      moneda: datos.moneda,
+      resenas: [], // ver nota grande arriba: no se pueden sacar reseñas reales de un pedido simple del servidor
+    });
+    this.trabajosImportacion.set(id, { id, estado: 'listo', resultado });
+  }
+
+  // Le pide la página al sitio de origen DIRECTO desde el servidor (con
+  // headers de navegador real, para no identificarse como un bot obvio) y
+  // busca los mismos datos "estructurados" que ya usa content-aliexpress.js
+  // en la extensión — JSON-LD del producto primero (más confiable, no
+  // depende de clases CSS que cambian), etiquetas og: como respaldo. A
+  // propósito NO intenta heurísticas de DOM más agresivas (galería de
+  // imágenes, regex de precio en el texto) salvo para el precio — sin un
+  // navegador de verdad ejecutando el JavaScript de la página, esas
+  // heurísticas son mucho menos confiables sobre HTML crudo.
+  private async scrapearUrlProducto(url: string): Promise<{
+    titulo: string;
+    descripcion: string;
+    fotos: string[];
+    precioOriginal?: number;
+    moneda: string;
+  }> {
+    let html: string;
+    try {
+      const resp = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+          'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        },
+      });
+      if (!resp.ok) {
+        throw new Error(`la página respondió con un error (código ${resp.status})`);
+      }
+      html = await resp.text();
+    } catch (error) {
+      throw new InternalServerErrorException(
+        `No se pudo abrir esa página desde el servidor (${(error as Error).message || error}) — probá copiando el link de nuevo, o si el problema sigue puede que ese sitio esté bloqueando pedidos automáticos.`,
+      );
+    }
+
+    const jsonLd = this.extraerJsonLdDeHtml(html);
+    const titulo = (jsonLd && jsonLd.name) || this.extraerMetaDeHtml(html, 'og:title') || '';
+    const descripcion = (jsonLd && jsonLd.description) || this.extraerMetaDeHtml(html, 'og:description') || '';
+
+    let fotos: string[] = [];
+    if (jsonLd && jsonLd.image) {
+      fotos = Array.isArray(jsonLd.image) ? jsonLd.image : [jsonLd.image];
+    }
+    if (fotos.length === 0) {
+      const ogImage = this.extraerMetaDeHtml(html, 'og:image');
+      if (ogImage) fotos.push(ogImage);
+    }
+
+    let precioOriginal: number | undefined;
+    let moneda = 'USD';
+    if (jsonLd && jsonLd.offers) {
+      const oferta = Array.isArray(jsonLd.offers) ? jsonLd.offers[0] : jsonLd.offers;
+      if (oferta) {
+        precioOriginal = parseFloat(oferta.price);
+        moneda = oferta.priceCurrency || 'USD';
+      }
+    }
+    if (precioOriginal === undefined || Number.isNaN(precioOriginal)) {
+      const precioDeTexto = this.extraerPrecioDeHtml(html);
+      if (precioDeTexto) {
+        precioOriginal = precioDeTexto.valor;
+        moneda = precioDeTexto.moneda;
+      }
+    }
+
+    if (!titulo || fotos.length === 0) {
+      throw new InternalServerErrorException(
+        'No se pudo encontrar el título o las fotos del producto en esa página. Puede que ese sitio necesite JavaScript para mostrar el contenido — algo que un pedido directo del servidor no ejecuta — o que haya detectado el pedido como automático.',
+      );
+    }
+
+    return {
+      titulo: titulo.trim().slice(0, 200),
+      descripcion: descripcion.trim().slice(0, 2000),
+      fotos: fotos.slice(0, 5),
+      precioOriginal: Number.isFinite(precioOriginal) ? precioOriginal : undefined,
+      moneda,
+    };
+  }
+
+  private extraerJsonLdDeHtml(html: string): any {
+    const regex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(html))) {
+      try {
+        const data = JSON.parse(match[1]);
+        const candidatos = Array.isArray(data) ? data : [data];
+        for (const item of candidatos) {
+          const tipo = item && item['@type'];
+          if (tipo === 'Product' || tipo === 'schema:Product') return item;
+        }
+      } catch {
+        // JSON-LD roto o de otro tipo — se ignora y se sigue con el siguiente <script>.
+      }
+    }
+    return null;
+  }
+
+  private extraerMetaDeHtml(html: string, propiedad: string): string | null {
+    // Las etiquetas <meta> pueden traer los atributos en cualquier orden
+    // (property antes o después de content) — se prueban las dos formas.
+    const propiedadEscapada = propiedad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regexNormal = new RegExp(`<meta[^>]+property=["']${propiedadEscapada}["'][^>]*content=["']([^"']*)["']`, 'i');
+    const regexInvertida = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*property=["']${propiedadEscapada}["']`, 'i');
+    const match = html.match(regexNormal) || html.match(regexInvertida);
+    return match ? match[1] : null;
+  }
+
+  private extraerPrecioDeHtml(html: string): { valor: number; moneda: string } | null {
+    const match = html.match(/(US\s?\$|\$|€)\s?(\d+[.,]\d{2})/);
+    if (!match) return null;
+    const valor = parseFloat(match[2].replace(',', '.'));
+    const moneda = match[1].includes('€') ? 'EUR' : 'USD';
+    return { valor, moneda };
   }
 
   async pilotoAutomatico(usuarioId: number, falApiKey: string, input: ImportarProductoInput): Promise<ImportarProductoResultado> {
