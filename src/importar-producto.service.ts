@@ -104,6 +104,17 @@ export interface ImportarProductoInput {
   // content-aliexpress.js) — opcional: si no vienen, Testimonios se arma
   // igual que antes (inventado por IA a partir del resultado del producto).
   resenas?: ResenaOrigen[];
+  // Pedido 18/09 (módulo "Product Marker" del taller): el estudiante puede
+  // completar a mano el precio de venta y de comparación de cada combo (1/2/3
+  // unidades) ANTES de generar, en vez de depender solo del margen automático
+  // (ver MARKUP más abajo). Si no viene precio1Venta, se ignora todo esto y
+  // sigue el comportamiento de siempre (precio sugerido automático, sin
+  // comparación, sin combos de 2/3 unidades).
+  ofertaManual?: {
+    precio1Venta?: string; precio1Comparacion?: string;
+    precio2Venta?: string; precio2Comparacion?: string;
+    precio3Venta?: string; precio3Comparacion?: string;
+  };
 }
 
 export interface ImportarProductoResultado {
@@ -158,6 +169,13 @@ export interface EstadoImportacionPorLink {
   estado: EstadoImportacionPorLinkTipo;
   error?: string;
   resultado?: ImportarProductoResultado;
+}
+
+// Overrides opcionales del formulario de Product Marker (pedido 18/09) —
+// título propio y/o precios de los 3 combos, ver ImportarProductoInput.ofertaManual.
+export interface ImportarPorLinkOpciones {
+  tituloPersonalizado?: string;
+  ofertaManual?: ImportarProductoInput['ofertaManual'];
 }
 
 // Plataformas soportadas para "pegá el link" (mismo criterio ya elegido
@@ -528,7 +546,7 @@ export class ImportarProductoService {
 
   // Paso 1: arranca el trabajo en segundo plano y devuelve un id al toque
   // — el controller responde con ese id sin esperar a que termine.
-  iniciarImportacionPorLink(usuarioId: number, falApiKey: string, url: string): string {
+  iniciarImportacionPorLink(usuarioId: number, falApiKey: string, url: string, opciones?: ImportarPorLinkOpciones): string {
     const soportada = PATRONES_PLATAFORMA_SOPORTADA.find((p) => p.regex.test(url));
     if (!soportada) {
       throw new InternalServerErrorException(
@@ -543,7 +561,7 @@ export class ImportarProductoService {
     // segundo plano mientras el controller ya le contestó al taller con el
     // id. Cualquier error acá se guarda en el estado del trabajo, no
     // rompe nada más.
-    this.procesarImportacionPorLink(id, usuarioId, falApiKey, url, soportada.plataforma).catch((error) => {
+    this.procesarImportacionPorLink(id, usuarioId, falApiKey, url, soportada.plataforma, opciones).catch((error) => {
       this.trabajosImportacion.set(id, { id, estado: 'error', error: error?.message || String(error) });
     });
 
@@ -563,20 +581,26 @@ export class ImportarProductoService {
     falApiKey: string,
     url: string,
     plataforma: PlataformaOrigen,
+    opciones?: ImportarPorLinkOpciones,
   ): Promise<void> {
     const datos = await this.scrapearUrlProducto(url);
     this.trabajosImportacion.set(id, { id, estado: 'generando_secciones' });
+    // Título personalizado (pedido 18/09): si el estudiante escribió uno en
+    // el formulario, reemplaza al título scrapeado de la página de origen
+    // (que suele venir largo, lleno de palabras de SEO).
+    const tituloFinal = opciones?.tituloPersonalizado?.trim() || datos.titulo;
     const resultado = await this.pilotoAutomatico(usuarioId, falApiKey, {
       usuarioId,
       falApiKey,
       url,
       plataforma,
-      titulo: datos.titulo,
+      titulo: tituloFinal,
       descripcion: datos.descripcion,
       fotos: datos.fotos,
       precioOriginal: datos.precioOriginal,
       moneda: datos.moneda,
       resenas: [], // ver nota grande arriba: no se pueden sacar reseñas reales de un pedido simple del servidor
+      ofertaManual: opciones?.ofertaManual,
     });
     this.trabajosImportacion.set(id, { id, estado: 'listo', resultado });
   }
@@ -754,6 +778,26 @@ export class ImportarProductoService {
     const precioVenta = input.precioOriginal ? Math.round(input.precioOriginal * this.MARKUP * 100) / 100 : undefined;
     const precioSugerido = precioVenta !== undefined ? this.formatearPrecio(precioVenta, moneda) : undefined;
 
+    // Pedido 18/09: si el estudiante completó a mano el precio de 1 unidad en
+    // el módulo Product Marker, esos precios (y sus comparaciones, y los
+    // combos de 2/3 unidades si los llenó) reemplazan al precio sugerido
+    // automático de arriba. Si no tocó nada, sigue igual que siempre.
+    const ofertaManual = input.ofertaManual;
+    const oferta = ofertaManual?.precio1Venta
+      ? {
+          precio1Venta: ofertaManual.precio1Venta,
+          precio1Comparacion: ofertaManual.precio1Comparacion || undefined,
+          precio2Venta: ofertaManual.precio2Venta || undefined,
+          precio2Comparacion: ofertaManual.precio2Comparacion || undefined,
+          precio3Venta: ofertaManual.precio3Venta || undefined,
+          precio3Comparacion: ofertaManual.precio3Comparacion || undefined,
+          divisa: moneda,
+        }
+      : precioSugerido
+        ? { precio1Venta: precioSugerido, divisa: moneda }
+        : undefined;
+    const precioSugeridoFinal = oferta?.precio1Venta;
+
     const ficha: FichaTecnica = {
       nombreProducto,
       detallesProducto,
@@ -765,7 +809,7 @@ export class ImportarProductoService {
       solucion: copy.solucion,
       mecanismo: copy.mecanismo,
       idioma: 'Español',
-      oferta: precioSugerido ? { precio1Venta: precioSugerido, divisa: moneda } : undefined,
+      oferta,
     };
 
     // 5) Genera cada sección del combo automático, en orden, reutilizando la
@@ -871,7 +915,7 @@ export class ImportarProductoService {
     return {
       nombreProducto,
       anguloElegido,
-      precioSugerido,
+      precioSugerido: precioSugeridoFinal,
       secciones: seccionesOk,
       costoEstimadoUsd,
       landingGuardada: !!landingGuardada,

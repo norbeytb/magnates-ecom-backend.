@@ -23,6 +23,7 @@
 import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
 import {
   EstadoImportacionPorLink,
+  ImportarPorLinkOpciones,
   ImportarProductoService,
   ImportarProductoResultado,
   PlataformaOrigen,
@@ -42,6 +43,21 @@ interface PilotoAutomaticoDto {
   // Reseñas reales scrapeadas de la página de origen (16/09, ver
   // importar-producto.service.ts) — opcional.
   resenas?: ResenaOrigen[];
+}
+
+// DTO de /por-link (pedido 18/09): además del link, el módulo Product Marker
+// del taller manda opcionalmente un título propio y/o los precios de los 3
+// combos — todos strings sueltos porque el estudiante los escribe a mano,
+// igual que en la tabla de precios de la Ficha Técnica manual.
+interface ImportarPorLinkDto {
+  url?: string;
+  tituloPersonalizado?: string;
+  precio1Venta?: string;
+  precio1Comparacion?: string;
+  precio2Venta?: string;
+  precio2Comparacion?: string;
+  precio3Venta?: string;
+  precio3Comparacion?: string;
 }
 
 @Controller('importar-producto')
@@ -87,7 +103,7 @@ export class ImportarProductoController {
   // al toque — no espera a que termine, para eso está /estado/:id.
   @Post('por-link')
   async importarPorLink(
-    @Body() dto: { url?: string },
+    @Body() dto: ImportarPorLinkDto,
     @UsuarioActual() usuario: UsuarioAutenticado,
   ): Promise<{ id: string }> {
     const url = (dto?.url || '').trim();
@@ -101,7 +117,22 @@ export class ImportarProductoController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const id = this.importarProductoService.iniciarImportacionPorLink(usuario.id, falApiKey, url);
+    const tituloPersonalizado = (dto?.tituloPersonalizado || '').trim() || undefined;
+    const tieneOfertaManual = !!(dto?.precio1Venta || dto?.precio2Venta || dto?.precio3Venta);
+    const opciones: ImportarPorLinkOpciones = {
+      tituloPersonalizado,
+      ofertaManual: tieneOfertaManual
+        ? {
+            precio1Venta: (dto?.precio1Venta || '').trim() || undefined,
+            precio1Comparacion: (dto?.precio1Comparacion || '').trim() || undefined,
+            precio2Venta: (dto?.precio2Venta || '').trim() || undefined,
+            precio2Comparacion: (dto?.precio2Comparacion || '').trim() || undefined,
+            precio3Venta: (dto?.precio3Venta || '').trim() || undefined,
+            precio3Comparacion: (dto?.precio3Comparacion || '').trim() || undefined,
+          }
+        : undefined,
+    };
+    const id = this.importarProductoService.iniciarImportacionPorLink(usuario.id, falApiKey, url, opciones);
     return { id };
   }
 
