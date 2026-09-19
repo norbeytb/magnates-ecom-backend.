@@ -274,15 +274,23 @@ const PATRONES_PLATAFORMA_SOPORTADA: { regex: RegExp; plataforma: PlataformaOrig
   // Amazon: /dp/ASIN, con o sin el título de SEO adelante (.../nombre-producto/dp/ASIN),
   // y /gp/product/ASIN — cubre .com y los dominios de país (.com.mx, .es, .com.br, etc.)
   // con un grupo de TLD flexible en vez de listarlos todos a mano.
-  { regex: /^https:\/\/(?:www\.)?amazon\.[a-z.]{2,8}\/(?:[^/?#]+\/)?(?:dp|gp\/product)\/[A-Z0-9]{10}(?:[/?]|$)/i, plataforma: 'amazon' },
+  // Fix 19/09: Amazon a veces mete un prefijo de idioma antes del nombre del
+  // producto (ej. "/-/es/..." cuando ves la página en español) — eso son DOS
+  // segmentos de texto antes de "dp/", no uno solo, y el patrón viejo lo
+  // rechazaba. Ahora acepta cualquier cantidad de segmentos antes de "dp/".
+  { regex: /^https:\/\/(?:www\.)?amazon\.[a-z.]{2,8}\/(?:[^/?#]+\/)*(?:dp|gp\/product)\/[A-Z0-9]{10}(?:[/?]|$)/i, plataforma: 'amazon' },
   // Link corto de compartir de Amazon (amzn.to/xxxxx) — fetch() sigue la
   // redirección solo, así que scrapearUrlProducto termina leyendo la misma
   // página real sin necesitar ningún cambio.
   { regex: /^https:\/\/(?:www\.)?amzn\.to\//i, plataforma: 'amazon' },
   // Temu: las dos formas de link de producto que se ven en la práctica —
   // el link "lindo" con el nombre del producto (...-g-1234567890.html) que
-  // se copia desde la página, y goods.html?goods_id=... que usa la app al compartir.
-  { regex: /^https:\/\/(?:www\.)?temu\.com\/(?:[^/?#]+-g-\d+\.html|goods\.html)/i, plataforma: 'temu' },
+  // se copia desde la página, y goods.html?goods_id=... que usa la app al
+  // compartir. Fix 19/09: Temu a veces mete el código de país en el medio
+  // del link (ej. temu.com/co/-nombre-del-producto-g-123.html cuando lo
+  // compartís desde Colombia) — el patrón viejo no contemplaba ese "/co/" y
+  // rechazaba links reales. Ahora ese segmento de 2 letras es opcional.
+  { regex: /^https:\/\/(?:www\.)?temu\.com\/(?:[a-z]{2}\/)?(?:[^/?#]+-g-\d+\.html|goods\.html)/i, plataforma: 'temu' },
 ];
 
 @Injectable()
