@@ -69,11 +69,33 @@ import sharp = require('sharp');
 // al sistema operativo del servidor que dibuje el texto con SU fuente — ver
 // la nota grande "Actualización 17/09 (fuentes)" más abajo para el porqué.
 import opentype = require('opentype.js');
+// cheerio: parser de HTML tipo jQuery, sin necesidad de navegador — lo usa
+// scrapearResenasAmazonDeHtml() (18/09 (5)) para leer el árbol de reseñas
+// del HTML de Amazon (mucho más confiable que regex a mano sobre HTML
+// anidado). Instalar con: npm install cheerio.
+import * as cheerio from 'cheerio';
+// puppeteer: navegador headless de verdad — lo usa
+// scrapearResenasTemuConNavegador() (18/09 (6)) porque Temu, a diferencia
+// de AliExpress/Amazon, arma su lista de reseñas con JavaScript y no tiene
+// (que se haya encontrado) un endpoint público equivalente. Instalar con:
+// npm install puppeteer — ver nixpacks.toml para las librerías de sistema
+// que Railway necesita para poder correr un Chromium de verdad.
+import puppeteer, { Browser } from 'puppeteer';
 import { ImageEditService, FichaTecnica } from './image-edit.service';
 import { TextGenerationService } from './text-generation.service';
 import { ProductosService } from './productos.service';
 import { LandingsService, ItemLanding } from './landings.service';
 import { LIBERATION_SANS_REGULAR_BASE64, LIBERATION_SANS_BOLD_BASE64 } from './fuentes-liberation';
+
+// Declaraciones mínimas para poder tipar el código que corre DENTRO del
+// navegador headless (page.evaluate en leerHtmlRenderizadoDeTemu, más
+// abajo) sin necesitar agregar la librería "dom" al tsconfig de este
+// backend (que es un proyecto de servidor, sin DOM real — agregarla ahí
+// solo por esto sería un cambio de configuración de más). "any" a
+// propósito: ese código nunca se type-chequea contra el DOM real, solo
+// necesita poder compilar.
+declare const document: any;
+declare const window: any;
 
 export type PlataformaOrigen = 'aliexpress' | 'amazon' | 'temu';
 
@@ -214,10 +236,53 @@ export interface ImportarPorLinkOpciones {
 // Plataformas soportadas para "pegá el link" (mismo criterio ya elegido
 // para la extensión — Norbey prefirió tiendas conocidas en vez de
 // cualquier página de internet: fuera de una tienda que ya conocemos a
-// fondo ni el precio/fotos salen confiables). Cuando se sumen Amazon/Temu,
-// se agregan acá.
+// fondo ni el precio/fotos salen confiables).
+//
+// Actualización 18/09 (2): se suman Amazon y Temu — mismo mecanismo que
+// AliExpress (scrapearUrlProducto ya es genérico: JSON-LD Product > meta
+// og:*, no tiene nada específico de AliExpress adentro), solo hacía falta
+// reconocer sus links acá.
+//
+// Actualización 18/09 (5) — "quiero que las reseñas sean igual que con
+// amazon y temu": reseñas reales por link, estado por tienda:
+//  - AliExpress: ya tenía su endpoint aparte (scrapearResenasAliExpressPorLink).
+//  - Amazon: RESUELTO — Amazon trae sus reseñas ya escritas en el mismo
+//    HTML que responde el servidor (por SEO, no hace falta JS para verlas),
+//    así que scrapearResenasAmazonDeHtml() las lee del mismo html que ya
+//    bajó scrapearUrlProducto(), sin pedir la página una segunda vez. Ver
+//    esa función más abajo para el detalle de qué marcado usa y por qué es
+//    "mejor esfuerzo" igual que AliExpress (Amazon puede cambiar su HTML).
+//  - Temu: EXPERIMENTAL (18/09 (6)) — se investigó y, a diferencia de
+//    Amazon, la página de Temu es una SPA que arma todo por JavaScript
+//    (título/precio salen igual porque van en meta og:/JSON-LD para
+//    compartir en redes, pero la lista de reseñas no) — no se encontró un
+//    endpoint público equivalente al de AliExpress. Norbey eligió sumar un
+//    navegador headless (Puppeteer) solo para esta plataforma en vez de
+//    dejarlo con IA — ver scrapearResenasTemuConNavegador() más abajo para
+//    el aviso completo: sus selectores son una heurística SIN verificar
+//    contra el sitio real (temu.com está bloqueado desde este entorno), así
+//    que es esperable necesitar un round de ajuste con un caso real.
+//  - Amazon, aparte, es conocido por bloquear pedidos simples de servidor
+//    más agresivo que AliExpress (puede devolver una página de
+//    verificación "no sos un robot" en vez del producto) — el pedido ya
+//    manda headers de navegador real (ver scrapearUrlProducto), pero si en
+//    la práctica falla seguido, la solución sería lo mismo: escalar a un
+//    navegador headless (Norbey ya sabe que esto se dejó pendiente a
+//    propósito por "empezar simple", ver nota grande arriba del archivo).
 const PATRONES_PLATAFORMA_SOPORTADA: { regex: RegExp; plataforma: PlataformaOrigen }[] = [
   { regex: /^https:\/\/([a-z]{2,3}\.)?aliexpress\.com\/item\//i, plataforma: 'aliexpress' },
+  // Amazon: /dp/ASIN, con o sin el título de SEO adelante (.../nombre-producto/dp/ASIN),
+  // y /gp/product/ASIN — cubre .com y los dominios de país (.com.mx, .es, .com.br, etc.)
+  // con un grupo de TLD flexible en vez de listarlos todos a mano.
+  { regex: /^https:\/\/(?:www\.)?amazon\.[a-z.]{2,8}\/(?:[^/?#]+\/)?(?:dp|gp\/product)\/[A-Z0-9]{10}(?:[/?]|$)/i, plataforma: 'amazon' },
+  // Link corto de compartir de Amazon (amzn.to/xxxxx) — fetch() sigue la
+  // redirección solo, así que scrapearUrlProducto termina leyendo la misma
+  // página real sin necesitar ningún cambio.
+  { regex: /^https:\/\/(?:www\.)?amzn\.to\//i, plataforma: 'amazon' },
+  // Temu: las dos formas de link de producto que se ven en la práctica —
+  // el link "lindo" con el nombre del producto (...-g-1234567890.html) que
+  // se copia desde la página, y goods.html?goods_id=... que usa la app al compartir.
+  { regex: /^https:\/\/(?:www\.)?temu\.com\/(?:[^/?#]+-g-\d+\.html|goods\.html)/i, plataforma: 'temu' },
 ];
 
 @Injectable()
@@ -712,7 +777,7 @@ export class ImportarProductoService {
     const soportada = PATRONES_PLATAFORMA_SOPORTADA.find((p) => p.regex.test(url));
     if (!soportada) {
       throw new InternalServerErrorException(
-        'Ese link no es de una tienda soportada todavía (por ahora: AliExpress). Pegá el link de la página del producto.',
+        'Ese link no es de una tienda soportada todavía (por ahora: AliExpress, Amazon o Temu). Pegá el link de la página del producto.',
       );
     }
 
@@ -746,20 +811,42 @@ export class ImportarProductoService {
     opciones?: ImportarPorLinkOpciones,
   ): Promise<void> {
     const datos = await this.scrapearUrlProducto(url);
-    // Reseñas reales (pedido 18/09) — best-effort, ver
-    // scrapearResenasAliExpressPorLink más arriba sobre por qué esto puede
-    // volver vacío en cualquier momento sin que sea un error real.
-    const resenasCrudas = plataforma === 'aliexpress' ? await this.scrapearResenasAliExpressPorLink(url) : [];
+    // Reseñas reales (pedido 18/09, ampliado 18/09 (5) y (6)) — best-effort,
+    // ver scrapearResenasAliExpressPorLink/scrapearResenasAmazonDeHtml/
+    // scrapearResenasTemuConNavegador más arriba sobre por qué esto puede
+    // volver vacío en cualquier momento sin que sea un error real:
+    //  - AliExpress: endpoint aparte (JS-cargado, sin él no hay reseñas).
+    //  - Amazon: se leen del MISMO html ya descargado arriba (Amazon las
+    //    trae server-side, no hace falta un segundo pedido).
+    //  - Temu: navegador headless (Puppeteer) — es la única de las tres que
+    //    abre un Chromium de verdad, con selectores heurísticos SIN
+    //    verificar contra el sitio real (ver el aviso grande en esa
+    //    función) — más lenta que las otras dos y con más chance de volver
+    //    vacía hasta que se calibre con un caso real.
+    const resenasCrudas =
+      plataforma === 'aliexpress'
+        ? await this.scrapearResenasAliExpressPorLink(url)
+        : plataforma === 'amazon'
+          ? this.scrapearResenasAmazonDeHtml(datos.html)
+          : plataforma === 'temu'
+            ? await this.scrapearResenasTemuConNavegador(url)
+            : [];
     // Mismo filtro/orden que se le va a aplicar en pilotoAutomatico — se
     // hace ACÁ también para que lo que el estudiante vea para revisar sea
     // EXACTO a lo que se va a usar (ni una reseña de más ni de menos), y
     // recortado al máximo a mostrar.
     const resenasPositivas = this.filtrarYOrdenarResenasPositivas(resenasCrudas).slice(0, this.MAX_RESENAS_REALES);
 
+    // El html crudo ya cumplió su función (leer título/fotos/precio y,
+    // en Amazon, las reseñas) — no hace falta cargarlo en memoria más
+    // tiempo del necesario, así que no se guarda en ningún lado de acá en
+    // adelante (ni en el Map de contexto pendiente ni en el resultado).
+    const { html: _html, ...datosSinHtml } = datos;
+
     if (resenasPositivas.length === 0) {
       // Sin reseñas reales que revisar — sigue de largo como siempre (IA
       // inventa el contenido de Testimonios).
-      await this.continuarConGeneracion(id, usuarioId, falApiKey, url, plataforma, datos, [], opciones);
+      await this.continuarConGeneracion(id, usuarioId, falApiKey, url, plataforma, datosSinHtml, [], opciones);
       return;
     }
 
@@ -767,7 +854,7 @@ export class ImportarProductoService {
     // editarle el nombre a las que vinieron "Anónimo" antes de seguir. El
     // contexto completo para retomar queda guardado aparte (nunca se expone
     // por /estado/:id) — ver confirmarResenasYGenerar().
-    this.contextoPendienteResenas.set(id, { usuarioId, falApiKey, url, plataforma, opciones, datos, resenas: resenasPositivas });
+    this.contextoPendienteResenas.set(id, { usuarioId, falApiKey, url, plataforma, opciones, datos: datosSinHtml, resenas: resenasPositivas });
     this.trabajosImportacion.set(id, {
       id,
       estado: 'revisando_resenas',
@@ -869,6 +956,11 @@ export class ImportarProductoService {
     fotos: string[];
     precioOriginal?: number;
     moneda: string;
+    // HTML crudo ya descargado — se devuelve acá para que
+    // scrapearResenasAmazonDeHtml() (18/09 (5)) lo reutilice sin pedirle la
+    // página al sitio de origen una segunda vez (Amazon en particular
+    // bloquea más fácil con pedidos repetidos seguidos).
+    html: string;
   }> {
     let html: string;
     try {
@@ -931,6 +1023,7 @@ export class ImportarProductoService {
       fotos: fotos.slice(0, 5),
       precioOriginal: Number.isFinite(precioOriginal) ? precioOriginal : undefined,
       moneda,
+      html,
     };
   }
 
@@ -1075,6 +1168,300 @@ export class ImportarProductoService {
       }
     }
     return [];
+  }
+
+  // ---------------------------------------------------------------------
+  // Reseñas reales de AMAZON (pedido 18/09 (5): "quiero que las reseñas
+  // sean igual que con amazon y temu" — es decir, reales, no inventadas por
+  // IA, mismo trato que ya tiene AliExpress).
+  //
+  // A diferencia de AliExpress (que carga sus reseñas con JavaScript
+  // DESPUÉS de que el servidor responde, por eso hizo falta ese endpoint
+  // aparte de feedback.aliexpress.com), Amazon SÍ trae una tanda de reseñas
+  // ("Top reviews from...") ya escritas en el HTML crudo que devuelve el
+  // servidor — están ahí por SEO, para que Google las indexe sin ejecutar
+  // JS. Por eso NO hace falta un segundo pedido de red: se reutiliza el
+  // MISMO html que ya bajó scrapearUrlProducto() para leer título/fotos/
+  // precio (ver el campo `html` que ahora devuelve esa función) — menos
+  // pedidos a Amazon, menos chance de que la marque como bot.
+  //
+  // Estructura usada (confirmada por investigación, no adivinada a ciegas —
+  // son los atributos "data-hook" que Amazon viene usando desde hace años
+  // para sus propios tests automatizados, bastante más estables que sus
+  // clases CSS): cada reseña vive en un `div[data-hook="review"]`, con
+  // `[data-hook="review-body"]` (texto), `.a-profile-name` (nombre),
+  // `[data-hook="review-star-rating"]` (calificación, como texto "5.0 out
+  // of 5 stars" o "5,0 de 5 estrellas" según el idioma de la página) y
+  // `img[data-hook="review-image-tile"]` (fotos que el comprador adjuntó).
+  // Como cualquier heurística sobre el HTML de un sitio ajeno (mismo
+  // disclaimer que ya aplica al endpoint de AliExpress): Amazon puede
+  // cambiar este marcado sin aviso — si en algún momento deja de traer
+  // reseñas reales, revisar acá primero. Usa la librería "cheerio"
+  // (instalar con: npm install cheerio) en vez de regex a mano — a
+  // diferencia de una etiqueta <meta> suelta, el árbol de reseñas tiene
+  // demasiados niveles anidados para recortarlo de forma confiable con
+  // regex simple.
+  //
+  // Al ser un parseo del HTML ya descargado (no un pedido de red), esto es
+  // síncrono y nunca falla por timeout — si Amazon cambió el marcado o esa
+  // página puntual no traía ninguna reseña visible, simplemente devuelve un
+  // arreglo vacío y Testimonios cae al comportamiento de siempre (IA
+  // inventa), igual que ya pasa con AliExpress.
+  private scrapearResenasAmazonDeHtml(html: string): ResenaOrigen[] {
+    try {
+      const $ = cheerio.load(html);
+      const resenas: ResenaOrigen[] = [];
+      $('div[data-hook="review"]').each((_, el) => {
+        const $resena = $(el);
+        const texto = $resena.find('[data-hook="review-body"]').first().text().replace(/\s+/g, ' ').trim();
+        if (!texto) return;
+        const autor = $resena.find('.a-profile-name').first().text().trim() || undefined;
+        const textoCalificacion = $resena
+          .find('[data-hook="review-star-rating"], [data-hook="review-star-rating-view-point"]')
+          .first()
+          .text()
+          .trim();
+        const calificacion = this.extraerCalificacionDeTextoAmazon(textoCalificacion);
+        const fotos = $resena
+          .find('img[data-hook="review-image-tile"], .review-image-tile img')
+          .map((__, img) => $(img).attr('src'))
+          .get()
+          .filter((src): src is string => !!src)
+          // Amazon sirve estas miniaturas achicadas con uno o más códigos de
+          // tamaño pegados antes de la extensión (ej. "..._SY88.jpg" o
+          // "..._AC_UL320_SR320,320_.jpg") — se reemplaza ese bloque entero
+          // por un solo código de una imagen bien grande, truco conocido de
+          // las URLs de imágenes de Amazon. Si el patrón no matchea (formato
+          // distinto al esperado), se deja la URL tal cual en vez de romperla.
+          .map((src) => src.replace(/\._[A-Za-z0-9,_]+(?=\.[a-z]{3,4}$)/i, '._SL1200_'))
+          .slice(0, 5);
+        resenas.push({ texto, calificacion, autor, fotoUrl: fotos[0], fotos });
+      });
+      return resenas;
+    } catch (error) {
+      this.logger.warn(
+        `Product Marker: no se pudieron leer las reseñas reales de Amazon del HTML (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+      );
+      return [];
+    }
+  }
+
+  // Convierte el texto de calificación de Amazon ("5.0 out of 5 stars" en
+  // inglés, "5,0 de 5 estrellas" en español) a un número 1-5. Si no
+  // reconoce el formato, devuelve undefined en vez de arriesgar un número
+  // inventado (mismo criterio que normalizarCalificacionResena de AliExpress).
+  private extraerCalificacionDeTextoAmazon(texto: string): number | undefined {
+    const match = texto.match(/(\d+(?:[.,]\d+)?)\s*(?:out of|de)\s*5/i);
+    if (!match) return undefined;
+    const n = parseFloat(match[1].replace(',', '.'));
+    if (!Number.isFinite(n)) return undefined;
+    return Math.max(1, Math.min(5, Math.round(n)));
+  }
+
+  // ---------------------------------------------------------------------
+  // Reseñas reales de TEMU con navegador headless (pedido 18/09 (6):
+  // "quiero que las reseñas sean igual que con amazon y temu" — Norbey
+  // eligió investigar este camino después de confirmar, vía búsqueda, que
+  // Temu arma su lista de reseñas con JavaScript en el navegador y que no
+  // se encontró ningún endpoint público equivalente al de AliExpress (ni
+  // siquiera las herramientas de scraping de Temu que existen hoy en el
+  // mercado extraen reseñas puntuales, solo el conteo total) — la única
+  // forma real de leerlas es dejar que un navegador de verdad ejecute el
+  // JavaScript de la página, algo que scrapearUrlProducto() (fetch simple)
+  // no hace a propósito.
+  //
+  // AVISO IMPORTANTE, más fuerte que el resto de los "mejor esfuerzo" de
+  // este archivo: a diferencia de Amazon (selectores confirmados por
+  // investigación) y AliExpress (endpoint ya probado en producción por
+  // Norbey), ACÁ los selectores de abajo son una heurística amplia
+  // (cualquier bloque cuyo class/data-testid contenga "review"/"comment" y
+  // tenga adentro un texto de largo razonable) — no se pudieron verificar
+  // contra una página real de Temu porque ese dominio está bloqueado desde
+  // este entorno. Es esperable que haga falta AL MENOS una vuelta de ajuste
+  // real: si Norbey prueba con un producto que sí tiene reseñas visibles y
+  // esto vuelve vacío, lo que hace falta es que me mande una captura de
+  // pantalla de esa sección (o, mejor, el HTML de esa parte de la página,
+  // clic derecho → Inspeccionar → Copiar → Copiar elemento) para afinar los
+  // selectores acá — mismo patrón ya usado antes para confirmar el nombre
+  // exacto del campo de fotos de AliExpress. A propósito esta primera
+  // versión NO intenta adivinar selectores de autor/calificación (arriesgar
+  // un nombre o una estrella de un elemento equivocado es peor que dejarlo
+  // en blanco) — quedan en "Anónimo"/sin calificación, que ya son valores
+  // seguros en todo el resto del archivo.
+  //
+  // Cuidados de infraestructura (Railway tiene memoria limitada — un
+  // Chromium de verdad pesa bastante más que cualquier otra cosa que hace
+  // este backend):
+  //  - Esto SOLO se usa para Temu — AliExpress y Amazon siguen sin abrir
+  //    ningún navegador, así que la gran mayoría de importaciones no se ven
+  //    afectadas en velocidad ni memoria.
+  //  - navegadoresTemuEnCurso/TEMU_MAX_NAVEGADORES_CONCURRENTES: como mucho
+  //    UN Chromium abierto a la vez — si dos estudiantes importan de Temu
+  //    al mismo tiempo, el segundo se salta las reseñas reales (cae a IA)
+  //    en vez de abrir un segundo navegador y arriesgar quedarse sin
+  //    memoria en el contenedor.
+  //  - TEMU_HEADLESS_TIMEOUT_MS: límite duro de tiempo — si Temu tarda
+  //    demasiado o el navegador se cuelga, se corta solo y devuelve vacío,
+  //    nunca deja la importación completa esperando para siempre.
+  //  - El navegador SIEMPRE se cierra (bloque finally), pase lo que pase.
+  private navegadoresTemuEnCurso = 0;
+  private readonly TEMU_MAX_NAVEGADORES_CONCURRENTES = 1;
+  private readonly TEMU_HEADLESS_TIMEOUT_MS = 25000;
+
+  private async scrapearResenasTemuConNavegador(url: string): Promise<ResenaOrigen[]> {
+    if (this.navegadoresTemuEnCurso >= this.TEMU_MAX_NAVEGADORES_CONCURRENTES) {
+      this.logger.warn(
+        'Product Marker: ya hay un navegador headless de Temu en curso — esta importación se salta las reseñas reales para no abrir un segundo Chromium (protege la memoria del servidor).',
+      );
+      return [];
+    }
+    this.navegadoresTemuEnCurso++;
+    let browser: Browser | null = null;
+    let timeoutId: NodeJS.Timeout | undefined;
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        // Flags necesarios para correr Chromium dentro de un contenedor de
+        // Railway sin sandbox de kernel propio — ver nixpacks.toml.
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        ignoreDefaultArgs: ['--disable-extensions'],
+      });
+      const b = browser;
+      const html = await new Promise<string>((resolve, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error('tiempo de espera agotado leyendo la página con el navegador')),
+          this.TEMU_HEADLESS_TIMEOUT_MS,
+        );
+        this.leerHtmlRenderizadoDeTemu(b, url).then(resolve, reject);
+      });
+      return this.extraerResenasHeuristicasDelHtmlRenderizado(html);
+    } catch (error) {
+      this.logger.warn(
+        `Product Marker: no se pudieron leer las reseñas reales de Temu con el navegador headless (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+      );
+      return [];
+    } finally {
+      clearTimeout(timeoutId);
+      if (browser) await browser.close().catch(() => {});
+      this.navegadoresTemuEnCurso--;
+    }
+  }
+
+  // Abre la página de Temu de verdad, deja correr su JavaScript, intenta
+  // (sin garantías) hacer clic en una pestaña/sección de reseñas si existe
+  // como elemento aparte, y hace scroll varias veces para disparar la carga
+  // perezosa de la lista — devuelve el HTML ya renderizado para que
+  // extraerResenasHeuristicasDelHtmlRenderizado() lo analice con cheerio
+  // (más simple que seguir usando la API de Puppeteer para cada campo).
+  private async leerHtmlRenderizadoDeTemu(browser: Browser, url: string): Promise<string> {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    );
+    await page.setViewport({ width: 1280, height: 1600 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: this.TEMU_HEADLESS_TIMEOUT_MS });
+
+    try {
+      await page.evaluate(() => {
+        const patron = /reseñas|resenas|reviews|opiniones|valoraciones/i;
+        const esCandidato = (el: any) => patron.test(el.textContent || '') && (el.textContent || '').length < 40;
+        // Tipado explícito "any[]" a propósito: Array.from() sobre un valor
+        // "any" (document acá es "any", ver la declaración arriba del
+        // archivo) infiere "unknown[]" en vez de "any[]" — sin esto,
+        // ".click()" más abajo no compila.
+        //
+        // Primero se busca SOLO entre elementos realmente clicables
+        // (a/button/role=tab/role=button) — si se buscara directo entre
+        // div/span, un <div> contenedor que ENVUELVE al botón real también
+        // matchea el mismo texto y aparece antes en el orden del documento
+        // (padre antes que hijo), así que .find() agarraría ese div en vez
+        // del botón de verdad y el clic no haría nada. Recién si no hay
+        // ningún elemento interactivo que matchee, se prueba con
+        // div/span como último recurso.
+        const interactivos: any[] = Array.from(document.querySelectorAll('a, button, [role="tab"], [role="button"]'));
+        let posible = interactivos.find(esCandidato);
+        if (!posible) {
+          const genericos: any[] = Array.from(document.querySelectorAll('div, span'));
+          posible = genericos.find(esCandidato);
+        }
+        if (posible) posible.click();
+      });
+    } catch {
+      // No pasa nada si no encontró ninguna pestaña/sección para hacer clic
+      // — muchos productos ya muestran las reseñas sin necesitar esto.
+    }
+
+    for (let i = 0; i < 6; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    return page.content();
+  }
+
+  // Heurística amplia (ver el aviso grande arriba sobre por qué no son
+  // selectores confirmados): cualquier bloque cuyo class o data-testid
+  // contenga "review"/"comment", con un texto adentro de largo razonable
+  // (ni tan corto como para ser solo un botón de la interfaz, ni tan largo
+  // como para ser el contenedor de TODA la lista junta) y con suficiente
+  // proporción de letras (para descartar líneas de resumen tipo "4.6 de 5 -
+  // 128 reseñas", que matchean por clase pero no son una reseña de
+  // verdad). Se queda con el elemento MÁS EXTERNO de cada grupo anidado —
+  // ej. un `<div class="review-card">` que por dentro tiene un
+  // `<span class="review-text">` — ambos matchean el selector, pero son la
+  // MISMA reseña; probado con un caso sintético parecido a esto que sin
+  // este cuidado duplicaba cada reseña.
+  private extraerResenasHeuristicasDelHtmlRenderizado(html: string): ResenaOrigen[] {
+    const $ = cheerio.load(html);
+    const candidatos = $('[class*="review" i], [data-testid*="review" i], [class*="comment" i]');
+    const aceptados: any[] = [];
+    const resenas: ResenaOrigen[] = [];
+    candidatos.each((_, el) => {
+      const $el = $(el);
+      // Si un ancestro de este elemento ya fue aceptado como reseña, este
+      // es solo una sub-parte de esa misma reseña (ver comentario arriba).
+      const yaCubiertoPorUnAncestro = $el
+        .parents()
+        .toArray()
+        .some((ancestro) => aceptados.includes(ancestro));
+      if (yaCubiertoPorUnAncestro) return;
+
+      const texto = $el
+        .clone()
+        .find('img, button, svg, script, style')
+        .remove()
+        .end()
+        .text()
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (texto.length < 15 || texto.length > 1500) return;
+      // Proporción de letras sobre el total SIN contar espacios (incluye
+      // tildes/ñ) — descarta líneas que son más número/símbolo que palabra
+      // (resúmenes de calificación tipo "4.6 de 5 - 128 reseñas", precios,
+      // contadores), que suelen quedar atrapadas por el mismo selector.
+      // Contar los espacios como "letra" de más (como en una primera
+      // versión de este filtro) dejaba pasar ese mismo ejemplo por poco —
+      // probado con un caso sintético parecido antes de este ajuste.
+      const sinEspacios = texto.replace(/\s+/g, '');
+      const soloLetras = sinEspacios.replace(/[^a-zA-ZÀ-ÿ]/g, '');
+      if (sinEspacios.length === 0 || soloLetras.length < sinEspacios.length * 0.7) return;
+
+      aceptados.push(el);
+      const fotos = $el
+        .find('img')
+        .map((__, img) => $(img).attr('src'))
+        .get()
+        .filter((src): src is string => !!src && !/icon|sprite|logo/i.test(src))
+        .slice(0, 5);
+      // Autor y calificación quedan sin completar a propósito acá (ver
+      // aviso grande arriba) — filtrarYOrdenarResenasPositivas ya sabe
+      // tratar una calificación undefined como "la dejo pasar".
+      resenas.push({ texto, fotos, fotoUrl: fotos[0] });
+    });
+    // Margen extra sobre MAX_RESENAS_REALES: como esta heurística puede
+    // traer algún falso positivo, se recorta más adelante en el mismo lugar
+    // donde ya se recorta AliExpress/Amazon (filtrarYOrdenarResenasPositivas).
+    return resenas.slice(0, this.MAX_RESENAS_REALES * 2);
   }
 
   // Filtro/orden compartido: lo usa tanto pilotoAutomatico() al armar la
