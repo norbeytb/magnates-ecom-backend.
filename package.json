@@ -13,10 +13,12 @@
     "@nestjs/core": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
     "bcryptjs": "^3.0.3",
+    "cheerio": "^1.0.0",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^9.1.0",
     "opentype.js": "2.0.0",
     "pg": "^8.11.3",
+    "puppeteer": "^25.0.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
     "sharp": "0.33.5"
