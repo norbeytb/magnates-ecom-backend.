@@ -88,7 +88,7 @@ import { LandingsService, ItemLanding } from './landings.service';
 import { LIBERATION_SANS_REGULAR_BASE64, LIBERATION_SANS_BOLD_BASE64 } from './fuentes-liberation';
 
 // Declaraciones mínimas para poder tipar el código que corre DENTRO del
-// navegador headless (page.evaluate en leerHtmlRenderizadoDeTemu, más
+// navegador headless (page.evaluate en leerHtmlRenderizadoConNavegador, más
 // abajo) sin necesitar agregar la librería "dom" al tsconfig de este
 // backend (que es un proyecto de servidor, sin DOM real — agregarla ahí
 // solo por esto sería un cambio de configuración de más). "any" a
@@ -837,7 +837,15 @@ export class ImportarProductoService {
         : plataforma === 'amazon'
           ? this.scrapearResenasAmazonDeHtml(datos.html)
           : plataforma === 'temu'
-            ? await this.scrapearResenasTemuConNavegador(url)
+            ? // Fix 19/09: si scrapearUrlProducto() ya tuvo que abrir un
+              // navegador de verdad para conseguir título/fotos (el caso más
+              // común en Temu), ESE MISMO html renderizado ya sirve para
+              // buscar reseñas — evita abrir un segundo Chromium. Solo si
+              // el pedido simple alcanzó para el título/fotos (raro en
+              // Temu, pero no imposible) se abre un navegador aparte acá.
+              datos.htmlRenderizadoConNavegador
+              ? this.extraerResenasHeuristicasDelHtmlRenderizado(datos.html)
+              : await this.scrapearResenasTemuConNavegador(url)
             : [];
     // Mismo filtro/orden que se le va a aplicar en pilotoAutomatico — se
     // hace ACÁ también para que lo que el estudiante vea para revisar sea
@@ -849,7 +857,7 @@ export class ImportarProductoService {
     // en Amazon, las reseñas) — no hace falta cargarlo en memoria más
     // tiempo del necesario, así que no se guarda en ningún lado de acá en
     // adelante (ni en el Map de contexto pendiente ni en el resultado).
-    const { html: _html, ...datosSinHtml } = datos;
+    const { html: _html, htmlRenderizadoConNavegador: _htmlRenderizadoConNavegador, ...datosSinHtml } = datos;
 
     if (resenasPositivas.length === 0) {
       // Sin reseñas reales que revisar — sigue de largo como siempre (IA
@@ -969,6 +977,12 @@ export class ImportarProductoService {
     // página al sitio de origen una segunda vez (Amazon en particular
     // bloquea más fácil con pedidos repetidos seguidos).
     html: string;
+    // true si `html` de arriba vino de renderizarPaginaConNavegador() (el
+    // pedido simple no encontró título/fotos) en vez del fetch simple —
+    // 19/09, ver el fix más abajo. procesarImportacionPorLink lo usa para
+    // no abrir un SEGUNDO Chromium buscando reseñas de Temu cuando ya tiene
+    // el HTML renderizado a mano.
+    htmlRenderizadoConNavegador: boolean;
   }> {
     let html: string;
     try {
@@ -989,6 +1003,68 @@ export class ImportarProductoService {
       );
     }
 
+    let datos = this.extraerDatosEstructuradosDeHtml(html);
+    let htmlRenderizadoConNavegador = false;
+
+    // Fix 19/09 ("pasa lo mismo con amazon"/"...para amazon y temu"): el
+    // pedido simple de arriba (fetch, sin ejecutar JavaScript) puede volver
+    // sin título ni fotos por dos motivos bien distintos —
+    //  (a) el sitio arma el contenido recién con JavaScript en el navegador
+    //      (le pasa siempre a Temu, que es una SPA), o
+    //  (b) el sitio detectó el pedido como un bot y devolvió una página de
+    //      verificación en vez del producto (le pasa más a Amazon).
+    // En los dos casos, un navegador de verdad (el mismo Puppeteer que ya
+    // se usaba solo para las reseñas de Temu, ver más abajo) tiene mejores
+    // chances de traer el contenido real — así que si el pedido simple no
+    // encontró nada, se intenta UNA vez más así antes de darse por vencido.
+    // De paso, este mismo HTML ya renderizado le sirve a las reseñas reales
+    // de Temu sin tener que abrir un segundo Chromium — ver el flag
+    // htmlRenderizadoConNavegador, que usa procesarImportacionPorLink.
+    if (!datos.titulo || datos.fotos.length === 0) {
+      try {
+        const htmlRenderizado = await this.renderizarPaginaConNavegador(url);
+        const datosRenderizados = this.extraerDatosEstructuradosDeHtml(htmlRenderizado);
+        if (datosRenderizados.titulo && datosRenderizados.fotos.length > 0) {
+          html = htmlRenderizado;
+          datos = datosRenderizados;
+          htmlRenderizadoConNavegador = true;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Product Marker: el pedido simple no encontró título/fotos y tampoco se pudo abrir esa página con un navegador real (${(error as Error).message || error}).`,
+        );
+      }
+    }
+
+    if (!datos.titulo || datos.fotos.length === 0) {
+      throw new InternalServerErrorException(
+        'No se pudo encontrar el título o las fotos del producto en esa página, ni pidiéndola directo ni abriéndola con un navegador real. Puede que ese sitio haya cambiado de formato o que haya detectado el pedido como automático — probá con otro link del mismo producto, o avisame para revisarlo.',
+      );
+    }
+
+    return {
+      titulo: datos.titulo.trim().slice(0, 200),
+      descripcion: datos.descripcion.trim().slice(0, 2000),
+      fotos: datos.fotos.slice(0, 5),
+      precioOriginal: Number.isFinite(datos.precioOriginal) ? datos.precioOriginal : undefined,
+      moneda: datos.moneda,
+      html,
+      htmlRenderizadoConNavegador,
+    };
+  }
+
+  // Extrae JSON-LD Product / etiquetas og:* / precio en texto de un HTML ya
+  // descargado — separado en su propia función (19/09) para poder correrla
+  // DOS veces si hace falta: una vez sobre el HTML del pedido simple, y otra
+  // (solo si la primera no encontró título ni fotos) sobre el HTML ya
+  // renderizado por un navegador de verdad.
+  private extraerDatosEstructuradosDeHtml(html: string): {
+    titulo: string;
+    descripcion: string;
+    fotos: string[];
+    precioOriginal?: number;
+    moneda: string;
+  } {
     const jsonLd = this.extraerJsonLdDeHtml(html);
     const titulo = (jsonLd && jsonLd.name) || this.extraerMetaDeHtml(html, 'og:title') || '';
     const descripcion = (jsonLd && jsonLd.description) || this.extraerMetaDeHtml(html, 'og:description') || '';
@@ -1019,20 +1095,7 @@ export class ImportarProductoService {
       }
     }
 
-    if (!titulo || fotos.length === 0) {
-      throw new InternalServerErrorException(
-        'No se pudo encontrar el título o las fotos del producto en esa página. Puede que ese sitio necesite JavaScript para mostrar el contenido — algo que un pedido directo del servidor no ejecuta — o que haya detectado el pedido como automático.',
-      );
-    }
-
-    return {
-      titulo: titulo.trim().slice(0, 200),
-      descripcion: descripcion.trim().slice(0, 2000),
-      fotos: fotos.slice(0, 5),
-      precioOriginal: Number.isFinite(precioOriginal) ? precioOriginal : undefined,
-      moneda,
-      html,
-    };
+    return { titulo, descripcion, fotos, precioOriginal, moneda };
   }
 
   private extraerJsonLdDeHtml(html: string): any {
@@ -1300,30 +1363,39 @@ export class ImportarProductoService {
   // Cuidados de infraestructura (Railway tiene memoria limitada — un
   // Chromium de verdad pesa bastante más que cualquier otra cosa que hace
   // este backend):
-  //  - Esto SOLO se usa para Temu — AliExpress y Amazon siguen sin abrir
-  //    ningún navegador, así que la gran mayoría de importaciones no se ven
-  //    afectadas en velocidad ni memoria.
-  //  - navegadoresTemuEnCurso/TEMU_MAX_NAVEGADORES_CONCURRENTES: como mucho
-  //    UN Chromium abierto a la vez — si dos estudiantes importan de Temu
-  //    al mismo tiempo, el segundo se salta las reseñas reales (cae a IA)
-  //    en vez de abrir un segundo navegador y arriesgar quedarse sin
-  //    memoria en el contenedor.
-  //  - TEMU_HEADLESS_TIMEOUT_MS: límite duro de tiempo — si Temu tarda
-  //    demasiado o el navegador se cuelga, se corta solo y devuelve vacío,
-  //    nunca deja la importación completa esperando para siempre.
+  //  - Actualizado 19/09: esto ya NO se usa solo para Temu — desde el fix
+  //    de "pasa lo mismo con amazon"/"...para amazon y temu", scrapearUrlProducto()
+  //    también abre este mismo navegador como último recurso para CUALQUIER
+  //    plataforma cuando el pedido simple no encuentra título ni fotos
+  //    (típicamente Amazon bloqueando el pedido, o Temu que siempre lo
+  //    necesita). Sigue siendo el caso poco común — AliExpress y la mayoría
+  //    de los productos de Amazon resuelven con el pedido simple y nunca
+  //    llegan a abrir un Chromium.
+  //  - navegadoresEnCurso/MAX_NAVEGADORES_CONCURRENTES: como mucho UN
+  //    Chromium abierto a la vez en todo el servidor — si dos estudiantes
+  //    importan al mismo tiempo y ambos necesitan el navegador, el segundo
+  //    se queda sin este recurso (ver renderizarPaginaConNavegador) en vez
+  //    de arriesgarse a abrir un segundo navegador y quedarse sin memoria
+  //    en el contenedor.
+  //  - NAVEGADOR_HEADLESS_TIMEOUT_MS: límite duro de tiempo — si la página
+  //    tarda demasiado o el navegador se cuelga, se corta solo, nunca deja
+  //    la importación completa esperando para siempre.
   //  - El navegador SIEMPRE se cierra (bloque finally), pase lo que pase.
-  private navegadoresTemuEnCurso = 0;
-  private readonly TEMU_MAX_NAVEGADORES_CONCURRENTES = 1;
-  private readonly TEMU_HEADLESS_TIMEOUT_MS = 25000;
+  private navegadoresEnCurso = 0;
+  private readonly MAX_NAVEGADORES_CONCURRENTES = 1;
+  private readonly NAVEGADOR_HEADLESS_TIMEOUT_MS = 25000;
 
-  private async scrapearResenasTemuConNavegador(url: string): Promise<ResenaOrigen[]> {
-    if (this.navegadoresTemuEnCurso >= this.TEMU_MAX_NAVEGADORES_CONCURRENTES) {
-      this.logger.warn(
-        'Product Marker: ya hay un navegador headless de Temu en curso — esta importación se salta las reseñas reales para no abrir un segundo Chromium (protege la memoria del servidor).',
-      );
-      return [];
+  // Abre un Chromium real, deja que renderice `url` con su JavaScript (ver
+  // leerHtmlRenderizadoConNavegador) y devuelve el HTML resultante — usado
+  // tanto por scrapearUrlProducto() (fallback de título/fotos, 19/09) como
+  // por scrapearResenasTemuConNavegador() (reseñas de Temu, 18/09 (6)).
+  // Tira una excepción si no se pudo (sin cupo de concurrencia, timeout, o
+  // cualquier error de Puppeteer) — cada llamador decide qué hacer con eso.
+  private async renderizarPaginaConNavegador(url: string): Promise<string> {
+    if (this.navegadoresEnCurso >= this.MAX_NAVEGADORES_CONCURRENTES) {
+      throw new Error('ya hay un navegador headless en curso en el servidor — se salta para no abrir un segundo Chromium');
     }
-    this.navegadoresTemuEnCurso++;
+    this.navegadoresEnCurso++;
     let browser: Browser | null = null;
     let timeoutId: NodeJS.Timeout | undefined;
     try {
@@ -1335,39 +1407,47 @@ export class ImportarProductoService {
         ignoreDefaultArgs: ['--disable-extensions'],
       });
       const b = browser;
-      const html = await new Promise<string>((resolve, reject) => {
+      return await new Promise<string>((resolve, reject) => {
         timeoutId = setTimeout(
           () => reject(new Error('tiempo de espera agotado leyendo la página con el navegador')),
-          this.TEMU_HEADLESS_TIMEOUT_MS,
+          this.NAVEGADOR_HEADLESS_TIMEOUT_MS,
         );
-        this.leerHtmlRenderizadoDeTemu(b, url).then(resolve, reject);
+        this.leerHtmlRenderizadoConNavegador(b, url).then(resolve, reject);
       });
+    } finally {
+      clearTimeout(timeoutId);
+      if (browser) await browser.close().catch(() => {});
+      this.navegadoresEnCurso--;
+    }
+  }
+
+  private async scrapearResenasTemuConNavegador(url: string): Promise<ResenaOrigen[]> {
+    try {
+      const html = await this.renderizarPaginaConNavegador(url);
       return this.extraerResenasHeuristicasDelHtmlRenderizado(html);
     } catch (error) {
       this.logger.warn(
         `Product Marker: no se pudieron leer las reseñas reales de Temu con el navegador headless (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
       );
       return [];
-    } finally {
-      clearTimeout(timeoutId);
-      if (browser) await browser.close().catch(() => {});
-      this.navegadoresTemuEnCurso--;
     }
   }
 
-  // Abre la página de Temu de verdad, deja correr su JavaScript, intenta
-  // (sin garantías) hacer clic en una pestaña/sección de reseñas si existe
-  // como elemento aparte, y hace scroll varias veces para disparar la carga
-  // perezosa de la lista — devuelve el HTML ya renderizado para que
-  // extraerResenasHeuristicasDelHtmlRenderizado() lo analice con cheerio
-  // (más simple que seguir usando la API de Puppeteer para cada campo).
-  private async leerHtmlRenderizadoDeTemu(browser: Browser, url: string): Promise<string> {
+  // Abre la página de verdad, deja correr su JavaScript, intenta (sin
+  // garantías) hacer clic en una pestaña/sección de reseñas si existe como
+  // elemento aparte, y hace scroll varias veces para disparar la carga
+  // perezosa de la lista — devuelve el HTML ya renderizado. Nació pensada
+  // solo para Temu (de ahí el intento de abrir reseñas), pero desde 19/09
+  // también la usa scrapearUrlProducto() como fallback de título/fotos para
+  // cualquier plataforma — el intento de clic en "reseñas" no molesta ahí,
+  // simplemente no encuentra nada para clickear y sigue de largo.
+  private async leerHtmlRenderizadoConNavegador(browser: Browser, url: string): Promise<string> {
     const page = await browser.newPage();
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     );
     await page.setViewport({ width: 1280, height: 1600 });
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: this.TEMU_HEADLESS_TIMEOUT_MS });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
 
     try {
       await page.evaluate(() => {
