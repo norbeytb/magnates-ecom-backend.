@@ -1,42 +1,16 @@
-# nixpacks.toml
-#
-# Archivo NUEVO — va en la RAÍZ del repo (al lado de package.json, NO dentro
-# de src/). Railway arma el contenedor del backend con Nixpacks (detecta que
-# es un proyecto Node solo, sin este archivo) y por defecto esa imagen NO
-# trae ninguna fuente de letra instalada ni el paquete "fontconfig" que las
-# administra.
-#
-# Por qué hace falta esto (17/09): la sección de Testimonios con reseñas
-# reales arma una imagen con la librería "sharp" dibujando texto (nombre,
-# estrellas, el comentario) directo sobre un SVG. Sin ninguna fuente
-# instalada en el contenedor, ese texto sale invisible o como cuadraditos
-# vacíos ("tofu") en vez de letras — exactamente lo que Norbey vio en sus
-# capturas. En la máquina donde se probó y verificó el código antes de
-# entregarlo SÍ había fuentes instaladas de por sí, por eso ahí se veía
-# perfecto y solo se notó el problema ya en producción (Railway).
-#
-# Esto le pide a Railway que, al armar el contenedor, instale con apt-get
-# (aptPkgs = paquetes de Debian/Ubuntu, lo que usa Nixpacks por debajo) el
-# manejador de fuentes (fontconfig) más dos familias de fuentes gratuitas y
-# de uso libre: DejaVu (la que se usó para probar este mismo fix) y
-# Liberation (métricamente compatible con Arial, que es la fuente que pide
-# el código de Testimonios). Con cualquiera de las dos alcanza para que el
-# texto se dibuje bien — se instalan las dos por las dudas.
-#
-# Ronda 2 (mismo día, tras probar en Railway): instalar el paquete NO fue
-# suficiente — en los logs apareció "Fontconfig error: Cannot load default
-# config file: No such file: (null)". Nixpacks arma el contenedor con Nix
-# (no con Debian puro), y ahí el fontconfig que trae Node por Nix no
-# encuentra sola la ruta de configuración de fuentes que dejó el apt-get de
-# arriba. Se agregan dos cosas más para forzarlo:
-#  1) fc-cache -f: reconstruye a mano el índice de fuentes después de
-#     instalarlas (a veces no se genera solo).
-#  2) FONTCONFIG_PATH=/etc/fonts: le dice explícitamente a cualquier
-#     programa (incluida la librería que usa "sharp" para dibujar texto)
-#     dónde está la configuración real de fuentes, en vez de dejar que lo
-#     adivine y encuentre "(null)".
 [phases.setup]
-aptPkgs = ["fontconfig", "fonts-dejavu-core", "fonts-liberation"]
+# Reconstruido a partir de las rondas anteriores (fuentes para Testimonios,
+# 17/09) + la lista nueva que pide Puppeteer para poder correr un Chromium
+# de verdad en Railway (18/09, ronda 6 — reseñas reales de Temu). Si tu
+# nixpacks.toml real tenía algo más que esto (otro aptPkg, otro comando),
+# avisame antes de reemplazarlo para no perderlo.
+aptPkgs = [
+  "fontconfig", "fonts-dejavu-core", "fonts-liberation",
+  "libappindicator3-1", "libasound2", "libatk-bridge2.0-0", "libatk1.0-0",
+  "libgbm1", "libgtk-3-0", "libnspr4", "libnss3", "libx11-xcb1",
+  "libxcomposite1", "libxcursor1", "libxdamage1", "libxfixes3", "libxi6",
+  "libxrandr2", "libxss1", "libxtst6", "xdg-utils"
+]
 cmds = ["fc-cache -f -v"]
 
 [variables]
