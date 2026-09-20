@@ -1028,6 +1028,38 @@ export class ImportarProductoService {
           html = htmlRenderizado;
           datos = datosRenderizados;
           htmlRenderizadoConNavegador = true;
+        } else {
+          // Fix 20/09 (Norbey probó Temu real y esto falló SIN dejar
+          // ningún rastro en los logs de Railway — imposible de
+          // diagnosticar a distancia): el navegador SÍ pudo abrir la
+          // página sin tirar ningún error, pero igual no encontró título ni
+          // fotos con JSON-LD/etiquetas og:* — hay SPA que nunca ponen esas
+          // etiquetas (solo sirven para compartir en redes, y no todo sitio
+          // se molesta). Antes de rendirse del todo, último intento con
+          // datos MENOS confiables pero que casi cualquier página tiene
+          // aunque no tenga og:*: el <title> de la pestaña del navegador
+          // (extraerTituloDeEtiquetaTitle) y una heurística amplia sobre
+          // las <img> de la página, descartando iconos/logos obvios
+          // (extraerFotosHeuristicasDeHtml — mismo espíritu que el filtro
+          // de fotos de reseñas de Temu más abajo).
+          const tituloDeRespaldo = datosRenderizados.titulo || this.extraerTituloDeEtiquetaTitle(htmlRenderizado);
+          const fotosDeRespaldo =
+            datosRenderizados.fotos.length > 0 ? datosRenderizados.fotos : this.extraerFotosHeuristicasDeHtml(htmlRenderizado);
+          if (tituloDeRespaldo && fotosDeRespaldo.length > 0) {
+            html = htmlRenderizado;
+            datos = { ...datosRenderizados, titulo: tituloDeRespaldo, fotos: fotosDeRespaldo };
+            htmlRenderizadoConNavegador = true;
+            this.logger.warn(
+              `Product Marker: ${url} no tenía JSON-LD ni etiquetas og:* ni con navegador — se usó un respaldo heurístico (título de la pestaña + primeras fotos "reales" de la página). Puede traer un título con menos formato o fotos que no sean las mejores — avisar a Norbey si pasa seguido para revisar mejor.`,
+            );
+          } else {
+            // Ni el respaldo heurístico encontró nada — se deja constancia
+            // con pistas concretas para la próxima calibración manual.
+            const cantidadDeImagenes = (htmlRenderizado.match(/<img[^>]*>/gi) || []).length;
+            this.logger.warn(
+              `Product Marker: se abrió un navegador real para ${url} y renderizó la página sin errores, pero no encontró título/fotos ni con JSON-LD/og:* ni con el respaldo heurístico — <title> de la pestaña: "${tituloDeRespaldo || '(vacío)'}", cantidad de <img> en la página: ${cantidadDeImagenes}. Hace falta calibrar la extracción para este sitio con un caso real (avisar a Norbey).`,
+            );
+          }
         }
       } catch (error) {
         this.logger.warn(
@@ -1132,6 +1164,53 @@ export class ImportarProductoService {
     const valor = parseFloat(match[2].replace(',', '.'));
     const moneda = match[1].includes('€') ? 'EUR' : 'USD';
     return { valor, moneda };
+  }
+
+  // Último respaldo de título (20/09, ver el fix grande en scrapearUrlProducto
+  // sobre por qué hace falta): el <title> de la pestaña del navegador es de
+  // las pocas cosas que prácticamente cualquier página pone, tenga o no
+  // etiquetas og:*. Muchos sitios le agregan el nombre de la tienda separado
+  // por un guion medio o una barra ("Producto X - Temu", "Temu | Producto
+  // X") — se asume que la parte más larga es el nombre del producto (el
+  // nombre de la tienda sola siempre va a ser más corto) y se descarta el
+  // resto.
+  private extraerTituloDeEtiquetaTitle(html: string): string {
+    const match = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    if (!match) return '';
+    const partes = match[1]
+      .split(/\s[-|]\s/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (partes.length === 0) return '';
+    return partes.reduce((masLargo, actual) => (actual.length > masLargo.length ? actual : masLargo), partes[0]);
+  }
+
+  // Último respaldo de fotos (20/09, mismo caso que el título de arriba):
+  // heurística amplia sobre TODAS las <img> de la página ya renderizada,
+  // descartando lo que se vea claramente como ícono/logo/interfaz en vez de
+  // foto de producto — a propósito NO intenta adivinar cuál es "la mejor"
+  // (ordenar por tamaño, etc.) porque sin un caso real de Temu para calibrar
+  // contra, cualquier criterio más fino es puro adivine; se queda con las
+  // primeras 5 que pasan el filtro, en el orden en que aparecen en la
+  // página (la foto principal casi siempre está entre las primeras).
+  private extraerFotosHeuristicasDeHtml(html: string): string[] {
+    const $ = cheerio.load(html);
+    const fotos: string[] = [];
+    const vistas = new Set<string>();
+    $('img').each((_, el) => {
+      if (fotos.length >= 5) return;
+      const $img = $(el);
+      const src = $img.attr('src') || $img.attr('data-src') || $img.attr('data-lazy-src') || '';
+      if (!/^https?:\/\//i.test(src) || vistas.has(src)) return;
+      const claseOId = `${$img.attr('class') || ''} ${$img.attr('id') || ''} ${src}`.toLowerCase();
+      if (/icon|sprite|logo|avatar|placeholder|loading|blank\.gif|1x1/.test(claseOId)) return;
+      const ancho = parseInt($img.attr('width') || '0', 10);
+      const alto = parseInt($img.attr('height') || '0', 10);
+      if ((ancho && ancho < 80) || (alto && alto < 80)) return;
+      vistas.add(src);
+      fotos.push(src);
+    });
+    return fotos;
   }
 
   // Reseñas reales para el módulo "Product Marker" del taller (pedido 18/09,
