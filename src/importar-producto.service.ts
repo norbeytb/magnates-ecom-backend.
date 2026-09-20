@@ -96,6 +96,7 @@ import { LIBERATION_SANS_REGULAR_BASE64, LIBERATION_SANS_BOLD_BASE64 } from './f
 // necesita poder compilar.
 declare const document: any;
 declare const window: any;
+declare const navigator: any;
 
 export type PlataformaOrigen = 'aliexpress' | 'amazon' | 'temu';
 
@@ -1520,12 +1521,38 @@ export class ImportarProductoService {
   // también la usa scrapearUrlProducto() como fallback de título/fotos para
   // cualquier plataforma — el intento de clic en "reseñas" no molesta ahí,
   // simplemente no encuentra nada para clickear y sigue de largo.
+  // Fix 20/09: confirmado con un caso real (log de Railway) que Amazon le
+  // muestra al navegador headless una página genérica "Amazon.com" sin
+  // ninguna foto — la firma típica de una pantalla de verificación anti-bot
+  // ("¿sos un robot?"), no del producto de verdad. Un Chromium manejado por
+  // Puppeteer "de fábrica" deja pistas fáciles de detectar para cualquier
+  // sitio con un anti-bot medianamente serio (navigator.webdriver en true,
+  // falta de navigator.plugins/window.chrome que sí tiene un Chrome de
+  // verdad, etc.) — estos son los parches más conocidos y livianos para
+  // disimular eso, SIN agregar ninguna librería nueva a package.json.
+  // Aviso importante: esto es un intento razonable, no una garantía —
+  // Amazon en particular es agresivo detectando esto por varios lados a la
+  // vez (huella del navegador, comportamiento, posiblemente hasta la IP del
+  // servidor de Railway) y puede seguir bloqueando igual. Si después de
+  // este cambio Amazon sigue devolviendo la misma pantalla genérica, hace
+  // falta algo más caro (ej. un servicio de proxies de verdad) — no alcanza
+  // con más parches de este estilo.
+  private async aplicarSigilosBasicos(page: any): Promise<void> {
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      if (!window.chrome) window.chrome = { runtime: {} };
+      Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es', 'en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    });
+  }
+
   private async leerHtmlRenderizadoConNavegador(browser: Browser, url: string): Promise<string> {
     const page = await browser.newPage();
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     );
     await page.setViewport({ width: 1280, height: 1600 });
+    await this.aplicarSigilosBasicos(page);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
 
     try {
