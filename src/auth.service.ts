@@ -259,6 +259,42 @@ export class AuthService implements OnModuleInit {
     return { ...usuario, token: this.firmarToken(usuario) };
   }
 
+  // Usado por JwtAuthGuard en CADA pedido protegido (no solo al iniciar
+  // sesión) — así, si un administrador bloquea a alguien mientras esa
+  // persona ya tiene una sesión abierta (el token dura 30 días), pierde el
+  // acceso al toque en el siguiente pedido que haga, en vez de tener que
+  // esperar a que ese token venza solo.
+  async verificarNoBloqueado(usuarioId: number): Promise<void> {
+    if (!this.pool) return;
+    const resultado = await this.pool.query(`SELECT bloqueado FROM usuarios WHERE id = $1`, [usuarioId]);
+    if (resultado.rows[0]?.bloqueado) {
+      throw new ForbiddenException('Tu cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+    }
+  }
+
+  // Usado por AuthGuard en cada pedido protegido: valida la firma del token
+  // (y que no haya vencido) y devuelve quién es. Si el token es inválido o
+  // vencido, lanza UnauthorizedException.
+  verificarToken(token: string): UsuarioPublico {
+    try {
+      const payload = jwt.verify(token, this.jwtSecret) as jwt.JwtPayload;
+      const email = String(payload.email || '');
+      return {
+        id: Number(payload.sub),
+        email,
+        nombre: payload.nombre ? String(payload.nombre) : undefined,
+        apellido: payload.apellido ? String(payload.apellido) : undefined,
+        // A propósito NO se lee de payload: se recalcula siempre contra el
+        // ADMIN_EMAILS actual (ver la nota arriba del todo del archivo), así
+        // un token viejo nunca puede seguir dando acceso de administrador
+        // después de que se lo saque de esa variable en Railway.
+        esAdmin: this.esAdminEmail(email),
+      };
+    } catch {
+      throw new UnauthorizedException('Sesión inválida o vencida — volvé a iniciar sesión.');
+    }
+  }
+
   // ---------------- INICIO DE SESIÓN ÚNICO (SSO) CON MEC CONTROL ----------------
   // Dos pasos, dos endpoints (ver auth.controller.ts), pensados para que el
   // secreto compartido NUNCA pase por el navegador del estudiante:
