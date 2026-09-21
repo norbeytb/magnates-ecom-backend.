@@ -50,11 +50,22 @@
 //                    al panel de administración (ver todos los usuarios y
 //                    cambiarles la contraseña a mano). Sin esto configurado,
 //                    nadie tiene acceso de administrador, ni siquiera vos.
+//   SSO_SHARED_SECRET — texto largo y aleatorio, el MISMO valor que se pone
+//                    del lado de MEC Control (variable de entorno ahí con
+//                    el mismo nombre). Es lo que le permite a MEC Control
+//                    pedir un "pase" de inicio de sesión único para uno de
+//                    sus usuarios — ver generarPaseSso()/entrarConPase() más
+//                    abajo. Sin esta variable configurada, ese camino queda
+//                    cerrado del todo (no hay clave de emergencia acá: a
+//                    diferencia de JWT_SECRET, dejar esto abierto sin
+//                    querer significaría que cualquiera podría loguearse
+//                    como cualquier correo).
 
 import { ConflictException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { Pool } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 
 export interface UsuarioPublico {
   id: number;
@@ -120,6 +131,26 @@ export class AuthService implements OnModuleInit {
 
   private esAdminEmail(email: string): boolean {
     return this.adminEmails.includes(this.normalizarEmail(email));
+  }
+
+  // Compara el secreto que mandó MEC Control contra SSO_SHARED_SECRET en
+  // tiempo constante (crypto.timingSafeEqual) — comparar con "===" filtraría
+  // de a poquito, por cuánto tarda la comparación, cuántos caracteres
+  // acertó quien intenta adivinar el secreto. Sin la variable configurada,
+  // esto SIEMPRE rechaza (a propósito: ver la nota de SSO_SHARED_SECRET
+  // arriba del todo del archivo).
+  private compararSecretoSso(recibido: string): boolean {
+    const esperado = process.env.SSO_SHARED_SECRET;
+    if (!esperado) {
+      this.logger.warn('SSO_SHARED_SECRET no está configurada — se rechaza cualquier pedido de inicio de sesión único hasta que se configure.');
+      return false;
+    }
+    const bufEsperado = Buffer.from(esperado);
+    const bufRecibido = Buffer.from(String(recibido || ''));
+    // timingSafeEqual exige el mismo largo en los dos buffers, si no explota
+    // — con longitudes distintas ya sabemos que no coinciden.
+    if (bufEsperado.length !== bufRecibido.length) return false;
+    return crypto.timingSafeEqual(bufEsperado, bufRecibido);
   }
 
   async onModuleInit() {
@@ -228,40 +259,104 @@ export class AuthService implements OnModuleInit {
     return { ...usuario, token: this.firmarToken(usuario) };
   }
 
-  // Usado por JwtAuthGuard en CADA pedido protegido (no solo al iniciar
-  // sesión) — así, si un administrador bloquea a alguien mientras esa
-  // persona ya tiene una sesión abierta (el token dura 30 días), pierde el
-  // acceso al toque en el siguiente pedido que haga, en vez de tener que
-  // esperar a que ese token venza solo.
-  async verificarNoBloqueado(usuarioId: number): Promise<void> {
-    if (!this.pool) return;
-    const resultado = await this.pool.query(`SELECT bloqueado FROM usuarios WHERE id = $1`, [usuarioId]);
-    if (resultado.rows[0]?.bloqueado) {
-      throw new ForbiddenException('Tu cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+  // ---------------- INICIO DE SESIÓN ÚNICO (SSO) CON MEC CONTROL ----------------
+  // Dos pasos, dos endpoints (ver auth.controller.ts), pensados para que el
+  // secreto compartido NUNCA pase por el navegador del estudiante:
+  //
+  //   1. generarPaseSso(): lo llama el SERVIDOR de MEC Control (nunca un
+  //      navegador) con el correo del usuario logueado ahí + el secreto
+  //      compartido. Devuelve un "pase" (un JWT que vence en apenas 60
+  //      segundos) — tan corto a propósito, porque solo tiene que sobrevivir
+  //      el viaje de "MEC Control lo pide" a "el navegador lo canjea",
+  //      nada más.
+  //
+  //   2. entrarConPase(): lo llama el NAVEGADOR del estudiante (el taller ya
+  //      trae este código, ver "?pase=" en taller-generador-landing.html),
+  //      con el pase que acaba de recibir en la URL. Lo canjea por una
+  //      sesión normal de 30 días, igual que un login de toda la vida.
+
+  async generarPaseSso(email: string, secretoRecibido: string): Promise<{ pase: string }> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('El inicio de sesión único no está disponible: falta configurar la base de datos en el backend.');
     }
+    if (!this.compararSecretoSso(secretoRecibido)) {
+      throw new UnauthorizedException('Secreto de inicio de sesión único inválido.');
+    }
+    const emailNormalizado = this.normalizarEmail(email);
+    if (!emailNormalizado || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalizado)) {
+      throw new ConflictException('Ese correo no parece válido.');
+    }
+
+    let fila = (
+      await this.pool.query(
+        `SELECT id, email, nombre, apellido, bloqueado FROM usuarios WHERE email = $1`,
+        [emailNormalizado],
+      )
+    ).rows[0];
+
+    if (!fila) {
+      // Cuenta nueva e independiente, con una contraseña aleatoria que nadie
+      // necesita conocer — por este camino nunca se entra escribiendo una
+      // contraseña, solo con el pase. Si alguna vez esa persona quisiera
+      // entrar acá directo (sin pasar por MEC Control), tendría que usar
+      // "¿Olvidaste tu contraseña?" (manual, ver la nota grande arriba del
+      // archivo) para ponerle una.
+      const passwordAleatoria = crypto.randomBytes(24).toString('hex');
+      const passwordHash = await bcrypt.hash(passwordAleatoria, 10);
+      fila = (
+        await this.pool.query(
+          `INSERT INTO usuarios (email, password_hash) VALUES ($1, $2) RETURNING id, email, nombre, apellido, bloqueado`,
+          [emailNormalizado, passwordHash],
+        )
+      ).rows[0];
+      this.logger.log(`Cuenta creada automáticamente por inicio de sesión único (MEC Control): ${fila.email} (id=${fila.id}).`);
+    }
+
+    if (fila.bloqueado) {
+      throw new ForbiddenException('Esta cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+    }
+
+    // "tipo: pase_sso" es lo que distingue este token de uno normal de 30
+    // días — entrarConPase() de abajo lo exige para no aceptar por error un
+    // token de sesión común como si fuera un pase.
+    const pase = jwt.sign(
+      { sub: fila.id, email: fila.email, tipo: 'pase_sso' },
+      this.jwtSecret,
+      { expiresIn: '60s' },
+    );
+    return { pase };
   }
 
-  // Usado por AuthGuard en cada pedido protegido: valida la firma del token
-  // (y que no haya vencido) y devuelve quién es. Si el token es inválido o
-  // vencido, lanza UnauthorizedException.
-  verificarToken(token: string): UsuarioPublico {
-    try {
-      const payload = jwt.verify(token, this.jwtSecret) as jwt.JwtPayload;
-      const email = String(payload.email || '');
-      return {
-        id: Number(payload.sub),
-        email,
-        nombre: payload.nombre ? String(payload.nombre) : undefined,
-        apellido: payload.apellido ? String(payload.apellido) : undefined,
-        // A propósito NO se lee de payload: se recalcula siempre contra el
-        // ADMIN_EMAILS actual (ver la nota arriba del todo del archivo), así
-        // un token viejo nunca puede seguir dando acceso de administrador
-        // después de que se lo saque de esa variable en Railway.
-        esAdmin: this.esAdminEmail(email),
-      };
-    } catch {
-      throw new UnauthorizedException('Sesión inválida o vencida — volvé a iniciar sesión.');
+  async entrarConPase(pase: string): Promise<SesionResultado> {
+    if (!this.pool) {
+      throw new InternalServerErrorException('El inicio de sesión único no está disponible: falta configurar la base de datos en el backend.');
     }
+    let payload: jwt.JwtPayload;
+    try {
+      payload = jwt.verify(String(pase || ''), this.jwtSecret) as jwt.JwtPayload;
+    } catch {
+      throw new UnauthorizedException('Pase inválido o vencido — volvé a entrar desde MEC Control.');
+    }
+    // Sin este chequeo, un token normal de 30 días (reenviado por error, o
+    // robado) también pasaría jwt.verify() y quedaría canjeado acá como si
+    // fuera un pase — exigir "tipo: pase_sso" cierra esa puerta.
+    if (payload.tipo !== 'pase_sso') {
+      throw new UnauthorizedException('Ese enlace no es un pase de inicio de sesión único válido.');
+    }
+    const resultado = await this.pool.query(
+      `SELECT id, email, nombre, apellido, bloqueado FROM usuarios WHERE id = $1`,
+      [Number(payload.sub)],
+    );
+    const fila = resultado.rows[0];
+    if (!fila) {
+      throw new NotFoundException('La cuenta de este pase ya no existe.');
+    }
+    if (fila.bloqueado) {
+      throw new ForbiddenException('Esta cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
+    }
+    const usuario: UsuarioPublico = { id: fila.id, email: fila.email, nombre: fila.nombre || undefined, apellido: fila.apellido || undefined, esAdmin: this.esAdminEmail(fila.email) };
+    this.logger.log(`Inicio de sesión único (MEC Control) para ${usuario.email} (id=${usuario.id}).`);
+    return { ...usuario, token: this.firmarToken(usuario) };
   }
 
   // ---------------- PANEL DE ADMINISTRACIÓN ----------------
