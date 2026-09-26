@@ -1540,7 +1540,143 @@ export class ImportarProductoService {
       false,
     );
     if (resenasDePagina.length > 0) return resenasDePagina;
-    return this.scrapearResenasAmazonDePaginaDedicada(url);
+    const resenasDePaginaDedicada = await this.scrapearResenasAmazonDePaginaDedicada(url);
+    if (resenasDePaginaDedicada.length > 0) return resenasDePaginaDedicada;
+    return this.scrapearResenasAmazonCarruselDeFotos(url);
+  }
+
+  // Fix 26/09 (tercera vuelta, calibrado con capturas reales que mandó
+  // Norbey — clic derecho → Inspeccionar sobre la ventana real): en esta
+  // página el widget de "fotos de reseñas" es un carrusel de miniaturas
+  // clicables. El nombre, la calificación, el texto completo y la foto
+  // grande de cada reseña NO están en el HTML de la página normal — solo
+  // aparecen DESPUÉS de hacer clic en la miniatura, en una ventana
+  // emergente armada con JavaScript. Por eso esto necesita un navegador de
+  // verdad haciendo clics, no alcanza con leer HTML ya bajado (a diferencia
+  // de scrapearResenasAmazonDeHtml).
+  //
+  // Selectores elegidos a propósito ESTABLES — Amazon arma este widget con
+  // clases con un hash de build (ej. "_Y3Itb_cr-title_3bWqW", visto en la
+  // captura real) que puede cambiar en cualquier redeploy de su frontend,
+  // así que NINGUNO de esos se usa acá. En cambio:
+  //  - [data-csa-c-content-id*="customerReviews-media-image"]: identifica
+  //    cada tarjeta del carrusel (confirmado real, no hasheado).
+  //  - .a-profile-name: nombre del comprador — clase genérica que Amazon
+  //    usa en todo el sitio, no solo en este widget.
+  //  - una clase que empiece con "a-star-mini-" trae el número de
+  //    estrellas pegado al final (ej. "a-star-mini-5") — mismo patrón
+  //    "a-icon-star"/"a-star-N" que usa Amazon en el resto del sitio.
+  //  - [data-reviewid]: Amazon marca así tanto el título como el cuerpo del
+  //    texto de la reseña dentro de esta ventana (confirmado real) — se
+  //    juntan todos los que aparezcan como el texto final de la reseña.
+  // Si Amazon cambia también estos selectores más estables el día de
+  // mañana, esto puede volver a devolver vacío — mismo aviso de siempre:
+  // revisar acá primero, con un caso real, antes de adivinar de nuevo.
+  private async scrapearResenasAmazonCarruselDeFotos(url: string): Promise<ResenaOrigen[]> {
+    try {
+      return await this.ejecutarConNavegador(async (browser) => {
+        const page = await browser.newPage();
+        await page.setUserAgent(
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        );
+        await page.setViewport({ width: 1280, height: 1600 });
+        await this.aplicarSigilosBasicos(page);
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
+
+        const selectorBoton = '[data-csa-c-content-id*="customerReviews-media-image"] button';
+        const cantidadMiniaturas: number = await page
+          .evaluate((sel: string) => document.querySelectorAll(sel).length, selectorBoton)
+          .catch(() => 0);
+
+        const resenas: ResenaOrigen[] = [];
+        const tope = Math.min(cantidadMiniaturas, this.MAX_RESENAS_REALES);
+        for (let i = 0; i < tope; i++) {
+          try {
+            // Se vuelve a buscar la lista de botones en cada vuelta (en vez
+            // de guardar un handle viejo) por si el carrusel reordena o
+            // vuelve a dibujar el DOM entre un clic y otro.
+            const botones = await page.$$(selectorBoton);
+            if (!botones[i]) break;
+
+            // La foto de ESTA reseña se toma de la propia miniatura (de
+            // su <picture>/<source>) ANTES de abrir la ventana — en las
+            // capturas reales no se confirmó un <img> grande aparte
+            // adentro de la ventana emergente, así que es más seguro
+            // reusar esta que ya se sabe que es la correcta.
+            // Ojo: un srcset separa cada candidato con ", " (coma+espacio),
+            // pero el NOMBRE del archivo de Amazon también trae comas sin
+            // espacio (ej. "..._UC200,200_CACC,200,200_QL85_.jpg..."). Separar
+            // por una coma sola cortaba la URL a la mitad — hay que separar
+            // por ", " (con el espacio) para no confundir una cosa con la
+            // otra. Confirmado con la URL real de la captura de Norbey.
+            const fotoUrl: string | undefined = await botones[i]
+              .evaluate((btn: any) => {
+                const fuente = btn.querySelector('source[type="image/jpg"], img');
+                const atributo = fuente?.getAttribute('srcset') || fuente?.getAttribute('src') || '';
+                return atributo.split(', ')[0]?.trim().split(' ')[0] || undefined;
+              })
+              .catch(() => undefined);
+
+            await botones[i].click();
+            await page.waitForSelector('.a-profile-name', { timeout: 4000 });
+
+            const datosResena: { nombre?: string; calificacion?: number; texto: string } = await page.evaluate(() => {
+              const nombre = document.querySelector('.a-profile-name')?.textContent?.trim() || undefined;
+              const elEstrellas = document.querySelector('[class*="a-star-mini-"]');
+              const matchEstrellas = (elEstrellas?.className || '').match(/a-star-mini-(\d)/);
+              const calificacion = matchEstrellas ? parseInt(matchEstrellas[1], 10) : undefined;
+              const texto = Array.from(document.querySelectorAll('[data-reviewid]'))
+                .map((el: any) => (el.textContent || '').trim())
+                .filter(Boolean)
+                .join(' — ')
+                .replace(/\s+/g, ' ')
+                .trim();
+              return { nombre, calificacion, texto };
+            });
+
+            // Cierra la ventana antes de pasar a la siguiente miniatura —
+            // más confiable que asumir que se puede hacer clic en la
+            // miniatura de al lado mientras la ventana sigue tapando la
+            // página.
+            await page.keyboard.press('Escape').catch(() => {});
+            await new Promise((r) => setTimeout(r, 300));
+
+            if (datosResena.texto) {
+              resenas.push({
+                texto: datosResena.texto.slice(0, 1500),
+                calificacion: datosResena.calificacion,
+                autor: datosResena.nombre,
+                // Mismo truco de agrandar la miniatura que en
+                // scrapearResenasAmazonDeHtml, pero acá la URL real (ver
+                // captura de Norbey) trae un "?aicid=..." pegado DESPUÉS de
+                // ".jpg" — el patrón viejo exigía que ".jpg" fuera el final
+                // de todo el string, así que nunca matcheaba acá y la foto
+                // se quedaba en tamaño miniatura sin que nadie lo notara.
+                // Se acepta también un "?" justo después de la extensión.
+                fotoUrl: fotoUrl?.replace(/\._[A-Za-z0-9,_]+(?=\.[a-z]{3,4}(?:\?|$))/i, '._SL1200_'),
+              });
+            }
+          } catch {
+            // Esta miniatura puntual no abrió o no trajo datos legibles a
+            // tiempo — se sigue con las demás en vez de perder todo el
+            // intento por una sola que falló.
+            await page.keyboard.press('Escape').catch(() => {});
+          }
+        }
+
+        if (resenas.length === 0) {
+          this.logger.warn(
+            `Product Marker: el carrusel de fotos de reseñas de Amazon tenía ${cantidadMiniaturas} miniatura(s) pero ninguna trajo datos legibles al hacerle clic — Testimonios va a usar reseñas inventadas por IA. Puede que Amazon haya cambiado el marcado de la ventana emergente; avisar a Norbey con el link para calibrar de nuevo.`,
+          );
+        }
+        return resenas;
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Product Marker: no se pudo recorrer el carrusel de fotos de reseñas de Amazon con el navegador (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+      );
+      return [];
+    }
   }
 
   // ---------------------------------------------------------------------
