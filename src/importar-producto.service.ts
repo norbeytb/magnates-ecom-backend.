@@ -1520,6 +1520,7 @@ export class ImportarProductoService {
     );
     await page.setViewport({ width: 1280, height: 1600 });
     await this.aplicarSigilosBasicos(page);
+    await this.esperarUnRatoHumano(600, 1800);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
     try {
       await page.waitForSelector('div[data-hook="review"]', { timeout: 5000 });
@@ -1555,9 +1556,29 @@ export class ImportarProductoService {
     }
   }
 
-  // Orquesta los dos intentos de arriba: primero lo barato (lo que ya se
-  // bajó de la página del producto, sin abrir un navegador nuevo si no hace
-  // falta), y solo si eso vino vacío, el respaldo de la página dedicada.
+  // Orquesta los tres intentos: primero lo barato (lo que ya se bajó de la
+  // página del producto, sin abrir un navegador nuevo si no hace falta).
+  //
+  // Fix 26/09 (quinta vuelta — Norbey pidió seguir mejorando esto sin pagar
+  // proxies, y quedaba pendiente el riesgo de que cada importación golpee a
+  // Amazon 3-4 veces seguidas): antes, si lo barato venía vacío, se probaba
+  // SIEMPRE la página dedicada de reseñas (product-reviews) primero y el
+  // carrusel de fotos al final. En los dos intentos reales más recientes
+  // (mismo producto, ~10 minutos de diferencia) la página dedicada volvió
+  // vacía las dos veces — cero resultados hasta ahora, y cuesta una
+  // navegación completa a Amazon (241 mil caracteres de HTML cada vez). El
+  // carrusel, en cambio, es el único método confirmado contra el DOM real
+  // (capturas de Norbey con el nombre, la calificación y el texto
+  // apareciendo de verdad). Por eso ahora se prueba PRIMERO, y la página
+  // dedicada queda de ÚLTIMO recurso — y encima solo cuando el carrusel ni
+  // siquiera encontró miniaturas (osea esta página no tiene ese widget para
+  // empezar, ahí sí vale la pena el intento extra). Si el carrusel SÍ
+  // encontró miniaturas pero Amazon no dejó leer el contenido del clic (su
+  // bloqueo, no un selector roto), no tiene sentido gastarle a Amazon una
+  // cuarta llamada con la página dedicada — es la misma sesión/IP y se va a
+  // topar con el mismo bloqueo. Con esto, el caso más común (el widget
+  // existe pero el clic no trae datos, como en los dos intentos reales de
+  // hoy) pasa de 3 navegaciones a Amazon a 2.
   private async obtenerResenasAmazon(datos: { html: string; htmlRenderizadoConNavegador: boolean }, url: string): Promise<ResenaOrigen[]> {
     const resenasDePagina = this.scrapearResenasAmazonDeHtml(
       datos.html,
@@ -1565,9 +1586,12 @@ export class ImportarProductoService {
       false,
     );
     if (resenasDePagina.length > 0) return resenasDePagina;
-    const resenasDePaginaDedicada = await this.scrapearResenasAmazonDePaginaDedicada(url);
-    if (resenasDePaginaDedicada.length > 0) return resenasDePaginaDedicada;
-    return this.scrapearResenasAmazonCarruselDeFotos(url);
+
+    const { resenas: resenasDelCarrusel, huboMiniaturas } = await this.scrapearResenasAmazonCarruselDeFotos(url);
+    if (resenasDelCarrusel.length > 0) return resenasDelCarrusel;
+    if (huboMiniaturas) return [];
+
+    return this.scrapearResenasAmazonDePaginaDedicada(url);
   }
 
   // Fix 26/09 (tercera vuelta, calibrado con capturas reales que mandó
@@ -1613,7 +1637,9 @@ export class ImportarProductoService {
   // Si Amazon cambia también estos selectores más estables el día de
   // mañana, esto puede volver a devolver vacío — mismo aviso de siempre:
   // revisar acá primero, con un caso real, antes de adivinar de nuevo.
-  private async scrapearResenasAmazonCarruselDeFotos(url: string): Promise<ResenaOrigen[]> {
+  private async scrapearResenasAmazonCarruselDeFotos(
+    url: string,
+  ): Promise<{ resenas: ResenaOrigen[]; huboMiniaturas: boolean }> {
     try {
       return await this.ejecutarConNavegador(async (browser) => {
         const page = await browser.newPage();
@@ -1622,6 +1648,7 @@ export class ImportarProductoService {
         );
         await page.setViewport({ width: 1280, height: 1600 });
         await this.aplicarSigilosBasicos(page);
+        await this.esperarUnRatoHumano(600, 1800);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
 
         const selectorBoton = '[data-csa-c-content-id*="customerReviews-media-image"] button';
@@ -1707,17 +1734,31 @@ export class ImportarProductoService {
         }
 
         if (resenas.length === 0) {
-          this.logger.warn(
-            `Product Marker: el carrusel de fotos de reseñas de Amazon tenía ${cantidadMiniaturas} miniatura(s) pero ninguna trajo datos legibles al hacerle clic — Testimonios va a usar reseñas inventadas por IA. Puede que Amazon haya cambiado el marcado de la ventana emergente; avisar a Norbey con el link para calibrar de nuevo.`,
-          );
+          if (cantidadMiniaturas > 0) {
+            // Fix 26/09 (quinta vuelta): el widget SÍ está en la página
+            // (había miniaturas) pero ninguna trajo datos legibles al
+            // hacerle clic — típicamente Amazon bloqueando el contenido de
+            // la ventana emergente para esta sesión puntual, no un selector
+            // roto. En ese caso NO vale la pena gastarle a Amazon una
+            // llamada más con la página dedicada de reseñas (misma
+            // sesión/IP, mismo bloqueo esperable) — se pasa directo a las
+            // reseñas inventadas por IA.
+            this.logger.warn(
+              `Product Marker: el carrusel de fotos de reseñas de Amazon tenía ${cantidadMiniaturas} miniatura(s) pero ninguna trajo datos legibles al hacerle clic — Testimonios va a usar reseñas inventadas por IA (no se va a intentar la página dedicada, es la misma sesión y es de esperar el mismo bloqueo). Puede que Amazon haya cambiado el marcado de la ventana emergente; avisar a Norbey con el link para calibrar de nuevo si pasa seguido.`,
+            );
+          } else {
+            this.logger.warn(
+              `Product Marker: esta página de Amazon no tiene el carrusel de fotos de reseñas (0 miniaturas encontradas) — se va a intentar de respaldo con la página dedicada de reseñas (product-reviews).`,
+            );
+          }
         }
-        return resenas;
+        return { resenas, huboMiniaturas: cantidadMiniaturas > 0 };
       });
     } catch (error) {
       this.logger.warn(
-        `Product Marker: no se pudo recorrer el carrusel de fotos de reseñas de Amazon con el navegador (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+        `Product Marker: no se pudo recorrer el carrusel de fotos de reseñas de Amazon con el navegador (${(error as Error).message || error}) — se va a intentar de respaldo con la página dedicada de reseñas.`,
       );
-      return [];
+      return { resenas: [], huboMiniaturas: false };
     }
   }
 
@@ -1867,7 +1908,53 @@ export class ImportarProductoService {
       if (!window.chrome) window.chrome = { runtime: {} };
       Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es', 'en-US', 'en'] });
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      // Fix 26/09 (quinta vuelta, pedido de Norbey de seguir mejorando esto
+      // sin pagar proxies): navigator.userAgentData (Client Hints) es OTRA
+      // fuente de verdad además del header User-Agent de más abajo — varios
+      // sitios (Amazon entre ellos) la leen directo con JavaScript para
+      // chequear que coincida con lo que dice la conexión. Puppeteer la
+      // arma sola con los datos REALES del Chromium que trae empaquetado
+      // adentro, que no necesariamente es la versión "128" puesta en el
+      // User-Agent de abajo — esa mezcla rara (UA dice 128, Client Hints
+      // dice otra cosa) es una pista más de automatización. Se fuerza acá
+      // para que las dos cosas siempre coincidan.
+      if ((navigator as any).userAgentData) {
+        Object.defineProperty(navigator, 'userAgentData', {
+          get: () => ({
+            brands: [
+              { brand: 'Chromium', version: '128' },
+              { brand: 'Not;A=Brand', version: '24' },
+              { brand: 'Google Chrome', version: '128' },
+            ],
+            mobile: false,
+            platform: 'Windows',
+          }),
+        });
+      }
     });
+    // Mismo motivo que arriba: estos encabezados los manda el navegador de
+    // verdad en cada pedido (no solo algo que lee JavaScript), así que
+    // también deben coincidir con el User-Agent de abajo en vez de reflejar
+    // el Chromium real de Puppeteer.
+    await page
+      .setExtraHTTPHeaders({
+        'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        'Upgrade-Insecure-Requests': '1',
+      })
+      .catch(() => {});
+  }
+
+  // Pequeña pausa con un poco de variación al azar antes de pedirle una
+  // página a Amazon — nada de esto engaña a un sistema de detección
+  // serio, pero evitar el patrón de "pedido tras pedido sin ninguna
+  // pausa" (algo que ninguna persona real hace) es gratis y no puede
+  // empeorar las cosas.
+  private async esperarUnRatoHumano(minMs: number, maxMs: number): Promise<void> {
+    const ms = minMs + Math.random() * (maxMs - minMs);
+    await new Promise((r) => setTimeout(r, ms));
   }
 
   private async leerHtmlRenderizadoConNavegador(browser: Browser, url: string): Promise<string> {
