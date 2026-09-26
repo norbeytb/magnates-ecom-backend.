@@ -825,8 +825,14 @@ export class ImportarProductoService {
     // scrapearResenasTemuConNavegador más arriba sobre por qué esto puede
     // volver vacío en cualquier momento sin que sea un error real:
     //  - AliExpress: endpoint aparte (JS-cargado, sin él no hay reseñas).
-    //  - Amazon: se leen del MISMO html ya descargado arriba (Amazon las
-    //    trae server-side, no hace falta un segundo pedido).
+    //  - Amazon: primero se intenta con el MISMO html ya descargado arriba
+    //    (Amazon las trae server-side, casi nunca hace falta un segundo
+    //    pedido) — fix 26/09: revelar esa sección en la página del producto
+    //    depende de un scroll/clic que resultó inconsistente (el MISMO
+    //    producto dio resultados distintos en dos intentos seguidos), así
+    //    que si eso vuelve vacío se prueba una vez más con la página
+    //    dedicada de reseñas de Amazon (product-reviews/ASIN), que no
+    //    depende de ningún clic — ver obtenerResenasAmazon.
     //  - Temu: navegador headless (Puppeteer) — es la única de las tres que
     //    abre un Chromium de verdad, con selectores heurísticos SIN
     //    verificar contra el sitio real (ver el aviso grande en esa
@@ -836,7 +842,7 @@ export class ImportarProductoService {
       plataforma === 'aliexpress'
         ? await this.scrapearResenasAliExpressPorLink(url)
         : plataforma === 'amazon'
-          ? this.scrapearResenasAmazonDeHtml(datos.html, datos.htmlRenderizadoConNavegador)
+          ? await this.obtenerResenasAmazon(datos, url)
           : plataforma === 'temu'
             ? // Fix 19/09: si scrapearUrlProducto() ya tuvo que abrir un
               // navegador de verdad para conseguir título/fotos (el caso más
@@ -1375,7 +1381,12 @@ export class ImportarProductoService {
   // procesarImportacionPorLink) queda en el mismo log para saber si el HTML
   // que se intentó leer vino del pedido simple o del navegador con scroll —
   // dato clave para saber dónde mirar primero si hay que calibrar de nuevo.
-  private scrapearResenasAmazonDeHtml(html: string, htmlRenderizadoConNavegador: boolean): ResenaOrigen[] {
+  // origenHtml: texto para el log (de dónde salió este HTML: pedido simple,
+  // navegador en la página del producto, o navegador en la página dedicada
+  // de reseñas). esUltimoIntento: false cuando todavía queda un respaldo
+  // por probar (no asustar diciendo "va a usar IA" si en realidad se va a
+  // reintentar en la página dedicada un segundo después).
+  private scrapearResenasAmazonDeHtml(html: string, origenHtml: string, esUltimoIntento: boolean): ResenaOrigen[] {
     try {
       const $ = cheerio.load(html);
       const resenas: ResenaOrigen[] = [];
@@ -1421,8 +1432,11 @@ export class ImportarProductoService {
         const muestraDeAdentro = huboBloquesSinTexto
           ? bloques.first().html()?.replace(/\s+/g, ' ').trim().slice(0, 1000)
           : undefined;
+        const finalDelMensaje = esUltimoIntento
+          ? 'Testimonios va a usar reseñas inventadas por IA. Si el producto SÍ tiene reseñas visibles en Amazon, avisar a Norbey con el link para calibrar los selectores.'
+          : 'Se va a intentar de respaldo con la página dedicada de reseñas de Amazon (product-reviews).';
         this.logger.warn(
-          `Product Marker: Amazon no trajo ninguna reseña real (HTML ${htmlRenderizadoConNavegador ? 'renderizado con navegador' : 'del pedido simple'}, ${bloques.length} bloque(s) "div[data-hook=review]" encontrados, ${html.length} caracteres de HTML en total) — Testimonios va a usar reseñas inventadas por IA. Si el producto SÍ tiene reseñas visibles en Amazon, avisar a Norbey con el link para calibrar los selectores.` +
+          `Product Marker: Amazon no trajo ninguna reseña real (HTML ${origenHtml}, ${bloques.length} bloque(s) "div[data-hook=review]" encontrados, ${html.length} caracteres de HTML en total) — ${finalDelMensaje}` +
             (muestraDeAdentro
               ? ` Adentro del primer bloque (recortado a 1000 caracteres, para ajustar el selector de "review-body"): ${muestraDeAdentro}`
               : ''),
@@ -1447,6 +1461,86 @@ export class ImportarProductoService {
     const n = parseFloat(match[1].replace(',', '.'));
     if (!Number.isFinite(n)) return undefined;
     return Math.max(1, Math.min(5, Math.round(n)));
+  }
+
+  // Fix 26/09 ("amazon si trajo la info pero no me trajo las reñas reales",
+  // confirmado después con Norbey que el MISMO producto dio resultados
+  // DISTINTOS en dos intentos seguidos — 13 bloques de reseña sin texto, y
+  // luego 0 bloques): leer las reseñas desde la página normal del producto
+  // depende de que se revele esa sección con scroll/clic, y eso no siempre
+  // dispara igual. Amazon tiene una página APARTE hecha específicamente
+  // para listar reseñas de un producto (no depende de ningún clic — es su
+  // propia página, pensada para poder compartirla/indexarla), así que se
+  // usa como respaldo: se extrae el ASIN del link original y se arma esa
+  // URL directamente. Solo funciona cuando el link trae el ASIN a la vista
+  // (dp/ASIN o gp/product/ASIN) — un link corto amzn.to no lo trae (ver
+  // PATRONES_PLATAFORMA_SOPORTADA arriba), así que en ese caso este
+  // respaldo simplemente no se intenta y el flujo sigue como antes.
+  private extraerAsinYDominioAmazon(url: string): { asin: string; dominio: string } | null {
+    const match = url.match(/^https:\/\/(?:www\.)?(amazon\.[a-z.]{2,8})\/(?:[^/?#]+\/)*(?:dp|gp\/product)\/([A-Za-z0-9]{10})(?:[/?]|$)/i);
+    if (!match) return null;
+    return { dominio: match[1], asin: match[2].toUpperCase() };
+  }
+
+  // Misma idea que leerHtmlRenderizadoConNavegador (mismo user-agent,
+  // viewport y sigilos básicos), pero SIN el intento de "hacer clic en una
+  // pestaña de reseñas" — acá no hace falta, ya estamos parados en la
+  // página que es puramente la lista de reseñas. Sí se espera un poco a que
+  // aparezcan (por si la carga inicial tarda) y se scrollea un par de veces
+  // para las fotos de reseñas que carguen recién al acercarse (lazy load).
+  private async leerHtmlPaginaResenasAmazon(browser: Browser, url: string): Promise<string> {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    );
+    await page.setViewport({ width: 1280, height: 1600 });
+    await this.aplicarSigilosBasicos(page);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
+    try {
+      await page.waitForSelector('div[data-hook="review"]', { timeout: 5000 });
+    } catch {
+      // No aparecieron en 5s — puede que de verdad esta página no tenga
+      // ninguna reseña (producto nuevo, sin compradores todavía), se sigue
+      // igual y que decida scrapearResenasAmazonDeHtml con lo que haya.
+    }
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return page.content();
+  }
+
+  // Intento de respaldo (ver el aviso grande arriba): solo se llama cuando
+  // ya se intentó leer las reseñas de la página normal del producto y
+  // volvió vacío. Reusa el mismo control de concurrencia/memoria que el
+  // resto de los navegadores headless de este archivo (ejecutarConNavegador
+  // — como mucho un Chromium a la vez en todo el servidor).
+  private async scrapearResenasAmazonDePaginaDedicada(url: string): Promise<ResenaOrigen[]> {
+    const info = this.extraerAsinYDominioAmazon(url);
+    if (!info) return [];
+    const urlResenas = `https://www.${info.dominio}/product-reviews/${info.asin}/?reviewerType=all_reviews&sortBy=helpful`;
+    try {
+      const html = await this.ejecutarConNavegador((b) => this.leerHtmlPaginaResenasAmazon(b, urlResenas));
+      return this.scrapearResenasAmazonDeHtml(html, 'navegador en la página dedicada de reseñas (product-reviews)', true);
+    } catch (error) {
+      this.logger.warn(
+        `Product Marker: no se pudo leer la página dedicada de reseñas de Amazon (${urlResenas}): ${(error as Error).message || error} — Testimonios va a usar reseñas inventadas por IA.`,
+      );
+      return [];
+    }
+  }
+
+  // Orquesta los dos intentos de arriba: primero lo barato (lo que ya se
+  // bajó de la página del producto, sin abrir un navegador nuevo si no hace
+  // falta), y solo si eso vino vacío, el respaldo de la página dedicada.
+  private async obtenerResenasAmazon(datos: { html: string; htmlRenderizadoConNavegador: boolean }, url: string): Promise<ResenaOrigen[]> {
+    const resenasDePagina = this.scrapearResenasAmazonDeHtml(
+      datos.html,
+      datos.htmlRenderizadoConNavegador ? 'navegador en la página del producto' : 'del pedido simple',
+      false,
+    );
+    if (resenasDePagina.length > 0) return resenasDePagina;
+    return this.scrapearResenasAmazonDePaginaDedicada(url);
   }
 
   // ---------------------------------------------------------------------
@@ -1511,7 +1605,15 @@ export class ImportarProductoService {
   // por scrapearResenasTemuConNavegador() (reseñas de Temu, 18/09 (6)).
   // Tira una excepción si no se pudo (sin cupo de concurrencia, timeout, o
   // cualquier error de Puppeteer) — cada llamador decide qué hacer con eso.
-  private async renderizarPaginaConNavegador(url: string): Promise<string> {
+  // Fix 26/09: antes esta función tenía el control de concurrencia (un solo
+  // Chromium a la vez) MEZCLADO con "qué hacer una vez abierto" (leer la
+  // página, hacer clic en reseñas, scrollear). Se separó en dos: esta de
+  // acá solo abre/cierra el navegador y cuenta cupos, y recibe como
+  // parámetro QUÉ hacer con él — así la página dedicada de reseñas de
+  // Amazon (ver scrapearResenasAmazonDePaginaDedicada más abajo) puede
+  // reusar el mismo control de memoria/concurrencia sin duplicar ese código
+  // ni arriesgarse a que dos Chromium abran a la vez.
+  private async ejecutarConNavegador<T>(accion: (browser: Browser) => Promise<T>): Promise<T> {
     if (this.navegadoresEnCurso >= this.MAX_NAVEGADORES_CONCURRENTES) {
       throw new Error('ya hay un navegador headless en curso en el servidor — se salta para no abrir un segundo Chromium');
     }
@@ -1527,18 +1629,22 @@ export class ImportarProductoService {
         ignoreDefaultArgs: ['--disable-extensions'],
       });
       const b = browser;
-      return await new Promise<string>((resolve, reject) => {
+      return await new Promise<T>((resolve, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error('tiempo de espera agotado leyendo la página con el navegador')),
+          () => reject(new Error('tiempo de espera agotado con el navegador')),
           this.NAVEGADOR_HEADLESS_TIMEOUT_MS,
         );
-        this.leerHtmlRenderizadoConNavegador(b, url).then(resolve, reject);
+        accion(b).then(resolve, reject);
       });
     } finally {
       clearTimeout(timeoutId);
       if (browser) await browser.close().catch(() => {});
       this.navegadoresEnCurso--;
     }
+  }
+
+  private async renderizarPaginaConNavegador(url: string): Promise<string> {
+    return this.ejecutarConNavegador((b) => this.leerHtmlRenderizadoConNavegador(b, url));
   }
 
   private async scrapearResenasTemuConNavegador(url: string): Promise<ResenaOrigen[]> {
