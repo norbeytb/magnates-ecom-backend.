@@ -1463,6 +1463,31 @@ export class ImportarProductoService {
     return Math.max(1, Math.min(5, Math.round(n)));
   }
 
+  // Fix 26/09 (cuarta vuelta — "eso no es un texto válido... yo lo que
+  // necesito es la reseña, la foto y el nombre, no todo eso"): red de
+  // seguridad además de apuntar a selectores más precisos (ver el aviso
+  // grande en scrapearResenasAmazonCarruselDeFotos). Dos limpiezas:
+  //  1. Amazon mete un aviso de accesibilidad pegado al texto para avisar
+  //     que se puede tocar dos veces para ver el contenido completo/breve
+  //     ("Brief content visible, double tap to read full content." / su
+  //     inverso) — se saca por texto exacto (confirmado real, en inglés;
+  //     si algún día aparece en español habrá que agregar esa frase acá
+  //     también, avisar a Norbey si pasa).
+  //  2. Todo lo que venga DESPUÉS del primer "Leer más"/"Read more" (o su
+  //     versión "menos"/"less") es interfaz de Amazon (votos, informar,
+  //     traducir) — nunca la reseña misma — así que se corta ahí aunque el
+  //     paso 1 no haya alcanzado a limpiar todo.
+  private limpiarRuidoDeInterfazAmazon(texto: string): string {
+    let limpio = texto
+      .replace(/Brief content visible,?\s*double tap to read full content\.?/gi, '')
+      .replace(/Full content visible,?\s*double tap to read brief content\.?/gi, '');
+    const indiceLeerMas = limpio.search(/Leer\s*m[aá]s|Read\s*more|Leer\s*menos|Read\s*less/i);
+    if (indiceLeerMas !== -1) {
+      limpio = limpio.slice(0, indiceLeerMas);
+    }
+    return limpio.replace(/\s+/g, ' ').replace(/\s*—\s*$/, '').trim();
+  }
+
   // Fix 26/09 ("amazon si trajo la info pero no me trajo las reñas reales",
   // confirmado después con Norbey que el MISMO producto dio resultados
   // DISTINTOS en dos intentos seguidos — 13 bloques de reseña sin texto, y
@@ -1558,7 +1583,7 @@ export class ImportarProductoService {
   // Selectores elegidos a propósito ESTABLES — Amazon arma este widget con
   // clases con un hash de build (ej. "_Y3Itb_cr-title_3bWqW", visto en la
   // captura real) que puede cambiar en cualquier redeploy de su frontend,
-  // así que NINGUNO de esos se usa acá. En cambio:
+  // así que NINGUNO de esos se usa TAL CUAL acá. En cambio:
   //  - [data-csa-c-content-id*="customerReviews-media-image"]: identifica
   //    cada tarjeta del carrusel (confirmado real, no hasheado).
   //  - .a-profile-name: nombre del comprador — clase genérica que Amazon
@@ -1566,9 +1591,25 @@ export class ImportarProductoService {
   //  - una clase que empiece con "a-star-mini-" trae el número de
   //    estrellas pegado al final (ej. "a-star-mini-5") — mismo patrón
   //    "a-icon-star"/"a-star-N" que usa Amazon en el resto del sitio.
-  //  - [data-reviewid]: Amazon marca así tanto el título como el cuerpo del
-  //    texto de la reseña dentro de esta ventana (confirmado real) — se
-  //    juntan todos los que aparezcan como el texto final de la reseña.
+  //  - [class*="cr-title"] / [class*="cr-text"]: fix 26/09 (cuarta vuelta,
+  //    "eso no es un texto válido... yo lo que necesito es la reseña, la
+  //    foto y el nombre, no todo eso"). Antes se usaba [data-reviewid] para
+  //    encontrar el texto, pero Norbey mandó una captura real mostrando que
+  //    ESE mismo atributo también está puesto en los botones de "¿Te
+  //    pareció útil?", "Informar" y "Traducir" de al lado — juntar TODOS
+  //    los [data-reviewid] traía esa basura de interfaz pegada a la reseña
+  //    de verdad. "cr-title"/"cr-text" es la parte SIN hashear del nombre
+  //    de esas dos clases puntuales (el título y el cuerpo de la reseña,
+  //    confirmados en la captura real) — con selector "contiene" (*=) sigue
+  //    encontrándolas aunque el hash de al lado cambie en otro despliegue
+  //    de Amazon, pero ya NO agarra los botones de al lado (esos tienen
+  //    otro nombre de clase, no contienen "cr-title" ni "cr-text").
+  // limpiarRuidoDeInterfazAmazon() de más abajo es una segunda red de
+  // seguridad: por si ese texto viene con avisos de accesibilidad pegados
+  // adentro ("Brief content visible, double tap to..."), corta todo lo que
+  // venga después del primer "Leer más"/"Read more" — de ahí para adelante
+  // en Amazon siempre es interfaz (votos, reportar, traducir), nunca la
+  // reseña misma.
   // Si Amazon cambia también estos selectores más estables el día de
   // mañana, esto puede volver a devolver vacío — mismo aviso de siempre:
   // revisar acá primero, con un caso real, antes de adivinar de nuevo.
@@ -1625,14 +1666,15 @@ export class ImportarProductoService {
               const elEstrellas = document.querySelector('[class*="a-star-mini-"]');
               const matchEstrellas = (elEstrellas?.className || '').match(/a-star-mini-(\d)/);
               const calificacion = matchEstrellas ? parseInt(matchEstrellas[1], 10) : undefined;
-              const texto = Array.from(document.querySelectorAll('[data-reviewid]'))
-                .map((el: any) => (el.textContent || '').trim())
-                .filter(Boolean)
-                .join(' — ')
-                .replace(/\s+/g, ' ')
-                .trim();
+              // Solo título + cuerpo de la reseña (ver el aviso grande de
+              // arriba sobre por qué ya no se usa [data-reviewid] solo, que
+              // también agarraba los botones de votar/informar/traducir).
+              const titulo = document.querySelector('[class*="cr-title"]')?.textContent?.trim() || '';
+              const cuerpo = document.querySelector('[class*="cr-text"]')?.textContent?.trim() || '';
+              const texto = [titulo, cuerpo].filter(Boolean).join(' — ').replace(/\s+/g, ' ').trim();
               return { nombre, calificacion, texto };
             });
+            datosResena.texto = this.limpiarRuidoDeInterfazAmazon(datosResena.texto);
 
             // Cierra la ventana antes de pasar a la siguiente miniatura —
             // más confiable que asumir que se puede hacer clic en la
