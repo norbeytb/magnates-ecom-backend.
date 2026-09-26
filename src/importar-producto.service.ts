@@ -836,7 +836,7 @@ export class ImportarProductoService {
       plataforma === 'aliexpress'
         ? await this.scrapearResenasAliExpressPorLink(url)
         : plataforma === 'amazon'
-          ? this.scrapearResenasAmazonDeHtml(datos.html)
+          ? this.scrapearResenasAmazonDeHtml(datos.html, datos.htmlRenderizadoConNavegador)
           : plataforma === 'temu'
             ? // Fix 19/09: si scrapearUrlProducto() ya tuvo que abrir un
               // navegador de verdad para conseguir título/fotos (el caso más
@@ -1358,11 +1358,29 @@ export class ImportarProductoService {
   // página puntual no traía ninguna reseña visible, simplemente devuelve un
   // arreglo vacío y Testimonios cae al comportamiento de siempre (IA
   // inventa), igual que ya pasa con AliExpress.
-  private scrapearResenasAmazonDeHtml(html: string): ResenaOrigen[] {
+  // Fix 26/09 ("amazon si trajo la info pero no me trajo las reseñas
+  // reales"): esta función podía volver vacía en silencio, sin dejar
+  // NINGÚN rastro en los Deploy Logs — mismo hueco que ya habíamos pisado
+  // con Temu el 20/09 (ver el aviso grande de esa ronda). Ahora sí queda
+  // registrado, distinguiendo los dos casos que antes se veían idénticos
+  // desde afuera ("no trajo reseñas") pero significan cosas MUY distintas:
+  //  (a) ni un solo `div[data-hook="review"]` en el HTML — o el producto de
+  //      verdad no tiene reseñas todavía, o Amazon le mostró una variante de
+  //      la página (ej. otra región, otro layout) donde ese data-hook no
+  //      existe con ese nombre.
+  //  (b) sí hay bloques de reseña, pero ninguno tenía texto legible adentro
+  //      — el data-hook del CONTENEDOR sigue existiendo pero el de adentro
+  //      (`review-body`) cambió, o el bloque viene vacío por algún motivo.
+  // htmlRenderizadoConNavegador (nuevo parámetro, ver el llamado en
+  // procesarImportacionPorLink) queda en el mismo log para saber si el HTML
+  // que se intentó leer vino del pedido simple o del navegador con scroll —
+  // dato clave para saber dónde mirar primero si hay que calibrar de nuevo.
+  private scrapearResenasAmazonDeHtml(html: string, htmlRenderizadoConNavegador: boolean): ResenaOrigen[] {
     try {
       const $ = cheerio.load(html);
       const resenas: ResenaOrigen[] = [];
-      $('div[data-hook="review"]').each((_, el) => {
+      const bloques = $('div[data-hook="review"]');
+      bloques.each((_, el) => {
         const $resena = $(el);
         const texto = $resena.find('[data-hook="review-body"]').first().text().replace(/\s+/g, ' ').trim();
         if (!texto) return;
@@ -1388,6 +1406,11 @@ export class ImportarProductoService {
           .slice(0, 5);
         resenas.push({ texto, calificacion, autor, fotoUrl: fotos[0], fotos });
       });
+      if (resenas.length === 0) {
+        this.logger.warn(
+          `Product Marker: Amazon no trajo ninguna reseña real (HTML ${htmlRenderizadoConNavegador ? 'renderizado con navegador' : 'del pedido simple'}, ${bloques.length} bloque(s) "div[data-hook=review]" encontrados, ${html.length} caracteres de HTML en total) — Testimonios va a usar reseñas inventadas por IA. Si el producto SÍ tiene reseñas visibles en Amazon, avisar a Norbey con el link para calibrar los selectores.`,
+        );
+      }
       return resenas;
     } catch (error) {
       this.logger.warn(
