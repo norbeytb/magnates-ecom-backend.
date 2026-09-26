@@ -1407,8 +1407,25 @@ export class ImportarProductoService {
         resenas.push({ texto, calificacion, autor, fotoUrl: fotos[0], fotos });
       });
       if (resenas.length === 0) {
+        // Fix 26/09 (segunda vuelta): la ronda anterior de este mismo log ya
+        // nos dijo que SÍ había bloques "div[data-hook=review]" (13, en el
+        // caso real que probó Norbey) pero ninguno tenía texto legible
+        // adentro — es decir, Amazon cambió el marcado DE ADENTRO de la
+        // reseña (el data-hook de "review-body" ya no es el que esperamos),
+        // no el contenedor. En vez de pedirle a Norbey que abra las
+        // herramientas de desarrollador del navegador (nada trivial si no es
+        // su terreno), este log manda directo a Railway un pedazo del HTML
+        // de ADENTRO de la primera reseña encontrada — con eso alcanza para
+        // ver el marcado real y ajustar el selector, sin ida y vuelta.
+        const huboBloquesSinTexto = bloques.length > 0;
+        const muestraDeAdentro = huboBloquesSinTexto
+          ? bloques.first().html()?.replace(/\s+/g, ' ').trim().slice(0, 1000)
+          : undefined;
         this.logger.warn(
-          `Product Marker: Amazon no trajo ninguna reseña real (HTML ${htmlRenderizadoConNavegador ? 'renderizado con navegador' : 'del pedido simple'}, ${bloques.length} bloque(s) "div[data-hook=review]" encontrados, ${html.length} caracteres de HTML en total) — Testimonios va a usar reseñas inventadas por IA. Si el producto SÍ tiene reseñas visibles en Amazon, avisar a Norbey con el link para calibrar los selectores.`,
+          `Product Marker: Amazon no trajo ninguna reseña real (HTML ${htmlRenderizadoConNavegador ? 'renderizado con navegador' : 'del pedido simple'}, ${bloques.length} bloque(s) "div[data-hook=review]" encontrados, ${html.length} caracteres de HTML en total) — Testimonios va a usar reseñas inventadas por IA. Si el producto SÍ tiene reseñas visibles en Amazon, avisar a Norbey con el link para calibrar los selectores.` +
+            (muestraDeAdentro
+              ? ` Adentro del primer bloque (recortado a 1000 caracteres, para ajustar el selector de "review-body"): ${muestraDeAdentro}`
+              : ''),
         );
       }
       return resenas;
