@@ -1002,8 +1002,12 @@ export class ImportarProductoService {
     try {
       const resp = await fetch(url, {
         headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+          // Fix 28/09: este pedido es un fetch() simple, sin Chromium
+          // abierto atrás — no hay de dónde leer una versión real como en
+          // obtenerInfoNavegador() de más abajo, así que usa el mismo
+          // respaldo fijo (VERSION_CHROME_RESPALDO) que ese método, en vez
+          // de un "128" que se hubiera quedado viejo para siempre.
+          'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${this.VERSION_CHROME_RESPALDO} Safari/537.36`,
           'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
         },
       });
@@ -1263,8 +1267,10 @@ export class ImportarProductoService {
           accept: 'application/json, text/plain, */*',
           origin: 'https://www.aliexpress.com',
           referer: 'https://www.aliexpress.com/',
-          'user-agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+          // Fix 28/09: mismo motivo que en scrapearUrlProducto() más arriba
+          // — fetch() simple sin Chromium real, usa el respaldo fijo en vez
+          // de un número de versión pisado a mano.
+          'user-agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${this.VERSION_CHROME_RESPALDO} Safari/537.36`,
         },
       });
       if (!resp.ok) {
@@ -1522,11 +1528,10 @@ export class ImportarProductoService {
   // para las fotos de reseñas que carguen recién al acercarse (lazy load).
   private async leerHtmlPaginaResenasAmazon(browser: Browser, url: string): Promise<string> {
     const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    );
+    const infoNavegador = await this.obtenerInfoNavegador(browser);
+    await page.setUserAgent(infoNavegador.userAgent);
     await page.setViewport({ width: 1280, height: 1600 });
-    await this.aplicarSigilosBasicos(page);
+    await this.aplicarSigilosBasicos(page, infoNavegador.versionMayor);
     await this.esperarUnRatoHumano(600, 1800);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
     try {
@@ -1650,11 +1655,10 @@ export class ImportarProductoService {
     try {
       return await this.ejecutarConNavegador(async (browser) => {
         const page = await browser.newPage();
-        await page.setUserAgent(
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        );
+        const infoNavegador = await this.obtenerInfoNavegador(browser);
+        await page.setUserAgent(infoNavegador.userAgent);
         await page.setViewport({ width: 1280, height: 1600 });
-        await this.aplicarSigilosBasicos(page);
+        await this.aplicarSigilosBasicos(page, infoNavegador.versionMayor);
         await this.esperarUnRatoHumano(600, 1800);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
 
@@ -1824,6 +1828,55 @@ export class ImportarProductoService {
   private navegadoresEnCurso = 0;
   private readonly MAX_NAVEGADORES_CONCURRENTES = 1;
   private readonly NAVEGADOR_HEADLESS_TIMEOUT_MS = 25000;
+  // Fix 28/09 (sexta vuelta — Norbey pidió profundizar más en esto, sin
+  // pagar proxy): el User-Agent y los Client Hints usados en todo este
+  // archivo tenían la versión de Chrome escrita a mano ("128"), y ese
+  // número se queda viejo solo con el paso del tiempo — hoy Chrome real ya
+  // va por la versión ~154, así que un navegador que dice "128" es en sí
+  // mismo una pista de que algo no cuadra (aparte de la inconsistencia
+  // entre ese número viejo y la versión REAL del Chromium que Puppeteer
+  // abre). cacheInfoNavegador guarda la versión real leída UNA sola vez
+  // por proceso con browser.version() — así el User-Agent envejece solo,
+  // junto con la versión de Puppeteer instalada, en vez de quedar pisado a
+  // mano y desactualizarse de nuevo dentro de un año.
+  private cacheInfoNavegador: { userAgent: string; version: string; versionMayor: string } | null = null;
+  // Respaldo fijo SOLO para los dos pedidos con fetch() simple (en
+  // scrapearUrlProducto y scrapearResenasAliExpressPorLink) que no abren un
+  // Chromium real y por lo tanto no tienen de dónde leer una versión de
+  // verdad — conviene revisar este número cada tanto para que no quede tan
+  // viejo como el "128" que tenía antes.
+  private readonly VERSION_CHROME_RESPALDO = '154.0.0.0';
+
+  // Lee la versión real del Chromium que Puppeteer abrió (browser.version()
+  // devuelve algo como "HeadlessChrome/128.0.6613.137" o, con el modo
+  // headless nuevo, "Chrome/128.0.6613.137") y arma con eso el
+  // User-Agent y el número de versión "mayor" para los Client Hints —
+  // ambos quedan diciendo SIEMPRE la verdad sobre el navegador que
+  // realmente está corriendo, no un número copiado a mano que se va
+  // envejeciendo. Se guarda en caché (cacheInfoNavegador) porque dentro de
+  // un mismo proceso del servidor el binario de Chromium que trae Puppeteer
+  // instalado no cambia entre un scraping y otro — no hace falta preguntar
+  // de nuevo cada vez.
+  private async obtenerInfoNavegador(browser: Browser): Promise<{ userAgent: string; version: string; versionMayor: string }> {
+    if (this.cacheInfoNavegador) return this.cacheInfoNavegador;
+    let version = this.VERSION_CHROME_RESPALDO;
+    let versionMayor = version.split('.')[0];
+    try {
+      const versionCompleta = await browser.version();
+      const match = versionCompleta.match(/Chrome\/(\d+)\.(\d+\.\d+\.\d+)/i);
+      if (match) {
+        versionMayor = match[1];
+        version = `${match[1]}.${match[2]}`;
+      }
+    } catch {
+      // Si browser.version() falla por lo que sea, se sigue con el
+      // respaldo fijo de arriba en vez de romper el scraping entero por
+      // esto — es solo un detalle de disimulo, no algo esencial.
+    }
+    const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`;
+    this.cacheInfoNavegador = { userAgent, version, versionMayor };
+    return this.cacheInfoNavegador;
+  }
 
   // Abre un Chromium real, deja que renderice `url` con su JavaScript (ver
   // leerHtmlRenderizadoConNavegador) y devuelve el HTML resultante — usado
@@ -1852,7 +1905,17 @@ export class ImportarProductoService {
         // Flags necesarios para correr Chromium dentro de un contenedor de
         // Railway sin sandbox de kernel propio — ver nixpacks.toml.
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        ignoreDefaultArgs: ['--disable-extensions'],
+        // Fix 28/09 (Norbey pidió seguir profundizando esto, sin proxy
+        // pago): Puppeteer agrega "--enable-automation" a la línea de
+        // comando de Chromium por defecto. Ese flag por sí solo hace que
+        // Chromium ponga navigator.webdriver en true y muestre el cartel
+        // "Chrome is being controlled by automated test software" ANTES de
+        // que corra cualquier parche de JavaScript de acá abajo — o sea que
+        // aplicarSigilosBasicos() estaba tapando navigator.webdriver con un
+        // valor falso, pero el flag de arranque ya había dejado esa marca
+        // puesta un paso antes. Sacarlo es gratis (no agrega ninguna
+        // dependencia ni cambia el comportamiento real del scraping).
+        ignoreDefaultArgs: ['--disable-extensions', '--enable-automation'],
       });
       const b = browser;
       return await new Promise<T>((resolve, reject) => {
@@ -1909,43 +1972,91 @@ export class ImportarProductoService {
   // este cambio Amazon sigue devolviendo la misma pantalla genérica, hace
   // falta algo más caro (ej. un servicio de proxies de verdad) — no alcanza
   // con más parches de este estilo.
-  private async aplicarSigilosBasicos(page: any): Promise<void> {
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  // Fix 28/09 (sexta vuelta): ahora recibe versionMayor (la versión real de
+  // Chrome, leída con obtenerInfoNavegador() más arriba) en vez de tener el
+  // número "128" pisado a mano en tres lugares distintos de esta función.
+  private async aplicarSigilosBasicos(page: any, versionMayor: string): Promise<void> {
+    await page.evaluateOnNewDocument((versionMayorNavegador: string) => {
+      // Fix 28/09: un getter armado con Object.defineProperty(obj, prop,
+      // {get: () => valor}) usando una arrow function se puede delatar
+      // llamando ese getter.toString() — un getter de verdad del navegador
+      // devuelve algo como "function get webdriver() { [native code] }",
+      // pero una arrow function devuelve su código fuente tal cual, lo que
+      // muestra el parche a cualquier script de detección que se moleste en
+      // mirar el .toString() de la propiedad (varios lo hacen, es un truco
+      // conocido y barato de detectar). Esta ayuda define el getter como
+      // una función con nombre y le pisa su propio toString para que
+      // devuelva el mismo texto que mostraría un getter nativo de verdad.
+      const definirGetterDisimulado = (objetivo: any, propiedad: string, valor: any) => {
+        const getter = function () {
+          return valor;
+        };
+        Object.defineProperty(getter, 'name', { value: `get ${propiedad}`, configurable: true });
+        Object.defineProperty(getter, 'toString', {
+          value: () => `function get ${propiedad}() { [native code] }`,
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        });
+        Object.defineProperty(objetivo, propiedad, { get: getter, configurable: true, enumerable: true });
+      };
+
+      definirGetterDisimulado(navigator, 'webdriver', undefined);
       if (!window.chrome) window.chrome = { runtime: {} };
-      Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es', 'en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      definirGetterDisimulado(navigator, 'languages', ['es-ES', 'es', 'en-US', 'en']);
+
+      // Fix 28/09: [1, 2, 3, 4, 5] (lo que había antes) no se parece en
+      // nada a un PluginArray real — un Chrome de Windows de verdad trae de
+      // fábrica el visor de PDF con nombres y descripciones concretas. Se
+      // arma un PluginArray falso con esa misma forma (mismos nombres que
+      // trae un Chrome real) para que al menos la cantidad y los nombres
+      // coincidan con lo esperado en vez de una lista de números sueltos.
+      const nombresPluginsChromeReal = [
+        'PDF Viewer',
+        'Chrome PDF Viewer',
+        'Chromium PDF Viewer',
+        'Microsoft Edge PDF Viewer',
+        'WebKit built-in PDF',
+      ];
+      const pluginArrayFalso: any = nombresPluginsChromeReal.map((nombre) => ({
+        name: nombre,
+        filename: 'internal-pdf-viewer',
+        description: 'Portable Document Format',
+        length: 1,
+      }));
+      pluginArrayFalso.item = (i: number) => pluginArrayFalso[i] || null;
+      pluginArrayFalso.namedItem = (nombre: string) => pluginArrayFalso.find((p: any) => p.name === nombre) || null;
+      pluginArrayFalso.refresh = () => {};
+      definirGetterDisimulado(navigator, 'plugins', pluginArrayFalso);
+
       // Fix 26/09 (quinta vuelta, pedido de Norbey de seguir mejorando esto
       // sin pagar proxies): navigator.userAgentData (Client Hints) es OTRA
       // fuente de verdad además del header User-Agent de más abajo — varios
       // sitios (Amazon entre ellos) la leen directo con JavaScript para
       // chequear que coincida con lo que dice la conexión. Puppeteer la
       // arma sola con los datos REALES del Chromium que trae empaquetado
-      // adentro, que no necesariamente es la versión "128" puesta en el
-      // User-Agent de abajo — esa mezcla rara (UA dice 128, Client Hints
-      // dice otra cosa) es una pista más de automatización. Se fuerza acá
-      // para que las dos cosas siempre coincidan.
+      // adentro — se fuerza acá para que siempre coincida con el
+      // User-Agent real (versionMayorNavegador, leído de verdad con
+      // browser.version(), fix 28/09 — antes era "128" fijo).
       if ((navigator as any).userAgentData) {
-        Object.defineProperty(navigator, 'userAgentData', {
-          get: () => ({
-            brands: [
-              { brand: 'Chromium', version: '128' },
-              { brand: 'Not;A=Brand', version: '24' },
-              { brand: 'Google Chrome', version: '128' },
-            ],
-            mobile: false,
-            platform: 'Windows',
-          }),
+        definirGetterDisimulado(navigator, 'userAgentData', {
+          brands: [
+            { brand: 'Chromium', version: versionMayorNavegador },
+            { brand: 'Not;A=Brand', version: '24' },
+            { brand: 'Google Chrome', version: versionMayorNavegador },
+          ],
+          mobile: false,
+          platform: 'Windows',
         });
       }
-    });
+    }, versionMayor);
     // Mismo motivo que arriba: estos encabezados los manda el navegador de
     // verdad en cada pedido (no solo algo que lee JavaScript), así que
-    // también deben coincidir con el User-Agent de abajo en vez de reflejar
-    // el Chromium real de Puppeteer.
+    // también deben coincidir con el User-Agent real en vez de un número
+    // fijo (fix 28/09: versionMayor ya viene de browser.version()).
     await page
       .setExtraHTTPHeaders({
-        'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        'sec-ch-ua': `"Chromium";v="${versionMayor}", "Not;A=Brand";v="24", "Google Chrome";v="${versionMayor}"`,
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
@@ -1966,11 +2077,10 @@ export class ImportarProductoService {
 
   private async leerHtmlRenderizadoConNavegador(browser: Browser, url: string): Promise<string> {
     const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    );
+    const infoNavegador = await this.obtenerInfoNavegador(browser);
+    await page.setUserAgent(infoNavegador.userAgent);
     await page.setViewport({ width: 1280, height: 1600 });
-    await this.aplicarSigilosBasicos(page);
+    await this.aplicarSigilosBasicos(page, infoNavegador.versionMayor);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: this.NAVEGADOR_HEADLESS_TIMEOUT_MS });
 
     try {
