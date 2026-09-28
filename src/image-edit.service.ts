@@ -233,18 +233,28 @@ export class ImageEditService {
         quality: calidad,
         image_size: 'portrait_16_9',
         // Por defecto el modelo devuelve PNG (pesado, sin necesidad — estas
-        // piezas son fotos/composiciones, no necesitan transparencia). Se pide
-        // JPEG directo acá: el precio de fal.ai depende solo de calidad y
-        // tamaño, NUNCA del formato de salida (confirmado en su
-        // documentación), así que esto no cuesta nada extra y ya entrega el
-        // archivo liviano desde el origen. Se eligió JPEG y no WebP a
-        // propósito: la imagen se vuelve a subir después a Shopify, y Shopify
-        // ya convierte automáticamente a WebP/AVIF las imágenes que aloja él
-        // mismo — mandarle un WebP ya comprimido arriesga una doble
-        // compresión si en algún momento tiene que derivar una versión de
-        // respaldo para un navegador viejo (ver shopify.service.ts,
-        // publicarLanding, para dónde termina alojada cada imagen).
-        output_format: 'jpeg',
+        // piezas son fotos/composiciones, no necesitan transparencia). El
+        // precio de fal.ai depende solo de calidad y tamaño, NUNCA del
+        // formato de salida (confirmado en su documentación), así que pedir
+        // el formato que sea no cuesta nada extra.
+        //
+        // Fix 28/09 (pedido de Norbey — "las imágenes se están guardando en
+        // JPG, necesito que queden en WebP comprimido para que la landing
+        // pese menos"): antes acá se pedía JPEG a propósito, razonando que
+        // Shopify iba a convertir solo a WebP/AVIF al servir cada imagen —
+        // pero Norbey revisó en vivo (pestaña Network del navegador, una
+        // landing ya publicada) y confirmó que las fotos SÍ están llegando
+        // pesadas, sin esa conversión automática. Tiene sentido con cómo
+        // están armadas las fotos de la landing: no se muestran con el
+        // filtro `image_url` de Liquid (que es donde Shopify sí documenta la
+        // conversión automática), sino como un link de texto plano guardado
+        // en un metafield (`{{ paso.url }}` en landing-imagen.liquid, ver
+        // shopify.service.ts) — aparentemente ese camino no entra en la
+        // optimización automática. Por eso ahora se pide WebP directo acá
+        // (una sola compresión, hecha una vez al generar la imagen — no hay
+        // doble compresión porque ya no se cuenta con que Shopify la vuelva
+        // a comprimir después).
+        output_format: 'webp',
       },
       logs: false,
     });
@@ -416,7 +426,9 @@ export class ImageEditService {
         num_images: 1,
         quality: 'low',
         image_size: 'square_hd', // cuadrada — Shopify la recorta a círculo con CSS (object-fit:cover)
-        output_format: 'jpeg',
+        // Fix 28/09: mismo cambio que en llamarFal() de arriba — WebP en vez
+        // de JPEG (ver el comentario grande ahí para el motivo completo).
+        output_format: 'webp',
       },
       logs: false,
     });

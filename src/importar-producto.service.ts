@@ -768,7 +768,14 @@ export class ImportarProductoService {
     const fondo = sharp({ create: { width: ANCHO, height: ALTO, channels: 3, background: { r: 250, g: 247, b: 242 } } });
     const resultado = await fondo
       .composite([{ input: encabezadoSvg, left: 0, top: 0 }, ...capas])
-      .jpeg({ quality: 90 })
+      // Fix 28/09: WebP en vez de JPEG, mismo motivo que en
+      // image-edit.service.ts (llamarFal) — ver ese comentario para el
+      // detalle completo. OJO: esta función hoy no la llama nadie más en el
+      // archivo (quedó de una versión anterior, de cuando las reseñas reales
+      // se mostraban como una imagen fija en vez de datos — ver el aviso
+      // grande de "Reseñas reales" más arriba); se corrige igual por prolijidad,
+      // pero el peso real de las landings no viene de acá.
+      .webp({ quality: 82 })
       .toBuffer();
 
     return { buffer: resultado, costoEstimadoUsd };
