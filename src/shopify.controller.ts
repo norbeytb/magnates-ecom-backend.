@@ -24,12 +24,37 @@ export class ShopifyController {
     private readonly integracionesService: IntegracionesService,
   ) {}
 
+  // Fix 28/09 (varias tiendas por usuario): el body ahora puede traer
+  // "shopKey" para decir a cuál tienda publicar. Si el usuario solo tiene UNA
+  // tienda conectada, no hace falta mandarlo — se resuelve solo, para no
+  // romper al taller viejo ni obligar a elegir cuando no hay nada que elegir.
+  // Si tiene varias y no mandó shopKey, se avisa con un error claro para que
+  // el frontend muestre el selector (ver integraciones.service.ts,
+  // listarTiendasShopify).
   @Post('publicar')
-  async publicar(@Body() body: PublicarLandingInput, @UsuarioActual() usuario: UsuarioAutenticado) {
-    const credenciales = await this.integracionesService.obtenerCredencialesShopify(usuario.id);
-    if (!credenciales) {
+  async publicar(@Body() body: PublicarLandingInput & { shopKey?: string }, @UsuarioActual() usuario: UsuarioAutenticado) {
+    const tiendas = await this.integracionesService.listarTiendasShopify(usuario.id);
+    if (tiendas.length === 0) {
       throw new HttpException(
         'Todavía no conectaste tu tienda de Shopify. Andá a "Integraciones" y conectala primero.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    let shopKey = body?.shopKey;
+    if (!shopKey) {
+      if (tiendas.length === 1) {
+        shopKey = tiendas[0].shopKey;
+      } else {
+        throw new HttpException(
+          'Tenés más de una tienda conectada — decime a cuál publicar.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
+    const credenciales = await this.integracionesService.obtenerCredencialesTienda(usuario.id, shopKey);
+    if (!credenciales) {
+      throw new HttpException(
+        'No encontré esa tienda conectada. Volvé a "Integraciones" para revisar cuáles tenés.',
         HttpStatus.BAD_REQUEST,
       );
     }

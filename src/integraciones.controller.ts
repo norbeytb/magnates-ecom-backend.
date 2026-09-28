@@ -15,6 +15,9 @@ interface GuardarShopifyDto {
   storeDomain: string;
   clientId: string;
   clientSecret: string;
+  // Nombre que ve el usuario para distinguir esta tienda de otras (fix 28/09,
+  // varias tiendas por usuario) — opcional, si no lo manda se usa el dominio.
+  nombre?: string;
 }
 
 interface GuardarFalDto {
@@ -35,12 +38,17 @@ export class IntegracionesController {
 
   @Post('shopify')
   async guardarShopify(@Body() dto: GuardarShopifyDto, @UsuarioActual() usuario: UsuarioAutenticado) {
-    return this.integracionesService.guardarShopify(usuario.id, dto?.storeDomain, dto?.clientId, dto?.clientSecret);
+    return this.integracionesService.guardarShopify(usuario.id, dto?.storeDomain, dto?.clientId, dto?.clientSecret, dto?.nombre);
   }
 
+  // Fix 28/09 (varias tiendas por usuario): ahora hay que decir CUÁL tienda
+  // desconectar — el taller manda su shopKey (lo recibe en la lista que
+  // devuelve obtener()/GET). DELETE no suele llevar body en el navegador,
+  // pero Nest sí lo soporta si el cliente lo manda (fetch con body sirve);
+  // así no hace falta agregar una ruta nueva con parámetro en la URL.
   @Delete('shopify')
-  async desconectarShopify(@UsuarioActual() usuario: UsuarioAutenticado) {
-    return this.integracionesService.desconectarShopify(usuario.id);
+  async desconectarShopify(@Body() dto: { shopKey?: string }, @UsuarioActual() usuario: UsuarioAutenticado) {
+    return this.integracionesService.desconectarShopify(usuario.id, dto?.shopKey || '');
   }
 
   @Post('fal')

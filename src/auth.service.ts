@@ -311,7 +311,17 @@ export class AuthService implements OnModuleInit {
   //      con el pase que acaba de recibir en la URL. Lo canjea por una
   //      sesión normal de 30 días, igual que un login de toda la vida.
 
-  async generarPaseSso(email: string, secretoRecibido: string): Promise<{ pase: string }> {
+  // Fix 28/09: este bloque (validar el secreto, normalizar el correo, y
+  // buscar/crear la cuenta) era el cuerpo entero de generarPaseSso() de acá
+  // abajo — se separó a un método propio para que CUALQUIER endpoint
+  // "servidor de MEC Control a servidor de Creadora de Landing" (no solo el
+  // pase de inicio de sesión) pueda confiar en el mismo secreto compartido
+  // y termine con el mismo usuario_id, en vez de reimplementar esta lógica
+  // de nuevo cada vez. Primer uso nuevo: sincronizar tiendas de Shopify
+  // conectadas en MEC Control (ver "sso/shopify-tienda" en
+  // auth.controller.ts) — igual que acá, si el estudiante todavía no había
+  // entrado nunca al taller, la cuenta se crea sola con este mismo criterio.
+  private async resolverUsuarioIdSso(email: string, secretoRecibido: string): Promise<number> {
     if (!this.pool) {
       throw new InternalServerErrorException('El inicio de sesión único no está disponible: falta configurar la base de datos en el backend.');
     }
@@ -352,11 +362,24 @@ export class AuthService implements OnModuleInit {
       throw new ForbiddenException('Esta cuenta fue bloqueada. Escribinos a soporte si creés que es un error.');
     }
 
+    return fila.id;
+  }
+
+  // Igual que resolverUsuarioIdSso(), pero pública — la usan otros endpoints
+  // "servidor a servidor" de auth.controller.ts (ver "sso/shopify-tienda")
+  // que necesitan el usuario_id de Creadora de Landing a partir del correo
+  // de MEC Control, sin generar un pase de inicio de sesión.
+  async obtenerUsuarioIdSso(email: string, secretoRecibido: string): Promise<number> {
+    return this.resolverUsuarioIdSso(email, secretoRecibido);
+  }
+
+  async generarPaseSso(email: string, secretoRecibido: string): Promise<{ pase: string }> {
+    const usuarioId = await this.resolverUsuarioIdSso(email, secretoRecibido);
     // "tipo: pase_sso" es lo que distingue este token de uno normal de 30
     // días — entrarConPase() de abajo lo exige para no aceptar por error un
     // token de sesión común como si fuera un pase.
     const pase = jwt.sign(
-      { sub: fila.id, email: fila.email, tipo: 'pase_sso' },
+      { sub: usuarioId, email: this.normalizarEmail(email), tipo: 'pase_sso' },
       this.jwtSecret,
       { expiresIn: '60s' },
     );
@@ -477,6 +500,11 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException('No podés eliminar una cuenta de administrador.');
     }
     await this.pool.query(`DELETE FROM integraciones WHERE usuario_id = $1`, [usuarioId]);
+    // Fix 28/09: las tiendas de Shopify de un usuario ahora también viven en
+    // "shopify_tiendas" (varias por usuario) — hay que borrarlas acá también,
+    // mismo motivo que la línea de arriba (no dejar credenciales guardadas de
+    // una cuenta que ya no existe).
+    await this.pool.query(`DELETE FROM shopify_tiendas WHERE usuario_id = $1`, [usuarioId]);
     await this.pool.query(`DELETE FROM usuarios WHERE id = $1`, [usuarioId]);
     this.logger.log(`Un administrador eliminó la cuenta ${fila.email} (id=${fila.id}).`);
     return { ok: true };

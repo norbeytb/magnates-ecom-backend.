@@ -7,8 +7,9 @@
 // defecto) — nunca se guardan en el backend, solo se validan una vez y se
 // devuelve un token.
 
-import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { IntegracionesService } from './integraciones.service';
 import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 
 interface CredencialesDto {
@@ -50,9 +51,38 @@ interface EntrarConPaseDto {
   pase: string;
 }
 
+// Fix 28/09 (pedido: que la integración de Shopify que se haga en MEC
+// Control quede ya configurada acá, sin que el usuario tenga que volver a
+// conectarla): mismo criterio de autenticación que "sso/generar-pase" de
+// arriba — lo llama el SERVIDOR de MEC Control (nunca un navegador),
+// probándose con el secreto compartido, nunca con un token de acá. "shopKey"
+// es el identificador que MEC Control ya usa para esa tienda en su propia
+// base (ver lib/shopifyCreds.ts del lado de MEC Control) — se reutiliza tal
+// cual para que reconectar/renombrar la misma tienda actualice siempre la
+// misma fila en vez de duplicarla (ver guardarTiendaShopifyDesdeSso en
+// integraciones.service.ts).
+interface SincronizarShopifyDto {
+  email: string;
+  secreto: string;
+  shopKey: string;
+  nombre?: string;
+  storeDomain: string;
+  clientId: string;
+  clientSecret: string;
+}
+
+interface DesconectarShopifySsoDto {
+  email: string;
+  secreto: string;
+  shopKey: string;
+}
+
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly integracionesService: IntegracionesService,
+  ) {}
 
   @Post('registro')
   async registro(@Body() dto: CredencialesDto) {
@@ -111,5 +141,33 @@ export class AuthController {
   @HttpCode(200)
   async entrarConPase(@Body() dto: EntrarConPaseDto) {
     return this.authService.entrarConPase(dto?.pase);
+  }
+
+  // ------- Sincronizar tiendas de Shopify conectadas en MEC Control -------
+  // Igual que "sso/generar-pase": lo llama el servidor de MEC Control, nunca
+  // un navegador, autenticándose con el secreto compartido — nunca con un
+  // token de acá. Resuelve (o crea, si el estudiante nunca entró al taller)
+  // el usuario_id a partir del correo, y guarda/borra esa tienda puntual en
+  // "shopify_tiendas" para ESE usuario. Sin @UseGuards a propósito, mismo
+  // motivo que sso/generar-pase de arriba.
+  @Post('sso/shopify-tienda')
+  @HttpCode(200)
+  async sincronizarShopifyDesdeSso(@Body() dto: SincronizarShopifyDto) {
+    const usuarioId = await this.authService.obtenerUsuarioIdSso(dto?.email, dto?.secreto);
+    return this.integracionesService.guardarTiendaShopifyDesdeSso(
+      usuarioId,
+      dto?.shopKey,
+      dto?.nombre || '',
+      dto?.storeDomain,
+      dto?.clientId,
+      dto?.clientSecret,
+    );
+  }
+
+  @Delete('sso/shopify-tienda')
+  @HttpCode(200)
+  async desconectarShopifyDesdeSso(@Body() dto: DesconectarShopifySsoDto) {
+    const usuarioId = await this.authService.obtenerUsuarioIdSso(dto?.email, dto?.secreto);
+    return this.integracionesService.borrarTiendaShopifyDesdeSso(usuarioId, dto?.shopKey);
   }
 }

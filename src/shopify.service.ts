@@ -35,7 +35,9 @@
 // versión de un solo usuario de antes, el cache es un mapa POR TIENDA (nunca
 // un solo campo compartido), y las credenciales (clientId/clientSecret)
 // nunca se guardan en el servicio: viajan como parámetro en cada método,
-// desde IntegracionesService.obtenerCredencialesShopify(usuarioId).
+// desde IntegracionesService.obtenerCredencialesTienda(usuarioId, shopKey)
+// (fix 28/09: ahora identificada también por shopKey — un usuario puede
+// tener más de una tienda conectada).
 //
 // La app de cada estudiante necesita estos permisos de Admin API
 // (Configuración de la app en el Dev Dashboard → Alcances de API de
@@ -56,7 +58,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 // Credenciales de la tienda de Shopify de UN usuario puntual — las devuelve
-// IntegracionesService.obtenerCredencialesShopify(usuarioId) y las pasa el
+// IntegracionesService.obtenerCredencialesTienda(usuarioId, shopKey) y las pasa el
 // controlador en cada llamada. Nunca se guardan en este servicio (que es un
 // singleton compartido por todos los usuarios): viajan como parámetro en
 // cada método, de punta a punta.
@@ -220,7 +222,7 @@ export class ShopifyService {
 
   // Confirma que llegaron credenciales antes de llamar a Shopify — si esto
   // dispara es porque algo llamó a este servicio sin pasar por
-  // IntegracionesService.obtenerCredencialesShopify() primero (el controlador
+  // IntegracionesService.obtenerCredencialesTienda() primero (el controlador
   // ya hace esa validación con un mensaje más amigable antes de llegar acá;
   // esto es solo un respaldo).
   private validarCredenciales(credenciales?: ShopifyCredenciales | null): ShopifyCredenciales {
