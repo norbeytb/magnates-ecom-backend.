@@ -46,6 +46,20 @@ interface PilotoAutomaticoDto {
   // Reseñas reales scrapeadas de la página de origen (16/09, ver
   // importar-producto.service.ts) — opcional.
   resenas?: ResenaOrigen[];
+  // Fix 28/09: el módulo Product Marker del taller también puede llegar
+  // hasta acá cuando la extensión de navegador lee la página en segundo
+  // plano (ver product-marker-extension/content-puente-taller.js) en vez de
+  // pasar por /por-link — este campo faltaba en este DTO (aunque el
+  // servicio ya lo sabía usar, ver ofertaManual en
+  // importar-producto.service.ts), así que un precio que el estudiante
+  // completó a mano en el formulario del taller se perdía en ese camino. Se
+  // agrega acá con la MISMA forma que ya usa /por-link para no duplicar
+  // lógica en el frontend.
+  ofertaManual?: {
+    precio1Venta?: string; precio1Comparacion?: string;
+    precio2Venta?: string; precio2Comparacion?: string;
+    precio3Venta?: string; precio3Comparacion?: string;
+  };
 }
 
 // DTO de /por-link (pedido 18/09): además del link, el módulo Product Marker
@@ -97,6 +111,7 @@ export class ImportarProductoController {
       precioOriginal: dto?.precioOriginal,
       moneda: dto?.moneda,
       resenas: dto?.resenas || [],
+      ofertaManual: dto?.ofertaManual,
     });
   }
 
