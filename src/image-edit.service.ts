@@ -313,11 +313,6 @@ export class ImageEditService {
     numImagenes: number,
     calidad: 'low' | 'medium' | 'high',
   ): Promise<string[]> {
-    // Marca de depuración 30/09 (temporal — sacar una vez confirmado que la
-    // compresión corre de verdad): con .error() a propósito, para que sea
-    // imposible no verla en los logs de Railway, aunque haya algún filtro de
-    // nivel de log de por medio.
-    this.logger.error('>>>>> DEBUG-COMPRESION: entrando a llamarFal() — código nuevo SÍ está corriendo <<<<<');
     const resultado = await falClient.subscribe('openai/gpt-image-2/edit', {
       input: {
         image_urls: imageUrls,
@@ -352,16 +347,13 @@ export class ImageEditService {
       logs: false,
     });
     const urls = (resultado.data.images ?? []).map((img: { url: string }) => img.url);
-    this.logger.error(`>>>>> DEBUG-COMPRESION: fal.ai devolvió ${urls.length} imagen(es), arrancando compresión <<<<<`);
     // Fix 30/09: cada URL se descarga y se vuelve a comprimir (ver
     // comprimirYSubirImagenGenerada arriba) antes de devolverla — fal.ai no
     // deja pedirle un WebP más liviano directamente. En paralelo porque
     // numImagenes puede ser más de 1 y no hay motivo para hacerlo de a uno.
-    const comprimidas = await Promise.all(
+    return Promise.all(
       urls.map((url) => this.comprimirYSubirImagenGenerada(falClient, url, this.ANCHO_MAX_SECCION_GENERADA, this.CALIDAD_WEBP_SECCION_GENERADA)),
     );
-    this.logger.error(`>>>>> DEBUG-COMPRESION: terminó la compresión de las ${comprimidas.length} imagen(es) <<<<<`);
-    return comprimidas;
   }
 
   // Pedido 09/09 (bug reportado con captura: la sección Oferta falló con "Downstream service
