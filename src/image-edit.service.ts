@@ -148,6 +148,14 @@ export class ImageEditService {
   // que entrega el modelo, así que acá el ancho baja mucho más.
   private readonly ANCHO_MAX_AVATAR_GENERADO = 200;
   private readonly CALIDAD_WEBP_AVATAR_GENERADO = 72;
+  // Foto real que sube el estudiante para una reseña "Personalizada" (ver
+  // subirFotoProducto más abajo) — se ve en la landing como miniatura de
+  // 72px, pero tiene un visor "ver en grande" que usa la MISMA foto a full
+  // tamaño (shopify.service.ts), así que necesita más resolución que un
+  // avatar generado por IA, aunque igual mucha menos que la foto de un
+  // celular sin tocar (que puede pesar varios MB).
+  private readonly ANCHO_MAX_FOTO_RESENA = 1000;
+  private readonly CALIDAD_WEBP_FOTO_RESENA = 72;
 
   // Descarga la imagen que acaba de generar fal.ai, la redimensiona y la
   // vuelve a comprimir en WebP con sharp, y sube el resultado al storage de
@@ -458,6 +466,38 @@ export class ImageEditService {
     return falClient.storage.upload(blob);
   }
 
+  // Fix 30/09: mismo tipo de ahorro que comprimirYSubirImagenGenerada (ver
+  // arriba), pero para una foto que YA tenemos en memoria como base64 (subida
+  // por el estudiante) en vez de una URL que haya que descargar primero — una
+  // foto de celular sin tocar puede pesar varios MB, mucho más de lo que hace
+  // falta para mostrarla en la landing. "Mejor esfuerzo" igual que la otra:
+  // si sharp no puede leerla por lo que sea, se sube la original sin romper
+  // el guardado de la reseña.
+  private async comprimirYSubirFotoBase64(
+    falClient: FalClient,
+    buffer: Buffer,
+    mimeTypeOriginal: string,
+    anchoMaximo: number,
+    calidadWebp: number,
+  ): Promise<string> {
+    try {
+      const bufferComprimido = await sharp(buffer)
+        .resize({ width: anchoMaximo, withoutEnlargement: true })
+        .webp({ quality: calidadWebp, effort: 6 })
+        .toBuffer();
+      const blob = new Blob([new Uint8Array(bufferComprimido)], { type: 'image/webp' });
+      const url = await falClient.storage.upload(blob);
+      this.logger.log(
+        `Foto de reseña comprimida: ${buffer.length} bytes → ${bufferComprimido.length} bytes (${Math.round((bufferComprimido.length / buffer.length) * 100)}%).`,
+      );
+      return url;
+    } catch (error) {
+      this.logger.warn(`No se pudo comprimir una foto de reseña, se sube la original sin comprimir: ${(error as Error).message || error}`);
+      const blobOriginal = new Blob([new Uint8Array(buffer)], { type: mimeTypeOriginal });
+      return falClient.storage.upload(blobOriginal);
+    }
+  }
+
   // Wrapper público del mismo helper de arriba — lo usa el endpoint
   // "subir-foto-producto" para guardar de una vez, al subir la foto (Imagen 1/2/3),
   // una URL real y persistente en fal.storage, en vez de guardar el data URI
@@ -465,11 +505,27 @@ export class ImageEditService {
   // foto del producto aunque el usuario nunca llegue a generar ninguna sección.
   // Recibe la clave de fal.ai de ese usuario — la sube con SU cuenta, no con
   // una compartida.
-  async subirFotoProducto(dataUri: string, falApiKey: string): Promise<string> {
+  //
+  // Fix 30/09: este mismo endpoint también lo usa el panel de reseñas para
+  // subir la foto real de una reseña "Personalizada" — ahí `tipo` llega como
+  // 'resena' y SÍ se comprime (esa foto se ve tal cual en la landing final).
+  // Cuando `tipo` es 'producto' (o no se manda, para no romper a nadie que
+  // llamaba esto antes de este cambio) se sigue subiendo tal cual, porque esa
+  // foto se la mandamos después a la IA como referencia exacta del producto.
+  async subirFotoProducto(dataUri: string, falApiKey: string, tipo?: 'producto' | 'resena'): Promise<string> {
     if (!falApiKey) {
       throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
     }
-    return this.resolverImagenUrl(this.clienteFal(falApiKey), dataUri);
+    const falClient = this.clienteFal(falApiKey);
+    if (tipo === 'resena' && dataUri && dataUri.startsWith('data:')) {
+      const match = dataUri.match(/^data:([^;]+);base64,(.*)$/);
+      if (match) {
+        const [, mimeType, base64Data] = match;
+        const buffer = Buffer.from(base64Data, 'base64');
+        return this.comprimirYSubirFotoBase64(falClient, buffer, mimeType, this.ANCHO_MAX_FOTO_RESENA, this.CALIDAD_WEBP_FOTO_RESENA);
+      }
+    }
+    return this.resolverImagenUrl(falClient, dataUri);
   }
 
   // Pedido 11/09: sección "Testimonios" en modo Personalizada (versión

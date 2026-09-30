@@ -134,10 +134,26 @@ export class ImageEditController {
   // Imagen 1/2/3, sin generar nada — solo para tener una URL real y liviana que
   // guardar en el backend (ver ProductosController) y que la foto reaparezca
   // cada vez que se abra ese producto, incluso si nunca se genera una sección.
+  //
+  // Fix 30/09 (pedido de Norbey — las fotos de reseñas "Personalizada" que
+  // sube el propio estudiante llegaban pesadas a Shopify, sin comprimir):
+  // este MISMO endpoint también lo usa el panel de reseñas para subir la
+  // foto real de una reseña (ver wireResenasPanel en el taller) — ahí SÍ
+  // conviene comprimir, porque esa foto se muestra tal cual en la landing
+  // final. La foto de Imagen 1/2/3 en cambio se la mandamos después a la IA
+  // como referencia exacta del producto — comprimirla de más podría afectar
+  // cómo la IA reconoce el color/forma real, así que esa sigue sin tocarse.
+  // `tipo` es opcional y por defecto 'producto' (sin comprimir), para no
+  // cambiar el comportamiento de nadie que ya llamaba este endpoint sin
+  // mandar ese campo.
   @Post('subir-foto-producto')
-  async subirFotoProducto(@Body('dataUri') dataUri: string, @UsuarioActual() usuario: UsuarioAutenticado): Promise<{ url: string }> {
+  async subirFotoProducto(
+    @Body('dataUri') dataUri: string,
+    @Body('tipo') tipo: 'producto' | 'resena' | undefined,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ): Promise<{ url: string }> {
     const falApiKey = await this.exigirClaveFal(usuario.id);
-    const url = await this.imageEditService.subirFotoProducto(dataUri, falApiKey);
+    const url = await this.imageEditService.subirFotoProducto(dataUri, falApiKey, tipo);
     return { url };
   }
 }
