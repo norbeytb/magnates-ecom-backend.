@@ -2222,7 +2222,36 @@ export class ImportarProductoService {
     // NINGUNA, resenasReales queda vacío y Testimonios cae al comportamiento
     // viejo (inventado por IA) más abajo — nunca se genera una imagen con 0
     // reseñas.
-    const resenasReales = this.filtrarYOrdenarResenasPositivas(input.resenas || []);
+    let resenasReales = this.filtrarYOrdenarResenasPositivas(input.resenas || []);
+
+    // Fix 30/09 (2): esto viene de piloto-automatico, o sea que las reseñas
+    // (si las hay) ya las trajo LA EXTENSIÓN de Norbey/el estudiante, leyendo
+    // la página del producto en su propia pestaña — no el navegador headless
+    // del servidor. La extensión sabe leer las reseñas que ya están armadas
+    // en el HTML de la página del producto, pero varios productos las tienen
+    // en un widget que Amazon arma como carrusel de fotos o en una página
+    // aparte (ver obtenerResenasAmazon más abajo, que YA sabe intentar esos
+    // dos caminos extra para el camino viejo del servidor /por-link) — la
+    // extensión, en cambio, todavía no sabe hacer clic en ese carrusel ni
+    // navegar a esa página aparte. Caso real reportado por Norbey: "WOLFBOX
+    // MF50" SÍ tenía reseñas reales visibles en Amazon, pero la extensión
+    // volvió con resenas: [] porque estaban en ese carrusel, no sueltas en la
+    // página. Antes de resignarse a inventar con IA, se le da al servidor
+    // una segunda chance con esos mismos métodos ya probados — se le pasa
+    // html vacío a propósito, así obtenerResenasAmazon salta directo a sus
+    // intentos con navegador real (carrusel → página dedicada) en vez de
+    // reintentar el primero (ese SÍ lo hizo la extensión ya, mirando el HTML
+    // real de la pestaña, que es información que el servidor no tiene acá).
+    if (resenasReales.length === 0 && input.plataforma === 'amazon') {
+      try {
+        const resenasDelServidor = await this.obtenerResenasAmazon({ html: '', htmlRenderizadoConNavegador: false }, input.url);
+        resenasReales = this.filtrarYOrdenarResenasPositivas(resenasDelServidor);
+      } catch (error) {
+        this.logger.warn(
+          `Piloto automático: la extensión no encontró reseñas y el intento de respaldo del servidor tampoco (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+        );
+      }
+    }
 
     const falClient = this.clienteFal(falApiKey);
 
