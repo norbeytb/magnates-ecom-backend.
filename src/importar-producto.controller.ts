@@ -46,6 +46,11 @@ interface PilotoAutomaticoDto {
   // Reseñas reales scrapeadas de la página de origen (16/09, ver
   // importar-producto.service.ts) — opcional.
   resenas?: ResenaOrigen[];
+  // Pedido 30/09 (pivote, sexta vuelta, ver importar-producto.service.ts —
+  // ImportarProductoInput.fotosResenas): hasta 7 fotos reales de compradores
+  // que la extensión pudo juntar cuando no encontró texto real de reseñas —
+  // opcional.
+  fotosResenas?: string[];
   // Fix 28/09: el módulo Product Marker del taller también puede llegar
   // hasta acá cuando la extensión de navegador lee la página en segundo
   // plano (ver product-marker-extension/content-puente-taller.js) en vez de
@@ -111,6 +116,7 @@ export class ImportarProductoController {
       precioOriginal: dto?.precioOriginal,
       moneda: dto?.moneda,
       resenas: dto?.resenas || [],
+      fotosResenas: dto?.fotosResenas || [],
       ofertaManual: dto?.ofertaManual,
     });
   }

@@ -136,6 +136,19 @@ export interface ImportarProductoInput {
   // Testimonios se arma igual que antes (inventado por IA a partir del
   // resultado del producto). Se muestran hasta MAX_RESENAS_REALES.
   resenas?: ResenaOrigen[];
+  // Pedido 30/09 (pivote, sexta vuelta): cuando la extensión no encontró
+  // NINGUNA reseña con texto real utilizable (Amazon arma la ventana
+  // emergente de su carrusel "Opiniones con imágenes" de formas demasiado
+  // distintas según el producto como para leer texto/autor de forma
+  // confiable — ver la nota grande en content-amazon.js), igual puede haber
+  // podido juntar hasta 7 URLs de fotos REALES que compradores subieron en
+  // sus reseñas (eso sí es simple y robusto: son <img> normales en el DOM,
+  // sin necesitar clics). Si vienen, Testimonios se arma con la MISMA
+  // estructura que el modo "Personalizada" manual usa cuando el estudiante
+  // sube una foto sin escribir texto: la foto real se publica tal cual, y el
+  // avatar (carita) + nombre/ciudad/estrellas/texto los inventa la IA — ver
+  // armarResenasLandingDesdeFotos más abajo.
+  fotosResenas?: string[];
   // Pedido 18/09 (módulo "Product Marker" del taller): el estudiante puede
   // completar a mano el precio de venta y de comparación de cada combo (1/2/3
   // unidades) ANTES de generar, en vez de depender solo del margen automático
@@ -642,6 +655,75 @@ export class ImportarProductoService {
         pendiente: false,
         fechaCarga: new Date().toISOString(),
       });
+    }
+    return resultado;
+  }
+
+  // Pedido 30/09 (pivote, sexta vuelta): cuando ni una sola reseña trajo
+  // texto real utilizable pero SÍ se pudieron juntar fotos reales sueltas
+  // (ver ImportarProductoInput.fotosResenas y amzExtraerFotosDeResenas en
+  // content-amazon.js), esto arma cada tarjeta de reseña con la MISMA
+  // estructura y el MISMO mecanismo que usa el estudiante a mano en modo
+  // "Personalizada" cuando sube una foto sin escribir el texto (ver el
+  // handler de "Generar" en el frontend, bloque de `resenasPendientes`): la
+  // foto real del comprador se publica TAL CUAL (nunca se le pide nada a la
+  // IA sobre ella), y lo que falta — avatar (carita), nombre, ciudad,
+  // estrellas y texto — lo inventa la IA de cero, sin mirar la foto. Nada de
+  // esto pretende ser una cita real de un cliente: es el mismo criterio ya
+  // aceptado por Norbey para "Personalizada", aplicado automáticamente acá.
+  //
+  // El sexo del avatar y el del nombre inventado se deciden UNA vez por
+  // reseña y se le manda el mismo valor a las dos llamadas (mismo fix del
+  // 12/09 que ya usa el frontend) para que nunca salga, por ejemplo, un
+  // avatar de hombre con el nombre "Catalina". nombresUsados/ciudadesUsadas/
+  // textosUsados se van acumulando reseña a reseña para que la IA no repita
+  // nombre, ciudad, ni la misma estructura de frase entre una tarjeta y la
+  // siguiente (mismo mecanismo que ENFOQUES_RESENA en text-generation.service.ts).
+  private async armarResenasLandingDesdeFotos(falApiKey: string, nombreProducto: string, fotos: string[]): Promise<any[]> {
+    const usadas = (fotos || []).filter((f) => !!f).slice(0, this.MAX_RESENAS_REALES);
+    const resultado: any[] = [];
+    const nombresUsados: string[] = [];
+    const ciudadesUsadas: string[] = [];
+    const textosUsados: string[] = [];
+    for (let indice = 0; indice < usadas.length; indice++) {
+      const fotoUrl = usadas[indice];
+      const sexo = Math.random() < 0.5 ? 'Hombre' : 'Mujer';
+      try {
+        const [avatarResultado, textoResultado] = await Promise.all([
+          this.imageEditService.generarAvatarResena({ falApiKey, personajes: { sexo } }),
+          this.textGenerationService.generarTextoResena({
+            nombreProducto,
+            idioma: 'Español',
+            nombresUsados,
+            ciudadesUsadas,
+            textosUsados,
+            indice,
+            sexo,
+            falApiKey,
+          }),
+        ]);
+        const nombre = textoResultado.nombre?.trim() || 'Cliente V.';
+        const ciudad = textoResultado.ciudad?.trim() || '';
+        const texto = textoResultado.texto?.trim() || '';
+        if (!texto) continue; // sin texto no sirve como testimonio, se salta esta foto
+        nombresUsados.push(nombre);
+        ciudadesUsadas.push(ciudad);
+        textosUsados.push(texto);
+        resultado.push({
+          id: `resena-foto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          fotoUrl,
+          fotos: [fotoUrl],
+          avatarUrl: avatarResultado.avatarUrl || '',
+          nombre,
+          ciudad,
+          estrellas: textoResultado.estrellas || 5,
+          texto,
+          pendiente: false,
+          fechaCarga: new Date().toISOString(),
+        });
+      } catch (error) {
+        this.logger.warn(`No se pudo armar la reseña a partir de una foto real (foto ${indice + 1}/${usadas.length}) — se la salta: ${(error as Error).message}`);
+      }
     }
     return resultado;
   }
@@ -2323,6 +2405,10 @@ export class ImportarProductoService {
     const items: ItemLanding[] = [];
     let costoEstimadoUsd = 0;
     const seccionesOk: string[] = [];
+    // Solo para el mensaje de log del final — ver el bloque de Testimonios
+    // más abajo, donde se actualiza a 'fotos' si se termina usando ese
+    // camino de respaldo (fotos reales + IA inventando el resto).
+    let origenTestimonios: 'reales' | 'fotos' | 'inventado' = resenasReales.length > 0 ? 'reales' : 'inventado';
 
     for (const seccion of this.SECCIONES_AUTOMATICAS) {
       try {
@@ -2346,6 +2432,32 @@ export class ImportarProductoService {
           // agrega más abajo (después de este for) ya queda justo debajo,
           // sin repetirlo dos veces seguidas.
           continue;
+        }
+
+        // Pedido 30/09 (pivote, sexta vuelta): no hubo NINGUNA reseña con
+        // texto real, pero la extensión sí pudo juntar fotos reales sueltas
+        // (ver amzExtraerFotosDeResenas en content-amazon.js) — se arma cada
+        // tarjeta con esa foto real + avatar/nombre/texto inventados por la
+        // IA, mismo mecanismo que "Personalizada" manual (ver la nota grande
+        // de armarResenasLandingDesdeFotos, arriba). Si por lo que sea no
+        // sale NINGUNA tarjeta utilizable, sigue de largo (sin `continue`) y
+        // cae al camino de siempre, de abajo, como si nunca hubiera habido
+        // fotos.
+        if (seccion === 'testimonios' && resenasReales.length === 0 && (input.fotosResenas || []).length > 0) {
+          try {
+            const resenasLanding = await this.armarResenasLandingDesdeFotos(falApiKey, nombreProducto, input.fotosResenas || []);
+            if (resenasLanding.length > 0) {
+              await this.productosService.guardarResenas(usuarioId, nombreProducto, 'personalizada', resenasLanding);
+              seccionesOk.push(seccion);
+              items.push({ id: `resenas-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, tipo: 'resenas' });
+              origenTestimonios = 'fotos';
+              continue;
+            }
+          } catch (error) {
+            this.logger.warn(
+              `Piloto automático: no se pudieron armar las reseñas a partir de fotos reales (${(error as Error).message}) — Testimonios cae al camino viejo (imagen inventada por IA).`,
+            );
+          }
         }
 
         const resultado = await this.imageEditService.generarSeccion({
@@ -2407,8 +2519,14 @@ export class ImportarProductoService {
       botonFlotante: true,
     });
 
+    const resumenTestimonios =
+      origenTestimonios === 'reales'
+        ? 'con reseñas reales (texto y foto reales)'
+        : origenTestimonios === 'fotos'
+          ? 'con fotos reales de compradores + avatar/nombre/texto inventados por IA'
+          : 'inventados por IA, no se encontraron reseñas ni fotos reales';
     this.logger.log(
-      `Piloto automático: "${nombreProducto}" importado desde ${input.plataforma} — ${seccionesOk.length}/${this.SECCIONES_AUTOMATICAS.length} secciones generadas (testimonios ${resenasReales.length > 0 ? 'con reseñas reales' : 'inventados por IA, no se encontraron reseñas'}), costo estimado $${costoEstimadoUsd.toFixed(3)}.`,
+      `Piloto automático: "${nombreProducto}" importado desde ${input.plataforma} — ${seccionesOk.length}/${this.SECCIONES_AUTOMATICAS.length} secciones generadas (testimonios ${resumenTestimonios}), costo estimado $${costoEstimadoUsd.toFixed(3)}.`,
     );
 
     return {
