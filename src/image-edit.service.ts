@@ -19,8 +19,9 @@
 // Instalar el SDK oficial de fal antes de usar esto:
 //   npm install @fal-ai/client
 
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { createFalClient, FalClient } from '@fal-ai/client';
+import sharp from 'sharp';
 import { HistorialService } from './historial.service';
 
 export interface FichaTecnica {
@@ -96,12 +97,99 @@ export interface GenerarAvatarResenaInput {
 
 @Injectable()
 export class ImageEditService {
+  private readonly logger = new Logger(ImageEditService.name);
+
   constructor(private readonly historialService: HistorialService) {}
 
   // Instancia de fal AISLADA para esta llamada puntual — nunca la global
   // "fal" (ver nota grande arriba del archivo).
   private clienteFal(apiKey: string): FalClient {
     return createFalClient({ credentials: apiKey });
+  }
+
+  // ---- Compresión propia después de generar (pedido 30/09) ----
+  //
+  // fal.ai/OpenAI dejan elegir `output_format: 'webp'` (ya se pedía desde el
+  // 28/09) pero NO exponen ningún parámetro para controlar cuánto se
+  // comprime ese WebP (se investigó la documentación real de
+  // "openai/gpt-image-2/edit" en fal.ai — no existe un "output_compression"
+  // ni nada equivalente, solo `quality: low/medium/high`, que en realidad
+  // controla qué tan bien dibuja el MODELO, no el peso final del archivo).
+  // O sea: el WebP que devuelve fal.ai viene con la compresión que a
+  // OpenAI le pareció, sin ninguna perilla para pedirle "menos pesado".
+  //
+  // Por eso la única forma real de bajarle el peso es descargar esa imagen
+  // acá y volver a comprimirla nosotros mismos con sharp — mismo mecanismo
+  // que ya se usa para el compuesto de Testimonios (ver
+  // importar-producto.service.ts, `.webp({quality:82})`), aplicado ahora
+  // TAMBIÉN a las secciones que arma GPT Image 2 directamente.
+  //
+  // El otro motivo real de que pesen tanto (aparte de la compresión): estas
+  // imágenes se generan en una resolución bastante más grande que el ancho
+  // real al que se terminan viendo — en el tema de Shopify cada sección se
+  // muestra a `width:100%` de un celular (ver shopify.service.ts,
+  // "landing-imagen"), nunca a pantalla completa de escritorio ni a la
+  // resolución nativa que entrega el modelo. Bajarle el ancho a algo
+  // acorde a cómo se ve de verdad reduce el peso MUCHO más que solo tocar
+  // la calidad del WebP, y sin perder nitidez visible en el celular.
+  //
+  // Los números de abajo (ancho y calidad) son un punto de partida
+  // razonable, no un valor mágico — el pedido original hablaba de bajar de
+  // ~549 KB a algo cercano a 17 KB. Para una foto simple sin texto eso es
+  // alcanzable; para las piezas de este taller (fotos + texto superpuesto
+  // por la IA) bajar TANTO castiga la nitidez del texto antes que la de la
+  // foto — así que se arrancó en un punto intermedio (bastante más liviano,
+  // sin que el texto se vea borroso) y Norbey puede pedir ajustar el número
+  // exacto después de ver el resultado real en una landing publicada.
+  private readonly ANCHO_MAX_SECCION_GENERADA = 900; // px — cubre pantallas de celular hasta ~2x de densidad
+  private readonly CALIDAD_WEBP_SECCION_GENERADA = 68;
+  // Los avatares de reseñas IA se muestran como un círculo de 36-72px (ver
+  // shopify.service.ts) — no necesitan ni de cerca la resolución "square_hd"
+  // que entrega el modelo, así que acá el ancho baja mucho más.
+  private readonly ANCHO_MAX_AVATAR_GENERADO = 200;
+  private readonly CALIDAD_WEBP_AVATAR_GENERADO = 72;
+
+  // Descarga la imagen que acaba de generar fal.ai, la redimensiona y la
+  // vuelve a comprimir en WebP con sharp, y sube el resultado al storage de
+  // fal (con la clave de ESE usuario, mismo mecanismo que ya usa
+  // resolverImagenUrl() más abajo) para devolver una URL nueva que reemplaza
+  // a la original. "Mejor esfuerzo" a propósito: si algo de esto falla
+  // (fal.ai tardó en servir la imagen, sharp no pudo leerla, etc.) se usa la
+  // imagen ORIGINAL sin comprimir en vez de tirar abajo toda la generación
+  // de la sección por esto — una imagen pesada sigue siendo mejor que
+  // ninguna imagen.
+  private async comprimirYSubirImagenGenerada(
+    falClient: FalClient,
+    urlOriginal: string,
+    anchoMaximo: number,
+    calidadWebp: number,
+  ): Promise<string> {
+    try {
+      const resp = await fetch(urlOriginal);
+      if (!resp.ok) {
+        throw new Error(`la imagen generada respondió con error (código ${resp.status})`);
+      }
+      const bufferOriginal = Buffer.from(await resp.arrayBuffer());
+      const bufferComprimido = await sharp(bufferOriginal)
+        .resize({ width: anchoMaximo, withoutEnlargement: true })
+        .webp({ quality: calidadWebp, effort: 6 })
+        .toBuffer();
+      // Mismo choque de tipos ya visto antes en este proyecto entre Buffer y
+      // el BlobPart que espera Blob con una versión moderna de @types/node
+      // (ver importar-producto.service.ts, bufferABlob) — envolver en un
+      // Uint8Array nuevo lo resuelve sin cambiar los bytes de adentro.
+      const blob = new Blob([new Uint8Array(bufferComprimido)], { type: 'image/webp' });
+      const urlComprimida = await falClient.storage.upload(blob);
+      this.logger.log(
+        `Imagen generada comprimida: ${bufferOriginal.length} bytes → ${bufferComprimido.length} bytes (${Math.round((bufferComprimido.length / bufferOriginal.length) * 100)}%).`,
+      );
+      return urlComprimida;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo comprimir una imagen generada, se usa la original sin comprimir: ${(error as Error).message || error}`,
+      );
+      return urlOriginal;
+    }
   }
 
   async generarSeccion(input: GenerarSeccionInput): Promise<GenerarSeccionResultado> {
@@ -258,7 +346,14 @@ export class ImageEditService {
       },
       logs: false,
     });
-    return (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+    const urls = (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+    // Fix 30/09: cada URL se descarga y se vuelve a comprimir (ver
+    // comprimirYSubirImagenGenerada arriba) antes de devolverla — fal.ai no
+    // deja pedirle un WebP más liviano directamente. En paralelo porque
+    // numImagenes puede ser más de 1 y no hay motivo para hacerlo de a uno.
+    return Promise.all(
+      urls.map((url) => this.comprimirYSubirImagenGenerada(falClient, url, this.ANCHO_MAX_SECCION_GENERADA, this.CALIDAD_WEBP_SECCION_GENERADA)),
+    );
   }
 
   // Pedido 09/09 (bug reportado con captura: la sección Oferta falló con "Downstream service
@@ -432,7 +527,13 @@ export class ImageEditService {
       },
       logs: false,
     });
-    return (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+    const urls = (resultado.data.images ?? []).map((img: { url: string }) => img.url);
+    // Fix 30/09: mismo motivo que en llamarFal() — acá el ahorro es todavía
+    // mayor, porque "square_hd" es una resolución grande para un avatar que
+    // termina mostrándose como un círculo de 36-72px.
+    return Promise.all(
+      urls.map((url) => this.comprimirYSubirImagenGenerada(falClient, url, this.ANCHO_MAX_AVATAR_GENERADO, this.CALIDAD_WEBP_AVATAR_GENERADO)),
+    );
   }
 
   // Mismo criterio de reintento que llamarFalConReintentos (arriba) — se
