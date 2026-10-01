@@ -141,12 +141,18 @@ export interface ImportarProductoInput {
   // emergente de su carrusel "Opiniones con imágenes" de formas demasiado
   // distintas según el producto como para leer texto/autor de forma
   // confiable — ver la nota grande en content-amazon.js), igual puede haber
-  // podido juntar hasta 7 URLs de fotos REALES que compradores subieron en
-  // sus reseñas (eso sí es simple y robusto: son <img> normales en el DOM,
-  // sin necesitar clics). Si vienen, Testimonios se arma con la MISMA
-  // estructura que el modo "Personalizada" manual usa cuando el estudiante
-  // sube una foto sin escribir texto: la foto real se publica tal cual, y el
-  // avatar (carita) + nombre/ciudad/estrellas/texto los inventa la IA — ver
+  // podido juntar URLs de fotos REALES que compradores subieron en sus
+  // reseñas (eso sí es simple y robusto: son <img> normales en el DOM, sin
+  // necesitar clics). Fix 01/10 (pedido de Norbey): la extensión ya no corta
+  // en ningún número fijo al scrapear — puede traer muchas más de las que
+  // conviene usar, el taller ya le muestra todas al estudiante para que
+  // elija cuáles cargar (ver pmMostrarEleccionFotos en el frontend) — así
+  // que ACÁ, como red de seguridad final (por si el frontend mandara de
+  // más), se recorta duro a MAX_RESENAS_REALES antes de generar nada. Si
+  // vienen, Testimonios se arma con la MISMA estructura que el modo
+  // "Personalizada" manual usa cuando el estudiante sube una foto sin
+  // escribir texto: la foto real se publica tal cual, y el avatar (carita) +
+  // nombre/ciudad/estrellas/texto los inventa la IA — ver
   // armarResenasLandingDesdeFotos más abajo.
   fotosResenas?: string[];
   // Pedido 18/09 (módulo "Product Marker" del taller): el estudiante puede

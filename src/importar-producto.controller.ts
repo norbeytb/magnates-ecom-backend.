@@ -47,9 +47,11 @@ interface PilotoAutomaticoDto {
   // importar-producto.service.ts) — opcional.
   resenas?: ResenaOrigen[];
   // Pedido 30/09 (pivote, sexta vuelta, ver importar-producto.service.ts —
-  // ImportarProductoInput.fotosResenas): hasta 7 fotos reales de compradores
-  // que la extensión pudo juntar cuando no encontró texto real de reseñas —
-  // opcional.
+  // ImportarProductoInput.fotosResenas): fotos reales de compradores que la
+  // extensión pudo juntar cuando no encontró texto real de reseñas, ya
+  // filtradas por el estudiante en el taller (puede venir cualquier
+  // cantidad — el backend las recorta duro a MAX_RESENAS_REALES de todos
+  // modos, como red de seguridad) — opcional.
   fotosResenas?: string[];
   // Fix 28/09: el módulo Product Marker del taller también puede llegar
   // hasta acá cuando la extensión de navegador lee la página en segundo
