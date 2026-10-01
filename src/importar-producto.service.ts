@@ -2312,31 +2312,50 @@ export class ImportarProductoService {
     // reseñas.
     let resenasReales = this.filtrarYOrdenarResenasPositivas(input.resenas || []);
 
-    // Fix 30/09 (2): esto viene de piloto-automatico, o sea que las reseñas
-    // (si las hay) ya las trajo LA EXTENSIÓN de Norbey/el estudiante, leyendo
-    // la página del producto en su propia pestaña — no el navegador headless
-    // del servidor. La extensión sabe leer las reseñas que ya están armadas
-    // en el HTML de la página del producto, pero varios productos las tienen
-    // en un widget que Amazon arma como carrusel de fotos o en una página
-    // aparte (ver obtenerResenasAmazon más abajo, que YA sabe intentar esos
-    // dos caminos extra para el camino viejo del servidor /por-link) — la
-    // extensión, en cambio, todavía no sabe hacer clic en ese carrusel ni
-    // navegar a esa página aparte. Caso real reportado por Norbey: "WOLFBOX
-    // MF50" SÍ tenía reseñas reales visibles en Amazon, pero la extensión
-    // volvió con resenas: [] porque estaban en ese carrusel, no sueltas en la
-    // página. Antes de resignarse a inventar con IA, se le da al servidor
-    // una segunda chance con esos mismos métodos ya probados — se le pasa
-    // html vacío a propósito, así obtenerResenasAmazon salta directo a sus
-    // intentos con navegador real (carrusel → página dedicada) en vez de
-    // reintentar el primero (ese SÍ lo hizo la extensión ya, mirando el HTML
-    // real de la pestaña, que es información que el servidor no tiene acá).
-    if (resenasReales.length === 0 && input.plataforma === 'amazon') {
+    // Fix 30/09 (2), ampliado 01/10 a las TRES plataformas (pedido de
+    // Norbey: "que funcione igual para Amazon, Temu y AliExpress, no quiero
+    // hacer doble trabajo"): esto viene de piloto-automatico, o sea que las
+    // reseñas (si las hay) ya las trajo LA EXTENSIÓN de Norbey/el
+    // estudiante, leyendo la página del producto en su propia pestaña — no
+    // el navegador headless del servidor. Para cada plataforma, si la
+    // extensión no encontró ninguna reseña con texto real, se le da al
+    // servidor una segunda chance con el MISMO método que ya usa el camino
+    // viejo /por-link para esa plataforma (ver procesarImportacionPorLink
+    // más abajo, que arma esto mismo para ese otro camino):
+    //  - Amazon: obtenerResenasAmazon, con html vacío a propósito, así salta
+    //    directo a sus intentos con navegador real (carrusel → página
+    //    dedicada) en vez de reintentar leer el HTML plano (eso SÍ lo hizo
+    //    la extensión ya, mirando el HTML real de la pestaña, que es
+    //    información que el servidor no tiene acá). Caso real reportado por
+    //    Norbey: "WOLFBOX MF50" SÍ tenía reseñas reales visibles en Amazon,
+    //    pero la extensión volvió con resenas: [] porque estaban en ese
+    //    carrusel, no sueltas en la página.
+    //  - AliExpress: scrapearResenasAliExpressPorLink — usa la API interna
+    //    de AliExpress directamente (no depende de leer el DOM), así que es
+    //    independiente de lo que haya podido o no leer la extensión; suele
+    //    ser el más confiable de los tres.
+    //  - Temu: scrapearResenasTemuConNavegador — abre un Chromium real del
+    //    servidor (más lento, selectores heurísticos sin calibrar contra el
+    //    sitio real, ver el aviso grande en esa función) — igual se
+    //    intenta, nunca es peor que no intentar nada.
+    // Si este segundo intento TAMBIÉN vuelve vacío, resenasReales sigue
+    // vacío y más abajo se prueba con fotosResenas (fotos reales que haya
+    // podido juntar la extensión + la IA inventa el resto) antes de
+    // resignarse al camino viejo, 100% inventado por IA.
+    if (resenasReales.length === 0) {
       try {
-        const resenasDelServidor = await this.obtenerResenasAmazon({ html: '', htmlRenderizadoConNavegador: false }, input.url);
+        const resenasDelServidor =
+          input.plataforma === 'amazon'
+            ? await this.obtenerResenasAmazon({ html: '', htmlRenderizadoConNavegador: false }, input.url)
+            : input.plataforma === 'aliexpress'
+              ? await this.scrapearResenasAliExpressPorLink(input.url)
+              : input.plataforma === 'temu'
+                ? await this.scrapearResenasTemuConNavegador(input.url)
+                : [];
         resenasReales = this.filtrarYOrdenarResenasPositivas(resenasDelServidor);
       } catch (error) {
         this.logger.warn(
-          `Piloto automático: la extensión no encontró reseñas y el intento de respaldo del servidor tampoco (${(error as Error).message || error}) — Testimonios va a usar reseñas inventadas por IA.`,
+          `Piloto automático: la extensión no encontró reseñas y el intento de respaldo del servidor tampoco (${(error as Error).message || error}) — Testimonios va a probar con fotos reales o, si tampoco hay, usar reseñas inventadas por IA.`,
         );
       }
     }
