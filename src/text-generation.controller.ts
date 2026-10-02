@@ -7,7 +7,14 @@
 // integraciones.service.ts.
 
 import { Body, Controller, HttpException, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { TextGenerationService, GenerarCopyResultado, GenerarAngulosResultado, AdaptarResenaResultado } from './text-generation.service';
+import {
+  TextGenerationService,
+  GenerarCopyResultado,
+  GenerarAngulosResultado,
+  AdaptarResenaResultado,
+  SeccionParaAsignarFoto,
+  AsignacionFotosResultado,
+} from './text-generation.service';
 import { JwtAuthGuard, UsuarioActual, UsuarioAutenticado } from './auth.guard';
 import { IntegracionesService } from './integraciones.service';
 
@@ -80,6 +87,15 @@ interface GenerarTextoResenaDto {
   // ya le mandó a /ia/imagenes/generar-avatar-resena para ESTA reseña, para
   // que el nombre inventado acá sea siempre acorde a la foto del avatar.
   sexo?: string;
+}
+
+// Pedido 02/10: ver comentario junto a AsignarFotosASeccionesInput en el
+// service — decide con IA de visión qué foto de producto va en cada sección
+// a generar, en vez de repartirlas mecánicamente.
+interface AsignarFotosASeccionesDto {
+  nombreProducto: string;
+  secciones: SeccionParaAsignarFoto[];
+  fotos: string[];
 }
 
 @Controller('ia/texto')
@@ -185,6 +201,24 @@ export class TextGenerationController {
       textosUsados: dto.textosUsados,
       indice: dto.indice,
       sexo: dto.sexo,
+      falApiKey,
+    });
+  }
+
+  // Botón "Generar" del taller cuando hay más de una foto de producto
+  // subida (Imagen 1/2/3): antes de generar cada sección, le pregunta a la
+  // IA (con visión) cuál de esas fotos corresponde a cada sección según su
+  // contenido real, en vez de repartirlas por turno sin mirar si aplican.
+  @Post('asignar-fotos-secciones')
+  async asignarFotosASecciones(
+    @Body() dto: AsignarFotosASeccionesDto,
+    @UsuarioActual() usuario: UsuarioAutenticado,
+  ): Promise<AsignacionFotosResultado> {
+    const falApiKey = await this.exigirClaveFal(usuario.id);
+    return this.textGenerationService.asignarFotosASecciones({
+      nombreProducto: dto.nombreProducto,
+      secciones: dto.secciones,
+      fotos: dto.fotos,
       falApiKey,
     });
   }

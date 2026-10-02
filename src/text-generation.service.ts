@@ -87,6 +87,52 @@ export interface AdaptarResenaResultado {
   texto: string;
 }
 
+// Pedido 01/10: ver inventarNombreParaResenaAnonima() más abajo — una reseña
+// real que vino sin nombre de autor, para que la IA le invente uno acorde al
+// género que se pueda inferir del propio texto (nunca toca el texto en sí).
+export interface InventarNombreResenaInput {
+  textoResena: string;
+  nombreProducto: string;
+  idioma?: string; // ver nota en GenerarCopyInput
+  pais?: string; // mismo país de logística/envío ya configurado, ver ShopifyService
+  nombresUsados?: string[];
+  ciudadesUsadas?: string[];
+  falApiKey: string;
+}
+
+export interface InventarNombreResenaResultado {
+  nombre: string;
+  ciudad: string;
+}
+
+// Pedido 02/10: el estudiante sube varias fotos de producto (Imagen 1/2/3) y
+// quiere que, al generar varias secciones de la landing de una, cada sección
+// use la foto que REALMENTE corresponda según su contenido/contexto — no una
+// distribución mecánica (round-robin) que "reparte" fotos sin mirar si pegan.
+// Se le manda a la IA (con visión, ver llamarFalVision) TODAS las fotos en
+// una sola llamada junto con la descripción de cada sección/plantilla a
+// generar, y decide, sección por sección, cuál foto (si alguna) es la que
+// mejor encaja. Puede repetir la misma foto en varias secciones si de verdad
+// aplica a todas, y puede dejar fotos sin usar si ninguna sección las necesita.
+export interface SeccionParaAsignarFoto {
+  id: string;
+  sectionLabel: string;
+  // Texto que describe qué muestra visualmente la plantilla elegida para esa
+  // sección (viene de getRealDescripcion() en el frontend) — es el contexto
+  // real que la IA necesita para decidir qué foto pega ahí.
+  contextoPlantilla?: string;
+}
+
+export interface AsignarFotosASeccionesInput {
+  nombreProducto: string;
+  secciones: SeccionParaAsignarFoto[];
+  fotos: string[];
+  falApiKey: string;
+}
+
+// Mapa { idDeSeccion: índice (0-based) de la foto elegida dentro de "fotos" }.
+export type AsignacionFotosResultado = Record<string, number>;
+
 // Pedido 11/09 (pivote): el estudiante ya no escribe ningún texto — sube
 // SOLO una foto real por reseña (puede subir varias de una) y la IA
 // redacta el texto completo mirando la foto (usa un modelo con visión, ver
@@ -397,6 +443,65 @@ ${REGLA_FORMATO_JSON}`;
     };
   }
 
+  // Pedido 01/10: reseñas REALES (texto real, scrapeado de AliExpress/Amazon/
+  // Temu) que vinieron sin nombre de autor ("Anónimo") — Norbey ya no quiere
+  // que el taller le pida al estudiante escribir un nombre a mano (eso vivía
+  // en el flujo viejo de 'revisando_resenas', ver importar-producto.service.ts,
+  // que ahora quedó sin usar por lo mismo). En vez de eso, esta llamada
+  // inventa un nombre acorde al GÉNERO que se puede inferir del propio texto
+  // de la reseña (ej.: si dice "mi esposo", la que escribe es una mujer → va
+  // nombre de mujer; si dice "mi esposa", el que escribe es un hombre →
+  // nombre de hombre — ejemplos explícitos que dio Norbey). Es una llamada
+  // chica a propósito (no toca el texto original para nada, ni la ciudad real
+  // de nadie — ciudad también sale inventada, igual que ya hacía
+  // adaptarResena): solo decide nombre + ciudad.
+  async inventarNombreParaResenaAnonima(input: InventarNombreResenaInput): Promise<InventarNombreResenaResultado> {
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+
+    const idioma = (input.idioma || 'Español').trim() || 'Español';
+    const paisLimpio = (input.pais || '').trim();
+    const notaPais =
+      paisLimpio && paisLimpio !== 'Selecciona el país'
+        ? ` El país donde se vende este producto es ${paisLimpio} — el nombre y la ciudad que inventes tienen que sonar realmente típicos de ${paisLimpio}, nunca genéricos ni de otro país.`
+        : ' No se especificó un país puntual para esta venta — usá un nombre y una ciudad neutros, comunes en Latinoamérica.';
+
+    const nombresUsados = (input.nombresUsados || []).filter((n) => n && n.trim());
+    const ciudadesUsadas = (input.ciudadesUsadas || []).filter((c) => c && c.trim());
+    const notaRepetidos =
+      (nombresUsados.length > 0 ? ` Nombres que YA se usaron en otras reseñas de esta misma landing y NO podés repetir: ${nombresUsados.join(', ')}.` : '') +
+      (ciudadesUsadas.length > 0 ? ` Ciudades que YA se usaron — tratá de variar: ${ciudadesUsadas.join(', ')}.` : '');
+
+    const systemPrompt = `Sos un editor de reseñas de clientes reales para una tienda de eCommerce.
+
+Vas a recibir el texto EXACTO que un cliente real escribió sobre el producto "${input.nombreProducto}" después de haberlo comprado y usado. Ese cliente no dejó su nombre (quedó anónimo en el sitio de origen). Tu única tarea es inventarle un nombre + inicial de apellido y una ciudad para mostrar junto a su reseña — NUNCA toques ni reescribas el texto de la reseña, eso ya está resuelto aparte.
+
+REGLA MÁS IMPORTANTE DE TODAS (no negociable): el nombre que inventes tiene que ser coherente con el GÉNERO de la persona que escribió el texto, si el texto da alguna pista de eso. Fijate en pistas de este tipo:
+- Menciones a otra persona que delatan el género de quien escribe (ej.: "mi esposo"/"mi marido"/"mi novio" → quien escribe es una mujer, usá nombre de mujer; "mi esposa"/"mi marido no, mi mujer"/"mi novia" → quien escribe es un hombre, usá nombre de hombre).
+- Concordancia de género en adjetivos sobre sí misma/o (ej. "quedé encantada", "muy conforme" en femenino → mujer; "quedé encantado", "conforme" en masculino → hombre).
+- Menciones como "como mamá"/"como mujer" → mujer; "como papá"/"como hombre" → hombre.
+Si el texto NO da ninguna pista clara de género, elegí cualquiera de los dos libremente (no hace falta forzar nada).
+
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente estas claves:
+{"nombre":"...","ciudad":"..."}
+
+Significado de cada clave:
+- nombre: nombre de pila + inicial del apellido con punto, por ejemplo "Valentina R." o "Andrés M." (inventado, coherente con el género inferido del texto como se explicó arriba).
+- ciudad: una ciudad real y conocida del país indicado.
+${idioma.toLowerCase() !== 'español' ? ` El nombre y la ciudad deben sonar naturales para alguien que vive en un país de habla ${idioma} (el texto de la reseña puede venir en cualquier idioma, eso no cambia).` : ''}${notaPais}${notaRepetidos}
+
+${REGLA_FORMATO_JSON}`;
+
+    const userMsg = `Texto real que escribió el cliente (anónimo):\n${input.textoResena}`;
+
+    const datos = await this.llamarFal(input.falApiKey, userMsg, systemPrompt);
+    return {
+      nombre: String(datos?.nombre || '').trim() || 'Cliente V.',
+      ciudad: String(datos?.ciudad || '').trim(),
+    };
+  }
+
   // Pedido 11/09 (pivote): reemplaza en la práctica a adaptarResena() para
   // el flujo nuevo — el estudiante solo sube una foto real de una persona,
   // sin escribir ningún texto, y la IA "mira" la foto (modelo con visión,
@@ -453,7 +558,7 @@ ${REGLA_FORMATO_JSON}`;
 
     const userMsg = `Escribí la reseña mirando la foto adjunta del producto "${input.nombreProducto}".`;
 
-    const datos = await this.llamarFalVision(input.falApiKey, input.fotoUrl, userMsg, systemPrompt);
+    const datos = await this.llamarFalVision(input.falApiKey, [input.fotoUrl], userMsg, systemPrompt);
     const estrellasNum = Math.min(5, Math.max(4, Math.round(Number(datos?.estrellas) || 5)));
     return {
       nombre: String(datos?.nombre || '').trim() || 'Cliente V.',
@@ -578,12 +683,77 @@ ${REGLA_FORMATO_JSON}`;
     return this.parsearRespuestaJson(resultado);
   }
 
+  // Pedido 02/10: decide, con visión real (no una regla mecánica), cuál foto
+  // de producto usar en cada sección a generar — ver comentario de las
+  // interfaces más arriba para el porqué.
+  async asignarFotosASecciones(input: AsignarFotosASeccionesInput): Promise<AsignacionFotosResultado> {
+    const fotos = (input.fotos || []).filter((f) => f && f.trim());
+    const secciones = input.secciones || [];
+
+    // Con una sola foto disponible no hay nada que decidir — ahorra la
+    // llamada a fal.ai y usa esa única foto para todo, como ya funcionaba.
+    if (fotos.length <= 1) {
+      const resultado: AsignacionFotosResultado = {};
+      for (const s of secciones) resultado[s.id] = 0;
+      return resultado;
+    }
+
+    if (!input.falApiKey) {
+      throw new InternalServerErrorException('Todavía no conectaste tu clave de fal.ai. Andá a "Integraciones" y conectala primero.');
+    }
+
+    const listaSecciones = secciones
+      .map((s, i) => {
+        const contexto = (s.contextoPlantilla || '').trim();
+        return `${i + 1}. id="${s.id}" — sección "${s.sectionLabel}"${contexto ? `: esta sección muestra/necesita lo siguiente: ${contexto}` : ' (sin descripción puntual de la plantilla — usá el nombre de la sección como única pista).'}`;
+      })
+      .join('\n');
+
+    const systemPrompt = `Sos un diseñador de landing pages para eCommerce. El vendedor subió ${fotos.length} fotos reales del producto "${input.nombreProducto}" (te las mando en orden, foto 1, foto 2, foto 3, etc.) y va a generar varias secciones de su landing. Tu única tarea es decidir, mirando de verdad el CONTENIDO de cada foto, cuál foto (si alguna) es la que mejor encaja con el contexto de cada sección.
+
+Reglas importantes:
+- Mirá con atención qué se ve realmente en cada foto (el producto solo, en uso, de cerca, de lejos, en qué fondo/ambiente, qué ángulo) y compará eso contra lo que cada sección necesita mostrar.
+- Una misma foto puede repetirse en varias secciones SI de verdad aplica a todas esas secciones — no hay problema en repetir.
+- Una foto puede quedar sin usar en ninguna sección si ninguna la necesita — no fuerces usar todas las fotos solo por usarlas.
+- Nunca asignes una foto a una sección "por completar" — solo si el contenido de la foto realmente aplica al contexto de esa sección. Si ninguna foto encaja claramente mejor que las demás para una sección, elegí la que al menos no contradiga lo que esa sección necesita (por ejemplo, evitá poner una foto de detalle/zoom en una sección que necesita mostrar el producto completo, o viceversa).
+
+Secciones a generar:
+${listaSecciones}
+
+Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes ni después, sin bloques de markdown, con exactamente esta forma: un objeto donde cada clave es el "id" exacto de la sección (tal cual aparece arriba) y el valor es el NÚMERO de foto elegida (1, 2, 3... según el orden en que te las mandé, nunca 0). Ejemplo con 3 secciones: {"abc123":1,"def456":3,"ghi789":1}
+
+${REGLA_FORMATO_JSON}`;
+
+    const userMsg = `Mirá las ${fotos.length} fotos adjuntas del producto "${input.nombreProducto}" (en ese orden) y decidí la mejor foto para cada sección según lo explicado.`;
+
+    let datos: any;
+    try {
+      datos = await this.llamarFalVision(input.falApiKey, fotos, userMsg, systemPrompt);
+    } catch (error) {
+      // Si falla el análisis con IA, no se puede trabar la generación de la
+      // landing por esto — se cae de nuevo a "foto 1 para todas" y se deja
+      // que el flujo normal siga.
+      const resultado: AsignacionFotosResultado = {};
+      for (const s of secciones) resultado[s.id] = 0;
+      return resultado;
+    }
+
+    const resultado: AsignacionFotosResultado = {};
+    for (const s of secciones) {
+      const crudo = Number((datos as any)?.[s.id]);
+      const indice1based = Number.isFinite(crudo) ? Math.round(crudo) : 1;
+      const indice0based = indice1based - 1;
+      resultado[s.id] = indice0based >= 0 && indice0based < fotos.length ? indice0based : 0;
+    }
+    return resultado;
+  }
+
   // Pedido 11/09: mismo patrón que llamarFal() pero contra el endpoint de
   // fal.ai con VISIÓN ("openrouter/router/vision" — distinto del texto-solo
   // "fal-ai/any-llm" de arriba), para poder mandarle una foto además del
   // texto del prompt. Usa la misma clave de fal.ai del usuario y el mismo
   // modelo (Claude vía OpenRouter) — no hace falta ninguna clave nueva.
-  private async llamarFalVision(falApiKey: string, imageUrl: string, userMsg: string, systemPrompt: string): Promise<any> {
+  private async llamarFalVision(falApiKey: string, imageUrls: string[], userMsg: string, systemPrompt: string): Promise<any> {
     const falClient = createFalClient({ credentials: falApiKey });
 
     let resultado;
@@ -593,7 +763,7 @@ ${REGLA_FORMATO_JSON}`;
           model: MODELO_TEXTO,
           prompt: userMsg,
           system_prompt: systemPrompt,
-          image_urls: [imageUrl],
+          image_urls: imageUrls,
           max_tokens: 500,
           temperature: 0.9,
         },
